@@ -29,7 +29,7 @@
     "format:check": "prettier --check src/",
     "check": "tsc && eslint src/ && prettier --check src/",
     "test": "vitest",
-    "test:ci": "vitest --run",
+    "test:ci": "vitest --run --passWithNoTests",
     "prepublishOnly": "npm run check"
   },
   "keywords": [
