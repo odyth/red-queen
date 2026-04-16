@@ -47,33 +47,37 @@ export class SqliteTaskQueue implements TaskQueue {
     const now = new Date().toISOString();
     const metadataJson = task.metadata ? JSON.stringify(task.metadata) : null;
 
-    // Count current ready tasks for positional priority
-    const readyCount = (
-      this.db.prepare("SELECT COUNT(*) as count FROM tasks WHERE status = 'ready'").get() as {
-        count: number;
-      }
-    ).count;
-    const priority = task.priority !== undefined ? Math.min(task.priority, readyCount) : readyCount;
+    // Transaction ensures atomic read-shift-insert across concurrent processes
+    this.db.transaction(() => {
+      const readyCount = (
+        this.db.prepare("SELECT COUNT(*) as count FROM tasks WHERE status = 'ready'").get() as {
+          count: number;
+        }
+      ).count;
+      const priority =
+        task.priority !== undefined ? Math.min(task.priority, readyCount) : readyCount;
 
-    // Shift priorities of existing ready tasks at or after this position
-    this.db
-      .prepare("UPDATE tasks SET priority = priority + 1 WHERE status = 'ready' AND priority >= ?")
-      .run(priority);
+      this.db
+        .prepare(
+          "UPDATE tasks SET priority = priority + 1 WHERE status = 'ready' AND priority >= ?",
+        )
+        .run(priority);
 
-    this.db
-      .prepare(
-        `INSERT INTO tasks (id, type, priority, issue_id, status, description, created_at, retry_count, metadata)
-         VALUES (?, ?, ?, ?, 'ready', ?, ?, 0, ?)`,
-      )
-      .run(
-        id,
-        task.type,
-        priority,
-        task.issueId ?? null,
-        task.description ?? null,
-        now,
-        metadataJson,
-      );
+      this.db
+        .prepare(
+          `INSERT INTO tasks (id, type, priority, issue_id, status, description, created_at, retry_count, metadata)
+           VALUES (?, ?, ?, ?, 'ready', ?, ?, 0, ?)`,
+        )
+        .run(
+          id,
+          task.type,
+          priority,
+          task.issueId ?? null,
+          task.description ?? null,
+          now,
+          metadataJson,
+        );
+    })();
 
     const created = this.getTask(id);
     if (created === null) {

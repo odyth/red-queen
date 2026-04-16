@@ -149,19 +149,19 @@ export class OrchestratorStateStore {
   }
 
   private ensureDefaults(): void {
-    const defaults: Record<string, string> = {
-      status: "stopped",
-      current_task_id: "",
-      last_poll: "",
-      completed_count: "0",
-      error_count: "0",
-      started_at: "",
-    };
+    const defaults: [string, string | null][] = [
+      ["status", "stopped"],
+      ["current_task_id", null],
+      ["last_poll", null],
+      ["completed_count", "0"],
+      ["error_count", "0"],
+      ["started_at", null],
+    ];
 
     const insert = this.db.prepare(
       "INSERT OR IGNORE INTO orchestrator_state (key, value) VALUES (?, ?)",
     );
-    for (const [key, value] of Object.entries(defaults)) {
+    for (const [key, value] of defaults) {
       insert.run(key, value);
     }
   }
@@ -169,17 +169,17 @@ export class OrchestratorStateStore {
   get(): OrchestratorState {
     const rows = this.db.prepare("SELECT key, value FROM orchestrator_state").all() as {
       key: string;
-      value: string;
+      value: string | null;
     }[];
     const map = new Map(rows.map((r) => [r.key, r.value]));
 
     return {
       status: (map.get("status") ?? "stopped") as OrchestratorStatus,
-      currentTaskId: emptyToNull(map.get("current_task_id")),
-      lastPoll: emptyToNull(map.get("last_poll")),
+      currentTaskId: map.get("current_task_id") ?? null,
+      lastPoll: map.get("last_poll") ?? null,
       completedCount: parseInt(map.get("completed_count") ?? "0", 10),
       errorCount: parseInt(map.get("error_count") ?? "0", 10),
-      startedAt: emptyToNull(map.get("started_at")),
+      startedAt: map.get("started_at") ?? null,
     };
   }
 
@@ -188,7 +188,7 @@ export class OrchestratorStateStore {
   }
 
   setCurrentTaskId(taskId: string | null): void {
-    this.setValue("current_task_id", taskId ?? "");
+    this.setValueNullable("current_task_id", taskId);
   }
 
   setLastPoll(timestamp: string): void {
@@ -225,15 +225,12 @@ export class OrchestratorStateStore {
       .prepare("INSERT OR REPLACE INTO orchestrator_state (key, value) VALUES (?, ?)")
       .run(key, value);
   }
-}
 
-// --- Helpers ---
-
-function emptyToNull(value: string | undefined): string | null {
-  if (value === undefined || value === "") {
-    return null;
+  private setValueNullable(key: string, value: string | null): void {
+    this.db
+      .prepare("INSERT OR REPLACE INTO orchestrator_state (key, value) VALUES (?, ?)")
+      .run(key, value);
   }
-  return value;
 }
 
 function toPipelineRecord(row: PipelineRow): PipelineRecord {

@@ -51,8 +51,20 @@ export class RedQueenDatabase {
 
       CREATE TABLE IF NOT EXISTS orchestrator_state (
         key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
+        value TEXT
       );
+
+      CREATE TABLE IF NOT EXISTS audit_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TEXT NOT NULL,
+        component TEXT NOT NULL,
+        issue_id TEXT,
+        message TEXT NOT NULL,
+        metadata TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp);
+      CREATE INDEX IF NOT EXISTS idx_audit_issue_id ON audit_log(issue_id);
     `);
   }
 

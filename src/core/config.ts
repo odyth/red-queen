@@ -50,6 +50,8 @@ const ConfigSchema = z.object({
     testCommand: z.string(),
     directory: z.string().default("."),
   }),
+  // Zod v4 requires explicit outer .default() values for nested objects — the field-level
+  // defaults only apply when the parent key is present. The duplication is intentional.
   pipeline: z
     .object({
       pollInterval: z.number().default(30),

@@ -49,19 +49,6 @@ export class DualWriteAuditLogger implements AuditLogger {
     this.db = db;
     this.logFilePath = logFilePath;
 
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS audit_log (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        timestamp TEXT NOT NULL,
-        component TEXT NOT NULL,
-        issue_id TEXT,
-        message TEXT NOT NULL,
-        metadata TEXT
-      );
-      CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp);
-      CREATE INDEX IF NOT EXISTS idx_audit_issue_id ON audit_log(issue_id);
-    `);
-
     this.insertStmt = this.db.prepare(
       "INSERT INTO audit_log (timestamp, component, issue_id, message, metadata) VALUES (?, ?, ?, ?, ?)",
     );
@@ -99,8 +86,11 @@ export class DualWriteAuditLogger implements AuditLogger {
     }
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-    const limit = filter.limit !== undefined ? `LIMIT ${String(filter.limit)}` : "";
-    const sql = `SELECT * FROM audit_log ${where} ORDER BY timestamp DESC ${limit}`;
+    const limitClause = filter.limit !== undefined ? "LIMIT ?" : "";
+    if (filter.limit !== undefined) {
+      params.push(filter.limit);
+    }
+    const sql = `SELECT * FROM audit_log ${where} ORDER BY timestamp DESC ${limitClause}`;
 
     const rows = this.db.prepare(sql).all(...params) as AuditRow[];
     return rows.map(toAuditEntry);

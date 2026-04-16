@@ -26,7 +26,7 @@ function createTestDb(): BetterSqlite3.Database {
     );
     CREATE TABLE orchestrator_state (
       key TEXT PRIMARY KEY,
-      value TEXT NOT NULL
+      value TEXT
     );
   `);
   return rawDb;
