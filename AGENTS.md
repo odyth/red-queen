@@ -42,17 +42,25 @@ The full rules are enforced by ESLint (`eslint.config.js`) and Prettier (`.prett
 ```
 src/
 ├── cli/               # CLI commands (init, start, stop, status)
-├── core/              # State machine, queue, config — always required
-│   ├── orchestrator.ts
-│   ├── state-machine.ts
-│   └── worker-pool.ts
+├── core/              # State machine, queue, config, audit — always required
+│   ├── orchestrator.ts  # Orchestrator class (stub — Phase 3)
+│   ├── types.ts         # All shared types: phases, tasks, pipeline, events
+│   ├── config.ts        # Zod config schema, YAML loading, phase graph validation
+│   ├── defaults.ts      # Default SDLC phase configuration
+│   ├── database.ts      # SQLite schema init (RedQueenDatabase)
+│   ├── queue.ts         # TaskQueue interface + SqliteTaskQueue
+│   ├── pipeline-state.ts # PipelineStateStore + OrchestratorStateStore
+│   ├── audit.ts         # AuditLogger interface + DualWriteAuditLogger
+│   └── __tests__/       # Vitest tests for all core modules
 ├── integrations/      # Issue tracker and source control adapters
-│   ├── jira/          # Jira adapter
-│   ├── github/        # GitHub source control adapter
-│   └── github-issues/ # GitHub Issues as issue tracker
-├── skills/            # Default skill templates
-├── webhook/           # Optional webhook server module
-└── index.ts           # Package entry point
+│   ├── issue-tracker.ts # IssueTracker interface + Issue type
+│   ├── source-control.ts # SourceControl interface + PR types
+│   ├── jira/          # Jira adapter (Phase 5)
+│   ├── github/        # GitHub source control adapter (Phase 5)
+│   └── github-issues/ # GitHub Issues as issue tracker (Phase 5)
+├── skills/            # Default skill templates (Phase 4)
+├── webhook/           # Optional webhook server module (Phase 3)
+└── index.ts           # Package entry point — re-exports everything
 ```
 
 ## Architecture Principles
@@ -67,28 +75,74 @@ These are deliberate design decisions, not gaps to fill:
 
 4. **Adapter pattern for integrations** — All issue trackers implement `IssueTracker` interface, all source control implements `SourceControl` interface. New integrations = new adapter, never modify core.
 
-5. **Simple infrastructure** — JSON state files, no databases, no Kubernetes, no heavy frameworks. The simplicity is the feature.
+5. **Simple infrastructure** — SQLite for persistence (task queue, pipeline state, audit log), flat files for human-readable audit. No Kubernetes, no heavy frameworks. The simplicity is the feature.
 
 ## Key Interfaces
 
 ```typescript
-// All issue tracker integrations must implement this
+// All issue tracker integrations must implement this (src/integrations/issue-tracker.ts)
 interface IssueTracker {
-  getTask(id: string): Promise<Task>;
-  updatePhase(id: string, phase: Phase): void;
-  assignTo(id: string, user: string): void;
-  addComment(id: string, body: string): void;
-  getComments(id: string): Promise<Comment[]>;
-  getSpec(id: string): Promise<string>;
-  setSpec(id: string, spec: string): void;
+  getIssue(issueId: string): Promise<Issue>;
+  listIssuesByPhase(phaseName: string): Promise<Issue[]>;
+  getPhase(issueId: string): Promise<string | null>;
+  setPhase(issueId: string, phaseName: string): Promise<void>;
+  assignToAi(issueId: string): Promise<void>;
+  assignToHuman(issueId: string): Promise<void>;
+  getSpec(issueId: string): Promise<string | null>;
+  setSpec(issueId: string, content: string): Promise<void>;
+  addComment(issueId: string, body: string): Promise<void>;
+  getComments(issueId: string): Promise<Comment[]>;
+  transitionTo(issueId: string, status: string): Promise<void>;
+  validateWebhook(headers: Record<string, string>, body: string): boolean;
+  parseWebhookEvent(headers: Record<string, string>, body: string): PipelineEvent | null;
+  validateConfig(config: Record<string, unknown>): ValidationResult;
+  validatePhaseMapping(phaseNames: string[]): ValidationResult;
+}
+
+// Source control (src/integrations/source-control.ts)
+interface SourceControl {
+  createBranch(name: string, from: string): Promise<void>;
+  deleteBranch(name: string): Promise<void>;
+  branchExists(name: string): Promise<boolean>;
+  createPullRequest(options: CreatePROptions): Promise<PullRequest>;
+  getPullRequest(issueId: string): Promise<PullRequest | null>;
+  getPullRequestDiff(prNumber: number): Promise<string>;
+  mergePullRequest(prNumber: number): Promise<void>;
+  postReview(prNumber: number, body: string, verdict: "approve" | "request-changes"): Promise<void>;
+  dismissStaleReviews(prNumber: number): Promise<void>;
+  getReviewComments(prNumber: number): Promise<Comment[]>;
+  replyToComment(prNumber: number, commentId: number, body: string): Promise<void>;
+  validateWebhook(headers: Record<string, string>, body: string): boolean;
+  parseWebhookEvent(headers: Record<string, string>, body: string): PipelineEvent | null;
+  validateConfig(config: Record<string, unknown>): void;
+}
+
+// Task queue (src/core/queue.ts) — synchronous SQLite-backed
+interface TaskQueue {
+  enqueue(task: NewTask): Task;
+  dequeue(): Task | null;
+  markWorking(taskId: string): boolean;
+  markComplete(taskId: string, result: string): boolean;
+  markFailed(taskId: string, error: string): boolean;
+  hasOpenTask(issueId: string, taskType: string): boolean;
+  listByStatus(status: TaskStatus): Task[];
+  getTask(taskId: string): Task | null;
+  purgeOld(olderThanDays: number): number;
 }
 ```
 
 ## State Machine Phases
 
+Phases are **dynamic** — defined in `redqueen.yaml`, not hardcoded. The default SDLC flow:
+
 ```
-Prompt Writing → Prompt Review (HUMAN GATE) → Coding → Code Review → Testing → Human Review (HUMAN GATE)
+spec-writing → spec-review (HUMAN GATE) → coding → code-review → testing → human-review (HUMAN GATE)
+                 ↓ rework                              ↓ onFail                ↓ onFail     ↓ rework
+              spec-feedback                           coding                  coding     code-feedback
 ```
+
+Feedback loops: `spec-feedback` ↔ `spec-review`, `code-feedback` ↔ `code-review`
+Escalation: `blocked` (human gate) after max iterations
 
 - Max 3 iterations on any rework loop before escalating to human
 - Failed phases re-enter from Coding, not from the beginning
@@ -104,6 +158,6 @@ Prompt Writing → Prompt Review (HUMAN GATE) → Coding → Code Review → Tes
 
 - Add AI/LLM calls to the orchestrator or state machine
 - Suppress ESLint or TypeScript errors without explicit approval
-- Add heavy dependencies (databases, container orchestrators, message queues)
+- Add heavy dependencies (container orchestrators, message queues, ORMs)
 - Bypass or weaken human gate checkpoints
 - Commit `.env`, `config.local.json`, or `webhook-secrets.json` files
