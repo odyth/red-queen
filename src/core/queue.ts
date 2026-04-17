@@ -37,9 +37,44 @@ interface TaskRow {
 
 export class SqliteTaskQueue implements TaskQueue {
   private readonly db: BetterSqlite3.Database;
+  private readonly enqueueTxn: BetterSqlite3.Transaction<
+    (id: string, task: NewTask, now: string, metadataJson: string | null) => void
+  >;
 
   constructor(db: BetterSqlite3.Database) {
     this.db = db;
+    this.enqueueTxn = this.db.transaction(
+      (id: string, task: NewTask, now: string, metadataJson: string | null) => {
+        const readyCount = (
+          this.db.prepare("SELECT COUNT(*) as count FROM tasks WHERE status = 'ready'").get() as {
+            count: number;
+          }
+        ).count;
+        const priority =
+          task.priority !== undefined ? Math.min(task.priority, readyCount) : readyCount;
+
+        this.db
+          .prepare(
+            "UPDATE tasks SET priority = priority + 1 WHERE status = 'ready' AND priority >= ?",
+          )
+          .run(priority);
+
+        this.db
+          .prepare(
+            `INSERT INTO tasks (id, type, priority, issue_id, status, description, created_at, retry_count, metadata)
+             VALUES (?, ?, ?, ?, 'ready', ?, ?, 0, ?)`,
+          )
+          .run(
+            id,
+            task.type,
+            priority,
+            task.issueId ?? null,
+            task.description ?? null,
+            now,
+            metadataJson,
+          );
+      },
+    );
   }
 
   enqueue(task: NewTask): Task {
@@ -47,37 +82,10 @@ export class SqliteTaskQueue implements TaskQueue {
     const now = new Date().toISOString();
     const metadataJson = task.metadata ? JSON.stringify(task.metadata) : null;
 
-    // Transaction ensures atomic read-shift-insert across concurrent processes
-    this.db.transaction(() => {
-      const readyCount = (
-        this.db.prepare("SELECT COUNT(*) as count FROM tasks WHERE status = 'ready'").get() as {
-          count: number;
-        }
-      ).count;
-      const priority =
-        task.priority !== undefined ? Math.min(task.priority, readyCount) : readyCount;
-
-      this.db
-        .prepare(
-          "UPDATE tasks SET priority = priority + 1 WHERE status = 'ready' AND priority >= ?",
-        )
-        .run(priority);
-
-      this.db
-        .prepare(
-          `INSERT INTO tasks (id, type, priority, issue_id, status, description, created_at, retry_count, metadata)
-           VALUES (?, ?, ?, ?, 'ready', ?, ?, 0, ?)`,
-        )
-        .run(
-          id,
-          task.type,
-          priority,
-          task.issueId ?? null,
-          task.description ?? null,
-          now,
-          metadataJson,
-        );
-    })();
+    // BEGIN IMMEDIATE acquires the RESERVED lock up front so concurrent processes
+    // serialize on the write lock instead of racing on read-modify-write and
+    // hitting SQLITE_BUSY_SNAPSHOT at commit time.
+    this.enqueueTxn.immediate(id, task, now, metadataJson);
 
     const created = this.getTask(id);
     if (created === null) {

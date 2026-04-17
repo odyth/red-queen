@@ -62,9 +62,11 @@ export class DualWriteAuditLogger implements AuditLogger {
     // SQLite write
     this.insertStmt.run(timestamp, entry.component, entry.issueId, entry.message, metadataJson);
 
-    // Flat file write
+    // Flat file write — sanitize message so embedded newlines/pipes can't forge
+    // a fake log record in the pipe-delimited format.
     const issueIdPart = entry.issueId ?? "-";
-    const line = `[${timestamp}] ${entry.component} | ${issueIdPart} | ${entry.message}\n`;
+    const safeMessage = entry.message.replace(/[\r\n|]/g, " ");
+    const line = `[${timestamp}] ${entry.component} | ${issueIdPart} | ${safeMessage}\n`;
     appendFileSync(this.logFilePath, line);
   }
 

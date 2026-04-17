@@ -26,7 +26,7 @@ export interface SourceControl {
 
   // PR operations
   createPullRequest(options: CreatePROptions): Promise<PullRequest>;
-  getPullRequest(issueId: string): Promise<PullRequest | null>;
+  getPullRequest(prNumber: number): Promise<PullRequest | null>;
   getPullRequestDiff(prNumber: number): Promise<string>;
   mergePullRequest(prNumber: number): Promise<void>;
 

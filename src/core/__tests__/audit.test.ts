@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import Database from "better-sqlite3";
 import type BetterSqlite3 from "better-sqlite3";
 import { DualWriteAuditLogger } from "../audit.js";
+import { SCHEMA_SQL } from "../database.js";
 
 let db: BetterSqlite3.Database;
 let logger: DualWriteAuditLogger;
@@ -16,19 +17,7 @@ describe("DualWriteAuditLogger", () => {
     tempDir = mkdtempSync(join(tmpdir(), "rq-audit-test-"));
     logFilePath = join(tempDir, "audit.log");
     db = new Database(":memory:");
-    // Schema is normally created by RedQueenDatabase — replicate for unit tests
-    db.exec(`
-      CREATE TABLE audit_log (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        timestamp TEXT NOT NULL,
-        component TEXT NOT NULL,
-        issue_id TEXT,
-        message TEXT NOT NULL,
-        metadata TEXT
-      );
-      CREATE INDEX idx_audit_timestamp ON audit_log(timestamp);
-      CREATE INDEX idx_audit_issue_id ON audit_log(issue_id);
-    `);
+    db.exec(SCHEMA_SQL);
     logger = new DualWriteAuditLogger(db, logFilePath);
   });
 

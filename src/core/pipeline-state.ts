@@ -216,8 +216,10 @@ export class OrchestratorStateStore {
   }
 
   reset(): void {
-    this.db.prepare("DELETE FROM orchestrator_state").run();
-    this.ensureDefaults();
+    this.db.transaction(() => {
+      this.db.prepare("DELETE FROM orchestrator_state").run();
+      this.ensureDefaults();
+    })();
   }
 
   private setValue(key: string, value: string): void {

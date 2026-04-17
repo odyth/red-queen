@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import type BetterSqlite3 from "better-sqlite3";
 import { SqliteTaskQueue } from "../queue.js";
+import { SCHEMA_SQL } from "../database.js";
 
 let db: BetterSqlite3.Database;
 let queue: SqliteTaskQueue;
@@ -9,25 +10,7 @@ let queue: SqliteTaskQueue;
 function createTestDb(): BetterSqlite3.Database {
   const rawDb = new Database(":memory:");
   rawDb.pragma("journal_mode = WAL");
-  rawDb.exec(`
-    CREATE TABLE IF NOT EXISTS tasks (
-      id TEXT PRIMARY KEY,
-      type TEXT NOT NULL,
-      priority INTEGER NOT NULL DEFAULT 1,
-      issue_id TEXT,
-      status TEXT NOT NULL DEFAULT 'ready',
-      description TEXT,
-      created_at TEXT NOT NULL,
-      started_at TEXT,
-      completed_at TEXT,
-      result TEXT,
-      retry_count INTEGER NOT NULL DEFAULT 0,
-      metadata TEXT
-    );
-    CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
-    CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(priority);
-    CREATE INDEX IF NOT EXISTS idx_tasks_issue_id ON tasks(issue_id);
-  `);
+  rawDb.exec(SCHEMA_SQL);
   return rawDb;
 }
 

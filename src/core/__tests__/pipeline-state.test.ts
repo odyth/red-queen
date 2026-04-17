@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import type BetterSqlite3 from "better-sqlite3";
 import { PipelineStateStore, OrchestratorStateStore } from "../pipeline-state.js";
+import { SCHEMA_SQL } from "../database.js";
 
 let db: BetterSqlite3.Database;
 let store: PipelineStateStore;
@@ -10,25 +11,7 @@ let orchStore: OrchestratorStateStore;
 function createTestDb(): BetterSqlite3.Database {
   const rawDb = new Database(":memory:");
   rawDb.pragma("journal_mode = WAL");
-  rawDb.exec(`
-    CREATE TABLE pipeline_state (
-      issue_id TEXT PRIMARY KEY,
-      current_phase TEXT,
-      branch_name TEXT,
-      pr_number INTEGER,
-      worktree_path TEXT,
-      review_iterations INTEGER NOT NULL DEFAULT 0,
-      feedback_iterations INTEGER NOT NULL DEFAULT 0,
-      spec_content TEXT,
-      prior_context TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-    CREATE TABLE orchestrator_state (
-      key TEXT PRIMARY KEY,
-      value TEXT
-    );
-  `);
+  rawDb.exec(SCHEMA_SQL);
   return rawDb;
 }
 
