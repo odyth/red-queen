@@ -1,9 +1,8 @@
-import { readFileSync, unlinkSync, writeFileSync, readdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AuditLogger } from "./audit.js";
 import type { RedQueenConfig } from "./config.js";
-import type { RedQueenDatabase } from "./database.js";
 import type { OrchestratorStateStore, PipelineStateStore } from "./pipeline-state.js";
 import { Poller } from "./poller.js";
 import type { TaskQueue } from "./queue.js";
@@ -22,7 +21,6 @@ export type WorkerRunner = (options: WorkerOptions) => Promise<WorkerResult>;
 
 export interface RedQueenDeps {
   config: RedQueenConfig;
-  db: RedQueenDatabase;
   queue: TaskQueue;
   pipelineState: PipelineStateStore;
   orchestratorState: OrchestratorStateStore;
@@ -53,6 +51,7 @@ export class RedQueen {
   private mainLoopPromise: Promise<void> | null = null;
   private signalHandlersInstalled = false;
   private sigHandler: ((sig: NodeJS.Signals) => void) | null = null;
+  private tempDir: string | null = null;
 
   constructor(deps: RedQueenDeps) {
     this.deps = deps;
@@ -67,8 +66,8 @@ export class RedQueen {
 
   async start(): Promise<void> {
     this.claudeBin = resolveClaudeBin(this.deps.config.pipeline.claudeBin);
+    this.tempDir = mkdtempSync(join(tmpdir(), TEMP_PREFIX));
     this.performCrashRecovery();
-    this.cleanupOrphanTempFiles();
 
     await this.startDashboardIfEnabled();
     this.startWebhookIfEnabled();
@@ -91,7 +90,7 @@ export class RedQueen {
 
     this.startPollerIfConfigured();
 
-    if (this.deps.installSignalHandlers !== false) {
+    if (this.deps.installSignalHandlers === true) {
       this.installSignalHandlers();
     }
 
@@ -109,11 +108,7 @@ export class RedQueen {
     this.shuttingDown = true;
 
     if (this.shutdownCount > 1 && this.currentWorkerPid !== null) {
-      try {
-        process.kill(this.currentWorkerPid, "SIGTERM");
-      } catch {
-        // Worker already exited
-      }
+      killWorkerPid(this.currentWorkerPid, "SIGTERM");
     }
 
     if (this.mainLoopPromise !== null) {
@@ -138,6 +133,7 @@ export class RedQueen {
     }
 
     this.uninstallSignalHandlers();
+    this.removeTempDir();
     this.deps.orchestratorState.setStatus("stopped");
     this.deps.orchestratorState.setCurrentTaskId(null);
   }
@@ -425,7 +421,12 @@ export class RedQueen {
     });
     const promptBody = renderSkillPrompt(context, skillMarkdown);
 
-    const tempPath = join(tmpdir(), `${TEMP_PREFIX}${task.id}.md`);
+    if (this.tempDir === null) {
+      this.deps.queue.markWorking(task.id);
+      this.deps.queue.markFailed(task.id, "Orchestrator temp dir not initialized");
+      return;
+    }
+    const tempPath = join(this.tempDir, `${task.id}.md`);
     try {
       writeFileSync(tempPath, promptBody, "utf8");
     } catch (err) {
@@ -737,9 +738,7 @@ export class RedQueen {
       this.deps.orchestratorState.setCurrentTaskId(null);
       return;
     }
-    this.deps.db.db
-      .prepare("UPDATE tasks SET status = 'ready', started_at = NULL WHERE id = ?")
-      .run(task.id);
+    this.deps.queue.requeue(task.id);
     this.deps.orchestratorState.setCurrentTaskId(null);
     this.deps.audit.log({
       component: "orchestrator",
@@ -749,19 +748,16 @@ export class RedQueen {
     });
   }
 
-  private cleanupOrphanTempFiles(): void {
-    const dir = tmpdir();
-    let entries: string[];
-    try {
-      entries = readdirSync(dir);
-    } catch {
+  private removeTempDir(): void {
+    if (this.tempDir === null) {
       return;
     }
-    for (const entry of entries) {
-      if (entry.startsWith(TEMP_PREFIX) && entry.endsWith(".md")) {
-        safeUnlink(join(dir, entry));
-      }
+    try {
+      rmSync(this.tempDir, { recursive: true, force: true });
+    } catch {
+      // Best-effort cleanup — ignore failures
     }
+    this.tempDir = null;
   }
 
   private async startDashboardIfEnabled(): Promise<void> {
@@ -929,6 +925,26 @@ function safeUnlink(path: string): void {
     unlinkSync(path);
   } catch {
     // already gone
+  }
+}
+
+function killWorkerPid(pid: number, signal: NodeJS.Signals): void {
+  if (process.platform === "win32") {
+    try {
+      process.kill(pid, signal);
+    } catch {
+      // Worker already exited
+    }
+    return;
+  }
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    try {
+      process.kill(pid, signal);
+    } catch {
+      // Worker already exited
+    }
   }
 }
 

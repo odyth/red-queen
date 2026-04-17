@@ -30,6 +30,7 @@ export interface WorkerOptions {
   heartbeatIntervalMs?: number;
   stallGracePeriodMs?: number;
   killGracePeriodMs?: number;
+  maxBufferBytes?: number;
   onHeartbeat?: (info: HeartbeatInfo) => void;
   onStart?: (pid: number) => void;
 }
@@ -40,6 +41,8 @@ const DEFAULT_KILL_GRACE_MS = 10_000;
 const CPU_CHANGE_THRESHOLD_SEC = 1.0;
 const SUMMARY_MAX_LEN = 500;
 const ERROR_MAX_LEN = 500;
+const DEFAULT_MAX_BUFFER_BYTES = 10 * 1024 * 1024;
+const TRUNCATION_MARKER = "\n...[output truncated]...\n";
 
 export function resolveClaudeBin(configOverride?: string): string | null {
   if (configOverride !== undefined && configOverride !== "") {
@@ -74,6 +77,7 @@ export function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     const heartbeatIntervalMs = options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_MS;
     const stallGracePeriodMs = options.stallGracePeriodMs ?? DEFAULT_STALL_GRACE_MS;
     const killGracePeriodMs = options.killGracePeriodMs ?? DEFAULT_KILL_GRACE_MS;
+    const maxBufferBytes = options.maxBufferBytes ?? DEFAULT_MAX_BUFFER_BYTES;
 
     const args = [
       "-p",
@@ -93,18 +97,47 @@ export function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       cwd: options.cwd,
       env: { ...process.env, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
       stdio: ["ignore", "pipe", "pipe"],
+      detached: process.platform !== "win32",
     });
 
     let stdout = "";
     let stderr = "";
+    let stdoutTruncated = false;
+    let stderrTruncated = false;
     let killed = false;
     let killReason: string | null = null;
 
     worker.stdout.on("data", (data: Buffer) => {
-      stdout += data.toString();
+      const chunk = data.toString();
+      if (stdout.length + chunk.length <= maxBufferBytes) {
+        stdout += chunk;
+        return;
+      }
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
+      if (stdoutTruncated === false) {
+        stdoutTruncated = true;
+        const headRoom = maxBufferBytes - stdout.length;
+        if (headRoom > 0) {
+          stdout += chunk.substring(0, headRoom);
+        }
+        stdout += TRUNCATION_MARKER;
+      }
     });
     worker.stderr.on("data", (data: Buffer) => {
-      stderr += data.toString();
+      const chunk = data.toString();
+      if (stderr.length + chunk.length <= maxBufferBytes) {
+        stderr += chunk;
+        return;
+      }
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
+      if (stderrTruncated === false) {
+        stderrTruncated = true;
+        const headRoom = maxBufferBytes - stderr.length;
+        if (headRoom > 0) {
+          stderr += chunk.substring(0, headRoom);
+        }
+        stderr += TRUNCATION_MARKER;
+      }
     });
 
     if (options.onStart && worker.pid !== undefined) {
@@ -202,18 +235,36 @@ export function runWorker(options: WorkerOptions): Promise<WorkerResult> {
 }
 
 function terminateWorker(worker: ReturnType<typeof spawn>, killGracePeriodMs: number): void {
-  try {
-    worker.kill("SIGTERM");
-  } catch {
-    // Process may already be gone
-  }
+  signalWorker(worker, "SIGTERM");
   setTimeout(() => {
+    signalWorker(worker, "SIGKILL");
+  }, killGracePeriodMs);
+}
+
+function signalWorker(worker: ReturnType<typeof spawn>, signal: NodeJS.Signals): void {
+  const pid = worker.pid;
+  if (pid === undefined) {
+    return;
+  }
+  if (process.platform === "win32") {
     try {
-      worker.kill("SIGKILL");
+      worker.kill(signal);
     } catch {
       // Process already exited
     }
-  }, killGracePeriodMs);
+    return;
+  }
+  try {
+    // Negative PID targets the whole process group so grandchildren (shell tools,
+    // git, npm, MCP servers) don't linger after the worker itself is killed.
+    process.kill(-pid, signal);
+  } catch {
+    try {
+      worker.kill(signal);
+    } catch {
+      // Process already exited
+    }
+  }
 }
 
 interface ProcessStats {

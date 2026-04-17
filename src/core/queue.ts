@@ -10,6 +10,7 @@ export interface TaskQueue {
   markWorking(taskId: string): boolean;
   markComplete(taskId: string, result: string): boolean;
   markFailed(taskId: string, error: string): boolean;
+  requeue(taskId: string): boolean;
   hasOpenTask(issueId: string, taskType: string): boolean;
   listByStatus(status: TaskStatus): Task[];
   getTask(taskId: string): Task | null;
@@ -135,6 +136,15 @@ export class SqliteTaskQueue implements TaskQueue {
         "UPDATE tasks SET status = 'failed', completed_at = ?, result = ?, retry_count = retry_count + 1 WHERE id = ? AND status = 'working'",
       )
       .run(now, error, taskId);
+    return result.changes > 0;
+  }
+
+  requeue(taskId: string): boolean {
+    const result = this.db
+      .prepare(
+        "UPDATE tasks SET status = 'ready', started_at = NULL WHERE id = ? AND status = 'working'",
+      )
+      .run(taskId);
     return result.changes > 0;
   }
 

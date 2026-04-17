@@ -7,11 +7,16 @@ import { DEFAULT_PHASES } from "./defaults.js";
 
 // --- Zod schemas ---
 
+const SKILL_NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
+
 const PhaseDefinitionSchema = z.object({
   name: z.string().min(1),
   label: z.string().min(1),
   type: z.enum(["automated", "human-gate"]),
-  skill: z.string().optional(),
+  skill: z
+    .string()
+    .regex(SKILL_NAME_RE, "skill must be lowercase alphanumeric with hyphens (no path separators)")
+    .optional(),
   next: z.string().min(1),
   onFail: z.string().optional(),
   rework: z.string().optional(),

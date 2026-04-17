@@ -75,7 +75,6 @@ function setupHarness(
 
   const rq = new RedQueen({
     config,
-    db,
     queue,
     pipelineState,
     orchestratorState,
