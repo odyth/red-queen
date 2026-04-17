@@ -24,7 +24,6 @@ const PhaseDefinitionSchema = z.object({
 const WebhooksSchema = z
   .object({
     enabled: z.boolean().default(false),
-    url: z.string().optional(),
     secret: z.string().optional(),
   })
   .default({ enabled: false });
@@ -60,6 +59,11 @@ const ConfigSchema = z.object({
       baseBranch: z.string().default("origin/main"),
       branchPrefixes: z.record(z.string(), z.string()).default(DEFAULT_BRANCH_PREFIXES),
       webhooks: WebhooksSchema,
+      claudeBin: z.string().optional(),
+      model: z.string().default("opus"),
+      effort: z.string().default("high"),
+      stallThresholdMs: z.number().default(300000),
+      reconcileInterval: z.number().default(300),
     })
     .default({
       pollInterval: 30,
@@ -68,6 +72,10 @@ const ConfigSchema = z.object({
       baseBranch: "origin/main",
       branchPrefixes: DEFAULT_BRANCH_PREFIXES,
       webhooks: { enabled: false },
+      model: "opus",
+      effort: "high",
+      stallThresholdMs: 300000,
+      reconcileInterval: 300,
     }),
   phases: z.array(PhaseDefinitionSchema).default(DEFAULT_PHASES),
   skills: z
@@ -79,8 +87,9 @@ const ConfigSchema = z.object({
     .object({
       enabled: z.boolean().default(true),
       port: z.number().default(4400),
+      host: z.string().default("127.0.0.1"),
     })
-    .default({ enabled: true, port: 4400 }),
+    .default({ enabled: true, port: 4400, host: "127.0.0.1" }),
   audit: z
     .object({
       logFile: z.string().default("audit.log"),
