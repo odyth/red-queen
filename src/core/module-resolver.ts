@@ -7,16 +7,17 @@ import type { SkillModuleContext } from "./types.js";
 
 export interface ResolveModuleOptions {
   runGit?: (args: string[], cwd: string) => string;
+  onGitError?: (message: string) => void;
 }
 
 export function createModuleResolver(options: ResolveModuleOptions = {}): ModuleResolver {
   const runGit = options.runGit ?? defaultRunGit;
+  const onGitError = options.onGitError ?? defaultOnGitError;
 
   return (worktreePath, baseBranch, modules) => {
     if (worktreePath === null || worktreePath === "") {
       return null;
     }
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
     if (existsSync(worktreePath) === false) {
       return null;
     }
@@ -31,7 +32,11 @@ export function createModuleResolver(options: ResolveModuleOptions = {}): Module
         .split("\n")
         .map((line) => line.trim())
         .filter((line) => line.length > 0);
-    } catch {
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      onGitError(
+        `module-resolver: git diff ${baseBranch}...HEAD failed in ${worktreePath} — per-module targeting disabled for this run. Cause: ${msg}`,
+      );
       return null;
     }
 
@@ -71,4 +76,8 @@ function toModuleContext(mod: ProjectModule): SkillModuleContext {
 
 function defaultRunGit(args: string[], cwd: string): string {
   return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+}
+
+function defaultOnGitError(message: string): void {
+  process.stderr.write(`[warn] ${message}\n`);
 }

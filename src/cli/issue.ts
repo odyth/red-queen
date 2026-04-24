@@ -1,5 +1,5 @@
 import { mkdirSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, resolve, sep } from "node:path";
 import { parseArgs } from "node:util";
 import { loadCliContext } from "./context.js";
 import { CliError } from "./errors.js";
@@ -40,7 +40,6 @@ async function cmdIssueGet(args: string[]): Promise<void> {
   const ctx = loadCliContext();
   try {
     const issue = await ctx.issueTracker.getIssue(issueId);
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
     writeJson(issue, values.pretty === true);
   } finally {
     ctx.cleanup();
@@ -86,7 +85,6 @@ async function cmdIssueComments(args: string[]): Promise<void> {
   const ctx = loadCliContext();
   try {
     const comments = await ctx.issueTracker.getComments(issueId);
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
     writeJson(comments, values.pretty === true);
   } finally {
     ctx.cleanup();
@@ -110,14 +108,35 @@ async function cmdIssueAttachments(args: string[]): Promise<void> {
   try {
     const defaultDir = resolve(ctx.config.project.directory, ".redqueen", "attachments", issueId);
     const destDir = values.dir !== undefined ? resolve(values.dir) : defaultDir;
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
     if (existsSync(destDir) === false) {
       mkdirSync(destDir, { recursive: true });
     }
 
     const attachments = await ctx.issueTracker.listAttachments(issueId);
+    const resolvedDestDir = resolve(destDir);
     for (const att of attachments) {
-      const localPath = resolve(destDir, att.filename);
+      const safeName = sanitizeAttachmentFilename(att.filename);
+      if (safeName === null) {
+        att.localPath = null;
+        ctx.audit.log({
+          component: "helper:issue",
+          issueId,
+          message: `Attachment ${att.id} rejected: unsafe filename`,
+          metadata: { attachmentId: att.id, filename: att.filename },
+        });
+        continue;
+      }
+      const localPath = resolve(resolvedDestDir, safeName);
+      if (localPath.startsWith(resolvedDestDir + sep) === false && localPath !== resolvedDestDir) {
+        att.localPath = null;
+        ctx.audit.log({
+          component: "helper:issue",
+          issueId,
+          message: `Attachment ${att.id} rejected: path escapes destination directory`,
+          metadata: { attachmentId: att.id, filename: att.filename },
+        });
+        continue;
+      }
       try {
         await ctx.issueTracker.downloadAttachment(att, localPath);
         att.localPath = localPath;
@@ -131,9 +150,28 @@ async function cmdIssueAttachments(args: string[]): Promise<void> {
         });
       }
     }
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
     writeJson(attachments, values.pretty === true);
   } finally {
     ctx.cleanup();
   }
+}
+
+function sanitizeAttachmentFilename(raw: string): string | null {
+  if (raw.length === 0) {
+    return null;
+  }
+  if (raw.includes("\0")) {
+    return null;
+  }
+  const base = basename(raw);
+  if (base.length === 0 || base === "." || base === "..") {
+    return null;
+  }
+  if (base.startsWith(".")) {
+    return null;
+  }
+  if (base.includes("/") || base.includes("\\")) {
+    return null;
+  }
+  return base;
 }

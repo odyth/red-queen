@@ -13,7 +13,6 @@ export async function cmdStop(args: string[]): Promise<void> {
     },
     allowPositionals: false,
   });
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
   if (values.help === true) {
     process.stdout.write("redqueen stop — send SIGTERM to a running redqueen instance\n");
     return;
@@ -33,7 +32,6 @@ export async function cmdStop(args: string[]): Promise<void> {
     process.stdout.write("No running redqueen instance found.\n");
     return;
   }
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
   if (isProcessAlive(pid) === false) {
     removePidFile(pidPath);
     process.stdout.write(`Stale PID file — process ${String(pid)} is gone. Cleaned up.\n`);
@@ -53,7 +51,6 @@ export async function cmdStop(args: string[]): Promise<void> {
   const gracefulTimeoutMs = (config.pipeline.workerTimeout + 30) * 1000;
   const deadline = Date.now() + gracefulTimeoutMs;
   while (Date.now() < deadline) {
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
     if (isProcessAlive(pid) === false) {
       removePidFile(pidPath);
       process.stdout.write(`redqueen stopped (pid ${String(pid)}).\n`);

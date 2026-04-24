@@ -54,14 +54,12 @@ function cmdPipelineUpdate(args: string[]): Promise<void> {
     }
     update.prNumber = n;
   }
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
   if (values["clear-pr"] === true) {
     update.prNumber = null;
   }
   if (values.worktree !== undefined) {
     update.worktreePath = values.worktree;
   }
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
   if (values["clear-worktree"] === true) {
     update.worktreePath = null;
   }
@@ -79,7 +77,6 @@ function cmdPipelineUpdate(args: string[]): Promise<void> {
       message: `Updated pipeline state: ${Object.keys(update).join(", ") || "(no-op)"}`,
       metadata: update,
     });
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
     writeJson(updated, values.pretty === true);
   } finally {
     ctx.cleanup();
@@ -108,15 +105,14 @@ function cmdPipelineCleanup(args: string[]): Promise<void> {
     if (record === null) {
       throw new CliError(`pipeline cleanup: no pipeline record for ${issueId}`);
     }
+    const projectDir = ctx.config.project.directory;
     const worktreePath = record.worktreePath;
     if (worktreePath !== null && existsSync(worktreePath)) {
       try {
-        const gitArgs = ["worktree", "remove", worktreePath];
-        // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
-        if (values["keep-branch"] !== true) {
-          gitArgs.push("--force");
-        }
-        execFileSync("git", gitArgs, { stdio: ["ignore", "pipe", "pipe"] });
+        execFileSync("git", ["worktree", "remove", "--force", worktreePath], {
+          cwd: projectDir,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
         removed.push(worktreePath);
       } catch (err) {
         ctx.audit.log({
@@ -127,15 +123,39 @@ function cmdPipelineCleanup(args: string[]): Promise<void> {
         });
       }
     }
-    ctx.pipelineState.updateBranchInfo(issueId, { worktreePath: null });
+
+    const branchName = record.branchName;
+    const deletedBranch = values["keep-branch"] !== true && branchName !== null;
+    if (deletedBranch) {
+      try {
+        execFileSync("git", ["branch", "-D", branchName], {
+          cwd: projectDir,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+      } catch (err) {
+        ctx.audit.log({
+          component: "helper:pipeline",
+          issueId,
+          message: `Branch deletion failed for ${branchName}: ${err instanceof Error ? err.message : String(err)}`,
+          metadata: { branchName },
+        });
+      }
+    }
+
+    ctx.pipelineState.updateBranchInfo(issueId, {
+      worktreePath: null,
+      ...(deletedBranch ? { branchName: null } : {}),
+    });
     ctx.audit.log({
       component: "helper:pipeline",
       issueId,
-      message: `Cleaned up pipeline state (worktree cleared)`,
-      metadata: { removed },
+      message: `Cleaned up pipeline state (worktree cleared${deletedBranch ? ", branch deleted" : ""})`,
+      metadata: { removed, branchDeleted: deletedBranch ? branchName : null },
     });
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
-    writeJson({ ok: true, removed }, values.pretty === true);
+    writeJson(
+      { ok: true, removed, branchDeleted: deletedBranch ? branchName : null },
+      values.pretty === true,
+    );
     return Promise.resolve();
   } finally {
     ctx.cleanup();

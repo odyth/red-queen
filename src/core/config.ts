@@ -223,7 +223,6 @@ export function validatePhaseGraph(phases: PhaseDefinition[]): ValidationResult 
         continue;
       }
       referencedAsTarget.add(ref.value);
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
       if (phaseNames.has(ref.value) === false) {
         const suggestion = findClosestMatch(ref.value, allNames);
         const validationError: PhaseValidationError = {
@@ -251,7 +250,6 @@ export function validatePhaseGraph(phases: PhaseDefinition[]): ValidationResult 
   if (phases.length > 0) {
     const firstPhase = phases[0]?.name;
     for (const phase of phases) {
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
       if (phase.name !== firstPhase && referencedAsTarget.has(phase.name) === false) {
         warnings.push(`Phase "${phase.name}" is never referenced by any other phase (orphan)`);
       }

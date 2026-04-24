@@ -63,7 +63,6 @@ async function cmdPrCreate(args: string[]): Promise<void> {
       body,
       head,
       base,
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
       draft: values.draft === true,
     });
     const existing = ctx.pipelineState.get(issueId);
@@ -80,7 +79,6 @@ async function cmdPrCreate(args: string[]): Promise<void> {
       message: `Created PR #${String(pr.number)} from ${head} → ${base}`,
       metadata: { prNumber: pr.number, head, base, url: pr.url },
     });
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
     writeJson(pr, values.pretty === true);
   } finally {
     ctx.cleanup();
@@ -119,7 +117,6 @@ async function cmdPrChecks(args: string[]): Promise<void> {
 
     if (waitSeconds === 0) {
       const checks = await ctx.sourceControl.getChecks(prNumber);
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
       writeJson(checks, values.pretty === true);
       return;
     }
@@ -128,9 +125,7 @@ async function cmdPrChecks(args: string[]): Promise<void> {
     for (;;) {
       const checks = await ctx.sourceControl.getChecks(prNumber);
       const pending = checks.some((c) => c.conclusion === null || c.conclusion === "pending");
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
       if (pending === false || Date.now() >= deadline) {
-        // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
         writeJson(checks, values.pretty === true);
         return;
       }
@@ -182,7 +177,6 @@ async function cmdPrComments(args: string[]): Promise<void> {
   const ctx = loadCliContext();
   try {
     const comments = await ctx.sourceControl.getReviewComments(prNumber);
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
     writeJson(comments, values.pretty === true);
   } finally {
     ctx.cleanup();

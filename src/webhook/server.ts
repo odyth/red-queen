@@ -79,7 +79,6 @@ export class WebhookServer {
 
     const headers = normalizeHeaders(req.headers);
 
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
     if (handlers.validate(headers, body) === false) {
       this.deps.audit.log({
         component,

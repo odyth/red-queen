@@ -202,13 +202,11 @@ function addAllMatching(
 
 function addMainField(projectDir: string, out: string[]): void {
   const pkgPath = join(projectDir, "package.json");
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
   if (existsSync(pkgPath) === false) {
     return;
   }
   try {
     const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as { main?: string };
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
     if (typeof pkg.main === "string" && pkg.main.length > 0 && out.includes(pkg.main) === false) {
       out.push(pkg.main);
     }

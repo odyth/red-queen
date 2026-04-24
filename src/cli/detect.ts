@@ -102,7 +102,6 @@ export function suggestCommands(primary: LanguageKey, projectDir: string): Sugge
 
 function suggestNode(projectDir: string): SuggestedCommands {
   const pkgPath = join(projectDir, "package.json");
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
   if (existsSync(pkgPath) === false) {
     return { build: "npm run build", test: "npm test" };
   }
@@ -111,11 +110,9 @@ function suggestNode(projectDir: string): SuggestedCommands {
       scripts?: Record<string, string>;
     };
     const scripts = pkg.scripts ?? {};
-    const build = scripts.build !== undefined ? "npm run build" : "";
-    const test = scripts.test !== undefined ? "npm test" : "";
     return {
-      build: build !== "" ? build : "npm run build",
-      test: test !== "" ? test : "npm test",
+      build: scripts.build !== undefined ? "npm run build" : "",
+      test: scripts.test !== undefined ? "npm test" : "",
     };
   } catch {
     return { build: "npm run build", test: "npm test" };

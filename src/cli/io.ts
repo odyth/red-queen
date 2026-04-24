@@ -7,7 +7,6 @@ export async function readBodyFromStdinOrFlag(
   if (bodyFlag !== undefined) {
     return bodyFlag;
   }
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
   if (process.stdin.isTTY === true) {
     throw new CliError(`${fieldName} required — pass --body "<text>" or pipe via stdin`);
   }
@@ -25,7 +24,6 @@ export function writeJson(value: unknown, pretty = false): void {
 
 export function writeText(value: string): void {
   process.stdout.write(value);
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
   if (value.length === 0 || value.endsWith("\n") === false) {
     process.stdout.write("\n");
   }

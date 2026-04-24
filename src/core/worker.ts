@@ -113,7 +113,6 @@ export function runWorker(options: WorkerOptions): Promise<WorkerResult> {
         stdout += chunk;
         return;
       }
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
       if (stdoutTruncated === false) {
         stdoutTruncated = true;
         const headRoom = maxBufferBytes - stdout.length;
@@ -129,7 +128,6 @@ export function runWorker(options: WorkerOptions): Promise<WorkerResult> {
         stderr += chunk;
         return;
       }
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
       if (stderrTruncated === false) {
         stderrTruncated = true;
         const headRoom = maxBufferBytes - stderr.length;
@@ -195,7 +193,6 @@ export function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       const elapsed = Math.round((Date.now() - startTime) / 1000);
       const exitCode = code ?? -1;
 
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
       if (exitCode === 0 && killed === false) {
         const summary = extractSummary(stdout);
         resolve({ success: true, exitCode, elapsed, summary, error: null });

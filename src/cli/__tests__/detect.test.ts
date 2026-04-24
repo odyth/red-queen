@@ -53,8 +53,24 @@ describe("detectLanguages", () => {
 });
 
 describe("suggestCommands", () => {
-  it("falls back to npm run build / npm test for node with no scripts", () => {
+  it("returns empty for node with no build/test scripts", () => {
     writeFileSync(join(tmp, "package.json"), "{}");
+    const cmds = suggestCommands("node-ts", tmp);
+    expect(cmds.build).toBe("");
+    expect(cmds.test).toBe("");
+  });
+
+  it("uses npm run build / npm test when scripts are defined", () => {
+    writeFileSync(
+      join(tmp, "package.json"),
+      JSON.stringify({ scripts: { build: "tsc", test: "vitest" } }),
+    );
+    const cmds = suggestCommands("node-ts", tmp);
+    expect(cmds.build).toBe("npm run build");
+    expect(cmds.test).toBe("npm test");
+  });
+
+  it("falls back to defaults when package.json is missing", () => {
     const cmds = suggestCommands("node-ts", tmp);
     expect(cmds.build).toBe("npm run build");
     expect(cmds.test).toBe("npm test");

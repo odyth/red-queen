@@ -13,7 +13,6 @@ export function resolveTemplatesDir(): string {
 
 export function listTemplates(kind: TemplateKind): string[] {
   const dir = join(resolveTemplatesDir(), "references", kind);
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
   if (existsSync(dir) === false) {
     return [];
   }

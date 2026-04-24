@@ -102,7 +102,6 @@ export class DashboardServer {
       return;
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
     if (this.options.enableDashboardUi === false) {
       this.sendText(res, 404, "Not Found");
       return;

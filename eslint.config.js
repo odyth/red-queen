@@ -14,6 +14,11 @@ export default tseslint.config(
         tsconfigRootDir: import.meta.dirname,
       },
     },
+    rules: {
+      // CLAUDE.md forbids the ! operator outside !=; we use === false / === true
+      // as the explicit, positive form. Disable the lint that flags that pattern.
+      "@typescript-eslint/no-unnecessary-boolean-literal-compare": "off",
+    },
   },
   {
     ignores: ["dist/", "node_modules/"],

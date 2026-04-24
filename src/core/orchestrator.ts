@@ -60,7 +60,18 @@ export class RedQueen {
   constructor(deps: RedQueenDeps) {
     this.deps = deps;
     this.runWorker = deps.workerRunner ?? defaultRunWorker;
-    this.moduleResolver = deps.moduleResolver ?? createModuleResolver();
+    this.moduleResolver =
+      deps.moduleResolver ??
+      createModuleResolver({
+        onGitError: (message) => {
+          deps.audit.log({
+            component: "module-resolver",
+            issueId: null,
+            message,
+            metadata: {},
+          });
+        },
+      });
     this.sleep =
       deps.sleepFn ??
       ((ms) =>
@@ -149,7 +160,6 @@ export class RedQueen {
 
   private async mainLoop(): Promise<void> {
     const pollIntervalMs = this.deps.config.pipeline.pollInterval * 1000;
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
     while (this.shuttingDown === false) {
       this.deps.orchestratorState.setLastPoll(new Date(this.now()).toISOString());
       let task: Task | null;
@@ -289,7 +299,6 @@ export class RedQueen {
       this.deps.pipelineState.updatePhase(issueId, firstPhase.name);
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
     if (this.deps.queue.hasOpenTask(issueId, firstPhase.name) === false) {
       this.deps.queue.enqueue({
         type: firstPhase.name,
@@ -560,7 +569,6 @@ export class RedQueen {
     if (phaseDef === undefined || phaseDef.type === "human-gate") {
       return;
     }
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
     if (this.deps.queue.hasOpenTask(issueId, newPhase) === false) {
       this.deps.queue.enqueue({
         type: newPhase,
@@ -614,7 +622,6 @@ export class RedQueen {
     this.deps.pipelineState.updatePhase(issueId, nextPhaseName);
 
     if (nextPhase.type === "automated") {
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
       if (this.deps.queue.hasOpenTask(issueId, nextPhaseName) === false) {
         this.deps.queue.enqueue({
           type: nextPhaseName,
@@ -732,7 +739,6 @@ export class RedQueen {
       metadata: { taskId: task.id },
     });
     if (nextPhase.type === "automated") {
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
       if (this.deps.queue.hasOpenTask(issueId, phaseName) === false) {
         this.deps.queue.enqueue({
           type: phaseName,
@@ -784,7 +790,6 @@ export class RedQueen {
     const { dashboard: dashCfg, pipeline } = this.deps.config;
     const dashboardEnabled = dashCfg.enabled;
     const webhooksEnabled = pipeline.webhooks.enabled;
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
     if (dashboardEnabled === false && webhooksEnabled === false) {
       return;
     }
@@ -804,7 +809,6 @@ export class RedQueen {
   }
 
   private startWebhookIfEnabled(): void {
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
     if (this.deps.config.pipeline.webhooks.enabled === false) {
       return;
     }
@@ -859,7 +863,6 @@ export class RedQueen {
   }
 
   private uninstallSignalHandlers(): void {
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
     if (this.signalHandlersInstalled === false || this.sigHandler === null) {
       return;
     }

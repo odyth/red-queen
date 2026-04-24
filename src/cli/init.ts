@@ -11,7 +11,7 @@ import {
 import { createInterface } from "node:readline/promises";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { stringify as stringifyYaml } from "yaml";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { generateCodebaseMap, mergeRegeneratedMap } from "./codebase-map.js";
 import type { CodebaseMapInput } from "./codebase-map.js";
 import { detectLanguages, parseGitRemote, suggestCommands } from "./detect.js";
@@ -61,7 +61,6 @@ export async function cmdInit(args: string[]): Promise<void> {
     allowPositionals: false,
   });
 
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
   if (values.help === true) {
     process.stdout.write(
       "redqueen init — scaffold a new project (use --yes for non-interactive)\n",
@@ -71,14 +70,12 @@ export async function cmdInit(args: string[]): Promise<void> {
 
   const projectDir = process.cwd();
 
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
   if (values["map-only"] === true) {
     await regenerateMapOnly(projectDir);
     return;
   }
 
   const configPath = join(projectDir, "redqueen.yaml");
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
   if (existsSync(configPath) && values.force !== true) {
     throw new CliError(
       "redqueen.yaml already exists. Pass --force to overwrite, or --map-only to only regenerate the codebase map.",
@@ -90,7 +87,6 @@ export async function cmdInit(args: string[]): Promise<void> {
   process.stdout.write("Red Queen — project setup\n\n");
 
   const answers =
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
     values.yes === true
       ? await answerWithDefaults(projectDir)
       : await interactivePrompt(projectDir);
@@ -193,8 +189,8 @@ async function answerWithDefaults(projectDir: string): Promise<InitAnswers> {
   return Promise.resolve({
     primaryLanguage: primary,
     detectedLanguages: detected,
-    buildCommand: suggested.build,
-    testCommand: suggested.test,
+    buildCommand: suggested.build.length > 0 ? suggested.build : "npm run build",
+    testCommand: suggested.test.length > 0 ? suggested.test : "npm test",
     baseBranch,
     issueTrackerType: "github-issues",
     issueTrackerConfig: { owner, repo },
@@ -535,7 +531,6 @@ function writeAtomic(path: string, content: string): void {
 
 function copyTemplate(kind: TemplateKind, choice: string, destPath: string): void {
   const source = templatePath(kind, choice);
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
   if (existsSync(source) === false) {
     throw new CliError(`Template not found: ${kind}/${choice}.md`);
   }
@@ -555,7 +550,6 @@ function updateGitignore(projectDir: string): void {
     "",
   ].join("\n");
 
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
   if (existsSync(gitignorePath) === false) {
     writeFileSync(gitignorePath, block.trimStart(), { encoding: "utf8" });
     return;
@@ -569,20 +563,17 @@ function updateGitignore(projectDir: string): void {
 
 async function regenerateMapOnly(projectDir: string): Promise<void> {
   const configPath = join(projectDir, "redqueen.yaml");
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
   if (existsSync(configPath) === false) {
     throw new CliError("Cannot run --map-only without a redqueen.yaml in the current directory.");
   }
   const mapPath = resolve(projectDir, ".redqueen", "codebase-map.md");
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
   if (existsSync(mapPath) === false) {
     throw new CliError(".redqueen/codebase-map.md does not exist — run `redqueen init` first.");
   }
   const detected = detectLanguages(projectDir);
   const primary: LanguageKey = detected[0]?.key ?? "blank";
   const yaml = readFileSync(configPath, "utf8");
-  const build = findYamlScalar(yaml, "buildCommand") ?? "";
-  const test = findYamlScalar(yaml, "testCommand") ?? "";
+  const { buildCommand: build, testCommand: test } = readProjectCommands(yaml);
   const regenerated = generateCodebaseMap({
     projectDir,
     languages: detected,
@@ -598,11 +589,23 @@ async function regenerateMapOnly(projectDir: string): Promise<void> {
   return Promise.resolve();
 }
 
-function findYamlScalar(yaml: string, key: string): string | null {
-  const re = new RegExp(`(?:^|\\n)\\s*${key}:\\s*(.+)`, "m");
-  const match = re.exec(yaml);
-  if (match?.[1] === undefined) {
-    return null;
+function readProjectCommands(yaml: string): { buildCommand: string; testCommand: string } {
+  let parsed: unknown;
+  try {
+    parsed = parseYaml(yaml);
+  } catch {
+    return { buildCommand: "", testCommand: "" };
   }
-  return match[1].trim().replace(/^['"]|['"]$/g, "");
+  if (typeof parsed !== "object" || parsed === null) {
+    return { buildCommand: "", testCommand: "" };
+  }
+  const project = (parsed as { project?: unknown }).project;
+  if (typeof project !== "object" || project === null) {
+    return { buildCommand: "", testCommand: "" };
+  }
+  const p = project as { buildCommand?: unknown; testCommand?: unknown };
+  return {
+    buildCommand: typeof p.buildCommand === "string" ? p.buildCommand : "",
+    testCommand: typeof p.testCommand === "string" ? p.testCommand : "",
+  };
 }

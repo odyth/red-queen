@@ -10,7 +10,7 @@ import { SqliteTaskQueue } from "../core/queue.js";
 import { constructIssueTracker, constructSourceControl } from "./adapters.js";
 import { findConfigUpward, projectRootFromConfigPath } from "./config-discovery.js";
 import { CliError } from "./errors.js";
-import { isProcessAlive, readPidFile, removePidFile, resolvePidPath, writePidFile } from "./pid.js";
+import { removePidFile, resolvePidPath, tryClaimPidFile } from "./pid.js";
 import { resolveSkillsDir } from "./templates.js";
 
 export async function cmdStart(args: string[]): Promise<void> {
@@ -24,7 +24,6 @@ export async function cmdStart(args: string[]): Promise<void> {
     allowPositionals: false,
   });
 
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
   if (values.help === true) {
     process.stdout.write(
       "redqueen start — run the orchestrator (foreground). Flags: --verbose --quiet\n",
@@ -53,20 +52,32 @@ export async function cmdStart(args: string[]): Promise<void> {
 
   const pidPath = resolvePidPath(projectDir);
   mkdirSync(dirname(pidPath), { recursive: true });
-  const existingPid = readPidFile(pidPath);
-  if (existingPid !== null) {
-    if (isProcessAlive(existingPid)) {
+  let claim = tryClaimPidFile(pidPath);
+  if (claim.ok === false) {
+    if (claim.stale === false) {
       throw new CliError(
-        `redqueen is already running (pid ${String(existingPid)}). Stop it with 'redqueen stop' or remove ${pidPath} if it is stale.`,
+        `redqueen is already running (pid ${String(claim.existingPid)}). Stop it with 'redqueen stop' or remove ${pidPath} if it is stale.`,
       );
     }
     removePidFile(pidPath);
+    claim = tryClaimPidFile(pidPath);
+    if (claim.ok === false) {
+      throw new CliError(
+        `redqueen start raced with another start (pid ${String(claim.existingPid)}). Try again.`,
+      );
+    }
   }
 
   const dbPath = resolve(projectDir, ".redqueen", "redqueen.db");
   const auditPath = resolve(projectDir, ".redqueen", config.audit.logFile);
 
-  const database = new RedQueenDatabase(dbPath);
+  let database: RedQueenDatabase;
+  try {
+    database = new RedQueenDatabase(dbPath);
+  } catch (err) {
+    removePidFile(pidPath);
+    throw err;
+  }
   const queue = new SqliteTaskQueue(database.db);
   const pipelineState = new PipelineStateStore(database.db);
   const orchestratorState = new OrchestratorStateStore(database.db);
@@ -84,6 +95,7 @@ export async function cmdStart(args: string[]): Promise<void> {
   }
   if (itValidation.errors.length > 0) {
     database.close();
+    removePidFile(pidPath);
     throw new CliError(
       `issueTracker config invalid:\n${itValidation.errors.map((e) => `  - ${e}`).join("\n")}`,
     );
@@ -92,6 +104,7 @@ export async function cmdStart(args: string[]): Promise<void> {
     sourceControl.validateConfig(config.sourceControl.config);
   } catch (err) {
     database.close();
+    removePidFile(pidPath);
     throw new CliError(
       `sourceControl config invalid: ${err instanceof Error ? err.message : String(err)}`,
     );
@@ -102,9 +115,6 @@ export async function cmdStart(args: string[]): Promise<void> {
     process.stderr.write(`warning (phase mapping): ${warning}\n`);
   }
 
-  writePidFile(pidPath);
-
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
   if (values.quiet !== true) {
     printBanner({
       projectDir,

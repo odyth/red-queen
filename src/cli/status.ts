@@ -32,7 +32,6 @@ export async function cmdStatus(args: string[]): Promise<void> {
     },
     allowPositionals: false,
   });
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
   if (values.help === true) {
     process.stdout.write(
       "redqueen status — show orchestrator status (use --json for machine-readable output)\n",
@@ -80,7 +79,6 @@ export async function cmdStatus(args: string[]): Promise<void> {
     payload = emptyPayload("Red Queen has not been started yet.");
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
   if (values.json === true) {
     process.stdout.write(`${JSON.stringify(payload)}\n`);
     return;
@@ -96,7 +94,6 @@ async function tryHttp(
     const res = await fetch(`http://${host}:${String(port)}/api/status`, {
       signal: AbortSignal.timeout(1500),
     });
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
     if (res.ok === false) {
       return null;
     }

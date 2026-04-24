@@ -1,22 +1,59 @@
-import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
 import { resolve } from "node:path";
 
 export function resolvePidPath(projectDir: string): string {
   return resolve(projectDir, ".redqueen", "redqueen.pid");
 }
 
-export function writePidFile(path: string): void {
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, `${String(process.pid)}\n`, { encoding: "utf8", mode: 0o644 });
-  renameSync(tmp, path);
+export type ClaimPidResult = { ok: true } | { ok: false; existingPid: number; stale: boolean };
+
+/**
+ * Atomically claim a PID file. Fails if the file already exists.
+ * On conflict, reports the existing PID and whether the holder is alive.
+ * Caller decides whether to clear a stale file and retry.
+ */
+export function tryClaimPidFile(path: string): ClaimPidResult {
+  let fd: number;
+  try {
+    fd = openSync(path, "wx", 0o644);
+  } catch (err) {
+    if (
+      typeof err === "object" &&
+      err !== null &&
+      "code" in err &&
+      (err as NodeJS.ErrnoException).code === "EEXIST"
+    ) {
+      const existingPid = readPidFile(path);
+      if (existingPid === null) {
+        return { ok: false, existingPid: 0, stale: true };
+      }
+      return { ok: false, existingPid, stale: isProcessAlive(existingPid) === false };
+    }
+    throw err;
+  }
+  try {
+    writeSync(fd, `${String(process.pid)}\n`, 0, "utf8");
+  } finally {
+    closeSync(fd);
+  }
+  return { ok: true };
 }
 
 export function readPidFile(path: string): number | null {
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
-  if (existsSync(path) === false) {
-    return null;
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8").trim();
+  } catch (err) {
+    if (
+      typeof err === "object" &&
+      err !== null &&
+      "code" in err &&
+      (err as NodeJS.ErrnoException).code === "ENOENT"
+    ) {
+      return null;
+    }
+    throw err;
   }
-  const raw = readFileSync(path, "utf8").trim();
   const pid = Number.parseInt(raw, 10);
   if (Number.isNaN(pid) || pid <= 0) {
     return null;

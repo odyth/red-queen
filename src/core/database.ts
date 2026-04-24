@@ -79,7 +79,6 @@ export class RedQueenDatabase {
       this.db.exec("ALTER TABLE pipeline_state ADD COLUMN worktree_path TEXT");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
       if (msg.includes("duplicate column") === false) {
         throw err;
       }
