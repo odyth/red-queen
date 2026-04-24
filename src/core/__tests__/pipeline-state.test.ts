@@ -129,6 +129,42 @@ describe("PipelineStateStore", () => {
   it("update returns false for nonexistent issue", () => {
     expect(store.updatePhase("nonexistent", "coding")).toBe(false);
   });
+
+  it("updateBranchInfo applies partial updates atomically", () => {
+    store.create("PROJ-1");
+    const updated = store.updateBranchInfo("PROJ-1", {
+      branchName: "feature/PROJ-1",
+      prNumber: 42,
+    });
+    expect(updated.branchName).toBe("feature/PROJ-1");
+    expect(updated.prNumber).toBe(42);
+    expect(updated.worktreePath).toBeNull();
+
+    const withWorktree = store.updateBranchInfo("PROJ-1", {
+      worktreePath: "/tmp/worktree",
+    });
+    expect(withWorktree.branchName).toBe("feature/PROJ-1");
+    expect(withWorktree.prNumber).toBe(42);
+    expect(withWorktree.worktreePath).toBe("/tmp/worktree");
+  });
+
+  it("updateBranchInfo clears fields when null is explicitly set", () => {
+    store.create("PROJ-1");
+    store.updateBranchInfo("PROJ-1", { prNumber: 1, worktreePath: "/tmp/w" });
+    const cleared = store.updateBranchInfo("PROJ-1", { prNumber: null, worktreePath: null });
+    expect(cleared.prNumber).toBeNull();
+    expect(cleared.worktreePath).toBeNull();
+  });
+
+  it("updateBranchInfo throws if record does not exist", () => {
+    expect(() => store.updateBranchInfo("nope", { prNumber: 1 })).toThrow(/no pipeline record/);
+  });
+
+  it("updateBranchInfo with empty object is a no-op", () => {
+    const record = store.create("PROJ-1");
+    const updated = store.updateBranchInfo("PROJ-1", {});
+    expect(updated.issueId).toBe(record.issueId);
+  });
 });
 
 describe("OrchestratorStateStore", () => {

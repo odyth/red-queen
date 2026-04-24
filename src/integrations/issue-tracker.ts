@@ -13,6 +13,15 @@ export interface Issue {
   updatedAt: string;
 }
 
+export interface Attachment {
+  id: string;
+  filename: string;
+  contentType: string;
+  sizeBytes: number;
+  url: string;
+  localPath: string | null;
+}
+
 export interface IssueTracker {
   // Issue lifecycle
   getIssue(issueId: string): Promise<Issue>;
@@ -33,6 +42,10 @@ export interface IssueTracker {
   // Comments
   addComment(issueId: string, body: string): Promise<void>;
   getComments(issueId: string): Promise<Comment[]>;
+
+  // Attachments
+  listAttachments(issueId: string): Promise<Attachment[]>;
+  downloadAttachment(attachment: Attachment, destPath: string): Promise<void>;
 
   // Status transitions
   transitionTo(issueId: string, status: string): Promise<void>;

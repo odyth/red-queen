@@ -1,0 +1,167 @@
+import { mkdirSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { parseArgs } from "node:util";
+import { DualWriteAuditLogger } from "../core/audit.js";
+import { buildPhaseGraph, loadConfig, validatePhaseGraph } from "../core/config.js";
+import { RedQueenDatabase } from "../core/database.js";
+import { RedQueen } from "../core/orchestrator.js";
+import { OrchestratorStateStore, PipelineStateStore } from "../core/pipeline-state.js";
+import { SqliteTaskQueue } from "../core/queue.js";
+import { constructIssueTracker, constructSourceControl } from "./adapters.js";
+import { findConfigUpward, projectRootFromConfigPath } from "./config-discovery.js";
+import { CliError } from "./errors.js";
+import { isProcessAlive, readPidFile, removePidFile, resolvePidPath, writePidFile } from "./pid.js";
+import { resolveSkillsDir } from "./templates.js";
+
+export async function cmdStart(args: string[]): Promise<void> {
+  const { values } = parseArgs({
+    args,
+    options: {
+      verbose: { type: "boolean", default: false },
+      quiet: { type: "boolean", default: false },
+      help: { type: "boolean", short: "h", default: false },
+    },
+    allowPositionals: false,
+  });
+
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
+  if (values.help === true) {
+    process.stdout.write(
+      "redqueen start — run the orchestrator (foreground). Flags: --verbose --quiet\n",
+    );
+    return;
+  }
+
+  const configPath = findConfigUpward(process.cwd());
+  if (configPath === null) {
+    throw new CliError(`redqueen.yaml not found (searched from ${process.cwd()} upward)`);
+  }
+  const projectRoot = projectRootFromConfigPath(configPath);
+  const config = loadConfig(configPath);
+  const projectDir = resolve(projectRoot, config.project.directory);
+
+  const phaseValidation = validatePhaseGraph(config.phases);
+  for (const warning of phaseValidation.warnings) {
+    process.stderr.write(`warning: ${warning}\n`);
+  }
+  if (phaseValidation.errors.length > 0) {
+    throw new CliError(
+      `Invalid phase configuration:\n${phaseValidation.errors.map((e) => `  - ${e}`).join("\n")}`,
+    );
+  }
+  const phaseGraph = buildPhaseGraph(config.phases);
+
+  const pidPath = resolvePidPath(projectDir);
+  mkdirSync(dirname(pidPath), { recursive: true });
+  const existingPid = readPidFile(pidPath);
+  if (existingPid !== null) {
+    if (isProcessAlive(existingPid)) {
+      throw new CliError(
+        `redqueen is already running (pid ${String(existingPid)}). Stop it with 'redqueen stop' or remove ${pidPath} if it is stale.`,
+      );
+    }
+    removePidFile(pidPath);
+  }
+
+  const dbPath = resolve(projectDir, ".redqueen", "redqueen.db");
+  const auditPath = resolve(projectDir, ".redqueen", config.audit.logFile);
+
+  const database = new RedQueenDatabase(dbPath);
+  const queue = new SqliteTaskQueue(database.db);
+  const pipelineState = new PipelineStateStore(database.db);
+  const orchestratorState = new OrchestratorStateStore(database.db);
+  const audit = new DualWriteAuditLogger(database.db, auditPath);
+
+  const issueTracker = constructIssueTracker(config.issueTracker.type, config.issueTracker.config);
+  const sourceControl = constructSourceControl(
+    config.sourceControl.type,
+    config.sourceControl.config,
+  );
+
+  const itValidation = issueTracker.validateConfig(config.issueTracker.config);
+  for (const warning of itValidation.warnings) {
+    process.stderr.write(`warning (issueTracker): ${warning}\n`);
+  }
+  if (itValidation.errors.length > 0) {
+    database.close();
+    throw new CliError(
+      `issueTracker config invalid:\n${itValidation.errors.map((e) => `  - ${e}`).join("\n")}`,
+    );
+  }
+  try {
+    sourceControl.validateConfig(config.sourceControl.config);
+  } catch (err) {
+    database.close();
+    throw new CliError(
+      `sourceControl config invalid: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  const phaseMapping = issueTracker.validatePhaseMapping(phaseGraph.getPhaseNames());
+  for (const warning of phaseMapping.warnings) {
+    process.stderr.write(`warning (phase mapping): ${warning}\n`);
+  }
+
+  writePidFile(pidPath);
+
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
+  if (values.quiet !== true) {
+    printBanner({
+      projectDir,
+      dbPath,
+      dashboard: {
+        host: config.dashboard.host,
+        port: config.dashboard.port,
+        enabled: config.dashboard.enabled,
+      },
+      webhooksEnabled: config.pipeline.webhooks.enabled,
+      pid: process.pid,
+    });
+  }
+
+  const configForRuntime = {
+    ...config,
+    project: { ...config.project, directory: projectDir },
+    audit: { ...config.audit, logFile: auditPath },
+  };
+
+  const rq = new RedQueen({
+    config: configForRuntime,
+    queue,
+    pipelineState,
+    orchestratorState,
+    audit,
+    phaseGraph,
+    issueTracker,
+    sourceControl,
+    builtInSkillsDir: resolveSkillsDir(),
+    installSignalHandlers: true,
+  });
+
+  try {
+    await rq.start();
+  } finally {
+    removePidFile(pidPath);
+    database.close();
+  }
+}
+
+interface BannerInput {
+  projectDir: string;
+  dbPath: string;
+  dashboard: { host: string; port: number; enabled: boolean };
+  webhooksEnabled: boolean;
+  pid: number;
+}
+
+function printBanner(input: BannerInput): void {
+  const dash = input.dashboard.enabled
+    ? `http://${input.dashboard.host}:${String(input.dashboard.port)}`
+    : "disabled";
+  process.stdout.write(`Red Queen v0.1.0\n`);
+  process.stdout.write(`  project:   ${input.projectDir}\n`);
+  process.stdout.write(`  database:  ${input.dbPath}\n`);
+  process.stdout.write(`  dashboard: ${dash}\n`);
+  process.stdout.write(`  webhooks:  ${input.webhooksEnabled ? "enabled" : "disabled"}\n`);
+  process.stdout.write(`  pid:       ${String(input.pid)}\n`);
+}

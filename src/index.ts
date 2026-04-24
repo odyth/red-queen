@@ -10,6 +10,7 @@ export type {
   OrchestratorStatus,
   OrchestratorState,
   SkillContext,
+  SkillModuleContext,
   PipelineEventSource,
   PipelineEventType,
   PipelineEvent,
@@ -19,7 +20,7 @@ export type {
 export { PhaseGraph } from "./core/types.js";
 
 // Config
-export type { RedQueenConfig } from "./core/config.js";
+export type { RedQueenConfig, ProjectModule } from "./core/config.js";
 export {
   loadConfig,
   parseConfig,
@@ -30,8 +31,14 @@ export {
 } from "./core/config.js";
 
 // Interfaces
-export type { Issue, IssueTracker } from "./integrations/issue-tracker.js";
-export type { CreatePROptions, PullRequest, SourceControl } from "./integrations/source-control.js";
+export type { Issue, IssueTracker, Attachment } from "./integrations/issue-tracker.js";
+export type {
+  CreatePROptions,
+  PullRequest,
+  SourceControl,
+  CheckStatus,
+  CheckConclusion,
+} from "./integrations/source-control.js";
 
 // Audit
 export type { AuditEntry, AuditFilter, AuditLogger } from "./core/audit.js";
@@ -60,7 +67,9 @@ export type { WorkerOptions, WorkerResult, HeartbeatInfo } from "./core/worker.j
 
 // Skill context
 export { buildSkillContext, renderSkillPrompt, resolveSkillPath } from "./core/skill-context.js";
-export type { SkillContextDeps } from "./core/skill-context.js";
+export type { SkillContextDeps, ModuleResolver } from "./core/skill-context.js";
+export { createModuleResolver } from "./core/module-resolver.js";
+export type { ResolveModuleOptions } from "./core/module-resolver.js";
 
 // Reconciler / Poller
 export { reconcile } from "./core/reconciler.js";

@@ -62,11 +62,27 @@ export class RedQueenDatabase {
     mkdirSync(dirname(filePath), { recursive: true });
     this.db = new Database(filePath);
     this.db.pragma("journal_mode = WAL");
+    this.db.pragma("synchronous = NORMAL");
     this.db.pragma("foreign_keys = ON");
     this.db.exec(SCHEMA_SQL);
+    this.runMigrations();
   }
 
   close(): void {
     this.db.close();
+  }
+
+  private runMigrations(): void {
+    // Phase 4: worktree_path added to pipeline_state.
+    // ALTER fails with a duplicate-column error on already-migrated DBs — swallow it.
+    try {
+      this.db.exec("ALTER TABLE pipeline_state ADD COLUMN worktree_path TEXT");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- CLAUDE.md: avoid ! operator
+      if (msg.includes("duplicate column") === false) {
+        throw err;
+      }
+    }
   }
 }

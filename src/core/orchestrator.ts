@@ -7,7 +7,9 @@ import type { OrchestratorStateStore, PipelineStateStore } from "./pipeline-stat
 import { Poller } from "./poller.js";
 import type { TaskQueue } from "./queue.js";
 import { reconcile } from "./reconciler.js";
+import { createModuleResolver } from "./module-resolver.js";
 import { buildSkillContext, renderSkillPrompt, resolveSkillPath } from "./skill-context.js";
+import type { ModuleResolver } from "./skill-context.js";
 import type { PhaseDefinition, PhaseGraph, Task } from "./types.js";
 import type { OrchestratorState } from "./types.js";
 import { resolveClaudeBin, runWorker as defaultRunWorker } from "./worker.js";
@@ -30,6 +32,7 @@ export interface RedQueenDeps {
   sourceControl: SourceControl;
   workerRunner?: WorkerRunner;
   builtInSkillsDir?: string;
+  moduleResolver?: ModuleResolver;
   now?: () => number;
   sleepFn?: (ms: number) => Promise<void>;
   installSignalHandlers?: boolean;
@@ -40,6 +43,7 @@ const TEMP_PREFIX = "rq-";
 export class RedQueen {
   private readonly deps: RedQueenDeps;
   private readonly runWorker: WorkerRunner;
+  private readonly moduleResolver: ModuleResolver;
   private readonly sleep: (ms: number) => Promise<void>;
   private dashboard: DashboardServer | null = null;
   private webhook: WebhookServer | null = null;
@@ -56,6 +60,7 @@ export class RedQueen {
   constructor(deps: RedQueenDeps) {
     this.deps = deps;
     this.runWorker = deps.workerRunner ?? defaultRunWorker;
+    this.moduleResolver = deps.moduleResolver ?? createModuleResolver();
     this.sleep =
       deps.sleepFn ??
       ((ms) =>
@@ -412,12 +417,27 @@ export class RedQueen {
       return;
     }
 
+    let issueType: string | null = null;
+    try {
+      const issue = await this.deps.issueTracker.getIssue(issueId);
+      issueType = issue.issueType;
+    } catch (err) {
+      this.deps.audit.log({
+        component: "orchestrator",
+        issueId,
+        message: `Could not resolve issue type for branch prefix: ${errorMessage(err)}`,
+        metadata: { taskId: task.id },
+      });
+    }
+
     const context = buildSkillContext({
       config: this.deps.config,
       phaseGraph: this.deps.phaseGraph,
       task,
       pipelineRecord,
       phaseName: phase.name,
+      issueType,
+      resolveModule: this.moduleResolver,
     });
     const promptBody = renderSkillPrompt(context, skillMarkdown);
 

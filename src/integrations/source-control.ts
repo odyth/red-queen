@@ -18,6 +18,14 @@ export interface PullRequest {
   reviewDecision: string | null;
 }
 
+export type CheckConclusion = "success" | "failure" | "pending" | "skipped" | "neutral";
+
+export interface CheckStatus {
+  name: string;
+  conclusion: CheckConclusion | null;
+  url: string | null;
+}
+
 export interface SourceControl {
   // Branch operations
   createBranch(name: string, from: string): Promise<void>;
@@ -35,6 +43,9 @@ export interface SourceControl {
   dismissStaleReviews(prNumber: number): Promise<void>;
   getReviewComments(prNumber: number): Promise<Comment[]>;
   replyToComment(prNumber: number, commentId: number, body: string): Promise<void>;
+
+  // CI checks
+  getChecks(prNumber: number): Promise<CheckStatus[]>;
 
   // Webhook handling
   validateWebhook(headers: Record<string, string>, body: string): boolean;

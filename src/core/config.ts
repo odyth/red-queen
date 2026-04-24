@@ -42,17 +42,28 @@ const DEFAULT_BRANCH_PREFIXES: Record<string, string> = {
 
 const ConfigSchema = z.object({
   issueTracker: z.object({
-    type: z.enum(["jira", "github-issues"]),
+    type: z.enum(["jira", "github-issues", "mock"]),
     config: z.record(z.string(), z.unknown()).default({}),
   }),
   sourceControl: z.object({
-    type: z.enum(["github"]),
+    type: z.enum(["github", "mock"]),
     config: z.record(z.string(), z.unknown()).default({}),
   }),
   project: z.object({
     buildCommand: z.string(),
     testCommand: z.string(),
     directory: z.string().default("."),
+    modules: z
+      .array(
+        z.object({
+          name: z.string().min(1),
+          paths: z.array(z.string().min(1)).min(1),
+          buildCommand: z.string().min(1),
+          testCommandTargeted: z.string().min(1).nullable().default(null),
+          testCommandFull: z.string().min(1).optional(),
+        }),
+      )
+      .optional(),
   }),
   // Zod v4 requires explicit outer .default() values for nested objects — the field-level
   // defaults only apply when the parent key is present. The duplication is intentional.
@@ -104,6 +115,8 @@ const ConfigSchema = z.object({
 });
 
 export type RedQueenConfig = z.infer<typeof ConfigSchema>;
+
+export type ProjectModule = NonNullable<RedQueenConfig["project"]["modules"]>[number];
 
 // --- Config loading ---
 

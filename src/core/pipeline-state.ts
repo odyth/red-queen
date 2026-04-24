@@ -83,6 +83,53 @@ export class PipelineStateStore {
     return result.changes > 0;
   }
 
+  updateBranchInfo(
+    issueId: string,
+    info: {
+      branchName?: string | null;
+      prNumber?: number | null;
+      worktreePath?: string | null;
+    },
+  ): PipelineRecord {
+    const existing = this.get(issueId);
+    if (existing === null) {
+      throw new Error(`Cannot update branch info: no pipeline record for issue ${issueId}`);
+    }
+
+    const sets: string[] = [];
+    const params: (string | number | null)[] = [];
+    if (Object.prototype.hasOwnProperty.call(info, "branchName")) {
+      sets.push("branch_name = ?");
+      params.push(info.branchName ?? null);
+    }
+    if (Object.prototype.hasOwnProperty.call(info, "prNumber")) {
+      sets.push("pr_number = ?");
+      params.push(info.prNumber ?? null);
+    }
+    if (Object.prototype.hasOwnProperty.call(info, "worktreePath")) {
+      sets.push("worktree_path = ?");
+      params.push(info.worktreePath ?? null);
+    }
+    if (sets.length === 0) {
+      return existing;
+    }
+
+    const now = new Date().toISOString();
+    sets.push("updated_at = ?");
+    params.push(now);
+    params.push(issueId);
+
+    this.db
+      .prepare(`UPDATE pipeline_state SET ${sets.join(", ")} WHERE issue_id = ?`)
+      .run(...params);
+
+    const updated = this.get(issueId);
+    if (updated === null) {
+      throw new Error(`Pipeline record for ${issueId} disappeared during updateBranchInfo`);
+    }
+    return updated;
+  }
+
   incrementReviewIterations(issueId: string): number {
     const now = new Date().toISOString();
     this.db

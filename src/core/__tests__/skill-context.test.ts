@@ -62,8 +62,73 @@ describe("buildSkillContext", () => {
     expect(context.testCommands).toBe("npm test");
     expect(context.repoOwner).toBe("acme");
     expect(context.repoName).toBe("app");
+    expect(context.baseBranch).toBe("origin/main");
+    expect(context.branchPrefix).toBe("feature/");
+    expect(context.module).toBeNull();
     expect(context.branchName).toBe("feature/PROJ-1");
     expect(context.specContent).toBe("spec body");
+    expect("adapterConfig" in context).toBe(false);
+  });
+
+  it("resolves branchPrefix from issueType with default fallback", () => {
+    const phaseGraph = buildPhaseGraph(DEFAULT_PHASES);
+    const config = makeTestConfig();
+    const bug = buildSkillContext({
+      config,
+      phaseGraph,
+      task: makeTask(),
+      pipelineRecord: makeRecord(),
+      phaseName: "coding",
+      issueType: "bug",
+    });
+    expect(bug.branchPrefix).toBe("bugfix/");
+
+    const unknown = buildSkillContext({
+      config,
+      phaseGraph,
+      task: makeTask(),
+      pipelineRecord: makeRecord(),
+      phaseName: "coding",
+      issueType: "something-unknown",
+    });
+    expect(unknown.branchPrefix).toBe("feature/");
+  });
+
+  it("calls the module resolver when project.modules is set", () => {
+    const phaseGraph = buildPhaseGraph(DEFAULT_PHASES);
+    const config = makeTestConfig({
+      project: {
+        buildCommand: "npm run build",
+        testCommand: "npm test",
+        directory: "/tmp/project",
+        modules: [
+          {
+            name: "web",
+            paths: ["src/web/**"],
+            buildCommand: "npm run build:web",
+            testCommandTargeted: "npm test:web",
+            testCommandFull: "npm test",
+          },
+        ],
+      },
+    });
+    const context = buildSkillContext({
+      config,
+      phaseGraph,
+      task: makeTask(),
+      pipelineRecord: makeRecord({ worktreePath: "/tmp/worktree" }),
+      phaseName: "coding",
+      resolveModule: () => ({
+        buildCommand: "npm run build:web",
+        testCommandTargeted: "npm test:web",
+        testCommandFull: "npm test",
+      }),
+    });
+    expect(context.module).toEqual({
+      buildCommand: "npm run build:web",
+      testCommandTargeted: "npm test:web",
+      testCommandFull: "npm test",
+    });
   });
 
   it("uses feedbackIterations for feedback phases", () => {

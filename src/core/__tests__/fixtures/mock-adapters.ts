@@ -1,6 +1,7 @@
 import type { Comment, PipelineEvent, ValidationResult } from "../../types.js";
-import type { Issue, IssueTracker } from "../../../integrations/issue-tracker.js";
+import type { Attachment, Issue, IssueTracker } from "../../../integrations/issue-tracker.js";
 import type {
+  CheckStatus,
   CreatePROptions,
   PullRequest,
   SourceControl,
@@ -77,6 +78,14 @@ export class MockIssueTracker implements IssueTracker {
 
   getComments(issueId: string): Promise<Comment[]> {
     return Promise.resolve(this.commentsById.get(issueId) ?? []);
+  }
+
+  listAttachments(): Promise<Attachment[]> {
+    return Promise.resolve([]);
+  }
+
+  downloadAttachment(): Promise<void> {
+    return Promise.resolve();
   }
 
   transitionTo(issueId: string, status: string): Promise<void> {
@@ -169,6 +178,10 @@ export class MockSourceControl implements SourceControl {
 
   replyToComment(): Promise<void> {
     return Promise.resolve();
+  }
+
+  getChecks(): Promise<CheckStatus[]> {
+    return Promise.resolve([]);
   }
 
   validateWebhook(): boolean {

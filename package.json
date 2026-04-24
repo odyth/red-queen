@@ -21,6 +21,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "postbuild": "node scripts/copy-assets.mjs",
     "dev": "tsc -p tsconfig.build.json --watch",
     "start": "node dist/cli/index.js",
     "lint": "eslint src/",
@@ -30,7 +31,7 @@
     "check": "tsc -p tsconfig.build.json && eslint src/ && prettier --check src/",
     "test": "vitest",
     "test:ci": "vitest --run --passWithNoTests",
-    "prepublishOnly": "npm run check"
+    "prepublishOnly": "npm run check && npm run build"
   },
   "keywords": [
     "ai",

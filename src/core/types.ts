@@ -134,6 +134,12 @@ export interface OrchestratorState {
 
 // --- Skill context ---
 
+export interface SkillModuleContext {
+  buildCommand: string;
+  testCommandTargeted: string | null;
+  testCommandFull: string | null;
+}
+
 export interface SkillContext {
   issueId: string;
   phaseName: string;
@@ -143,6 +149,9 @@ export interface SkillContext {
   testCommands: string;
   repoOwner: string;
   repoName: string;
+  baseBranch: string;
+  branchPrefix: string;
+  module: SkillModuleContext | null;
   branchName: string | null;
   prNumber: number | null;
   specContent: string | null;
@@ -151,7 +160,6 @@ export interface SkillContext {
   maxIterations: number;
   codebaseMapPath: string | null;
   projectDir: string;
-  adapterConfig: Record<string, unknown>;
 }
 
 // --- Events ---
