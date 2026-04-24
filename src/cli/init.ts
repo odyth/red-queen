@@ -31,6 +31,8 @@ const ALL_LANGUAGES: { key: LanguageKey; displayName: string }[] = [
   { key: "blank", displayName: "Blank (other / unspecified)" },
 ];
 
+type GitHubAuthKind = "pat" | "byo-app";
+
 interface InitAnswers {
   primaryLanguage: LanguageKey;
   detectedLanguages: LanguageDetection[];
@@ -41,6 +43,7 @@ interface InitAnswers {
   issueTrackerConfig: Record<string, unknown>;
   sourceControlType: "github";
   sourceControlConfig: Record<string, unknown>;
+  githubAuthKind: GitHubAuthKind;
   webhooksEnabled: boolean;
   webhookSecret: string | null;
   dashboardPort: number;
@@ -135,8 +138,18 @@ async function interactivePrompt(projectDir: string): Promise<InitAnswers> {
     const testCommand = await promptCommand(rl, "Test command", suggested.test);
     const baseBranch = await pickBaseBranch(rl, projectDir);
 
-    const { issueTrackerType, issueTrackerConfig } = await pickIssueTracker(rl, projectDir);
-    const { sourceControlType, sourceControlConfig } = await pickSourceControl(rl, projectDir);
+    const githubAuthKind = await pickGitHubAuthKind(rl);
+    const githubAuthBlock = buildGitHubAuthBlock(githubAuthKind);
+    const { issueTrackerType, issueTrackerConfig } = await pickIssueTracker(
+      rl,
+      projectDir,
+      githubAuthBlock,
+    );
+    const { sourceControlType, sourceControlConfig } = await pickSourceControl(
+      rl,
+      projectDir,
+      githubAuthBlock,
+    );
     const { webhooksEnabled, webhookSecret } = await pickWebhooks(rl);
     const dashboardPort = await pickDashboardPort(rl);
 
@@ -164,6 +177,7 @@ async function interactivePrompt(projectDir: string): Promise<InitAnswers> {
       issueTrackerConfig,
       sourceControlType,
       sourceControlConfig,
+      githubAuthKind,
       webhooksEnabled,
       webhookSecret,
       dashboardPort,
@@ -187,6 +201,7 @@ async function answerWithDefaults(projectDir: string): Promise<InitAnswers> {
   const owner = parsed?.owner ?? "";
   const repo = parsed?.repo ?? "";
 
+  const patAuth = buildGitHubAuthBlock("pat");
   return Promise.resolve({
     primaryLanguage: primary,
     detectedLanguages: detected,
@@ -197,14 +212,15 @@ async function answerWithDefaults(projectDir: string): Promise<InitAnswers> {
     issueTrackerConfig: {
       owner,
       repo,
-      auth: { type: "pat", token: "${GITHUB_PAT}" },
+      auth: patAuth,
     },
     sourceControlType: "github",
     sourceControlConfig: {
       owner,
       repo,
-      auth: { type: "pat", token: "${GITHUB_PAT}" },
+      auth: patAuth,
     },
+    githubAuthKind: "pat",
     webhooksEnabled: false,
     webhookSecret: null,
     dashboardPort: 4400,
@@ -342,6 +358,7 @@ function readGitRemote(projectDir: string): string | null {
 async function pickIssueTracker(
   rl: ReturnType<typeof createInterface>,
   projectDir: string,
+  githubAuthBlock: Record<string, unknown>,
 ): Promise<{
   issueTrackerType: "jira" | "github-issues";
   issueTrackerConfig: Record<string, unknown>;
@@ -362,7 +379,7 @@ async function pickIssueTracker(
       issueTrackerConfig: {
         owner: owner.trim().length > 0 ? owner.trim() : (parsed?.owner ?? ""),
         repo: repo.trim().length > 0 ? repo.trim() : (parsed?.repo ?? ""),
-        auth: { type: "pat", token: "${GITHUB_PAT}" },
+        auth: githubAuthBlock,
       },
     };
   }
@@ -400,6 +417,7 @@ async function pickIssueTracker(
 async function pickSourceControl(
   rl: ReturnType<typeof createInterface>,
   projectDir: string,
+  githubAuthBlock: Record<string, unknown>,
 ): Promise<{
   sourceControlType: "github";
   sourceControlConfig: Record<string, unknown>;
@@ -413,8 +431,28 @@ async function pickSourceControl(
     sourceControlConfig: {
       owner: owner.trim().length > 0 ? owner.trim() : (parsed?.owner ?? ""),
       repo: repo.trim().length > 0 ? repo.trim() : (parsed?.repo ?? ""),
-      auth: { type: "pat", token: "${GITHUB_PAT}" },
+      auth: githubAuthBlock,
     },
+  };
+}
+
+async function pickGitHubAuthKind(rl: ReturnType<typeof createInterface>): Promise<GitHubAuthKind> {
+  process.stdout.write("GitHub auth:\n");
+  process.stdout.write("  [1] personal access token (PAT) — simplest, runs as you\n");
+  process.stdout.write("  [2] bring-your-own GitHub App — bot identity, no seat consumed\n");
+  const resp = (await rl.question("Choice [1]: ")).trim();
+  return resp === "2" ? "byo-app" : "pat";
+}
+
+function buildGitHubAuthBlock(kind: GitHubAuthKind): Record<string, unknown> {
+  if (kind === "pat") {
+    return { type: "pat", token: "${GITHUB_PAT}" };
+  }
+  return {
+    type: "byo-app",
+    appId: "${GITHUB_APP_ID}",
+    installationId: "${GITHUB_APP_INSTALLATION_ID}",
+    privateKeyPath: "${GITHUB_APP_KEY_PATH}",
   };
 }
 
@@ -515,8 +553,13 @@ async function writeAllFiles(projectDir: string, answers: InitAnswers): Promise<
 function writeDotEnvScaffold(projectDir: string, answers: InitAnswers): void {
   const envPath = join(projectDir, ".env");
   const needed: string[] = [];
-  // Every init picks GitHub source control, so a GitHub PAT is always needed.
-  needed.push("GITHUB_PAT");
+  if (answers.githubAuthKind === "pat") {
+    needed.push("GITHUB_PAT");
+  } else {
+    needed.push("GITHUB_APP_ID");
+    needed.push("GITHUB_APP_INSTALLATION_ID");
+    needed.push("GITHUB_APP_KEY_PATH");
+  }
   if (answers.issueTrackerType === "jira") {
     needed.push("JIRA_TOKEN");
   }

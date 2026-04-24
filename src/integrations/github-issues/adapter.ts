@@ -3,6 +3,7 @@ import type { Comment, PipelineEvent, ValidationResult } from "../../core/types.
 import type { Attachment, Issue, IssueTracker } from "../issue-tracker.js";
 import { parseGitHubWebhookEvent, validateGitHubWebhook } from "../github/webhook.js";
 import type { GitHubAuthStrategy, GitHubIdentity } from "../github/auth.js";
+import { GitHubAuthConfigSchema } from "../github/auth/config.js";
 import type { GitHubClient } from "../github/client.js";
 import { ACTIVE_LABEL, colorFor, isPhaseLabel, phaseFromLabel, phaseLabel } from "./labels.js";
 import { findSpec, formatSpecBody } from "./spec-marker.js";
@@ -10,12 +11,7 @@ import { findSpec, formatSpecBody } from "./spec-marker.js";
 export const GitHubIssuesConfigSchema = z.object({
   owner: z.string().min(1),
   repo: z.string().min(1),
-  auth: z
-    .object({
-      type: z.literal("pat"),
-      token: z.string().min(1),
-    })
-    .optional(),
+  auth: GitHubAuthConfigSchema.optional(),
   webhookSecret: z.string().optional(),
 });
 

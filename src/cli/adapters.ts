@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
 import type { IssueTracker } from "../integrations/issue-tracker.js";
 import type { SourceControl } from "../integrations/source-control.js";
 import {
@@ -8,6 +10,8 @@ import {
   GitHubSourceControlAdapter,
   GitHubSourceControlConfigSchema,
 } from "../integrations/github/adapter.js";
+import type { GitHubAuthConfig } from "../integrations/github/auth/config.js";
+import { ByoAppAuthStrategy } from "../integrations/github/auth/byo-app-strategy.js";
 import { PatAuthStrategy } from "../integrations/github/auth/pat-strategy.js";
 import { GitHubClient } from "../integrations/github/client.js";
 import type { GitHubAuthStrategy } from "../integrations/github/auth.js";
@@ -29,10 +33,18 @@ export interface BuildAdaptersInput {
   sourceControlConfig: Record<string, unknown>;
 }
 
+export interface BuildAdaptersOptions {
+  /** Base directory for resolving relative paths (e.g. `auth.privateKeyPath`). */
+  configDir?: string;
+}
+
 /**
  * Builds both adapters together, sharing one GitHub client when both are GitHub.
  */
-export function buildAdapterPair(input: BuildAdaptersInput): AdapterPair {
+export function buildAdapterPair(
+  input: BuildAdaptersInput,
+  options: BuildAdaptersOptions = {},
+): AdapterPair {
   // Both GitHub: share one client + strategy.
   if (input.issueTrackerType === "github-issues" && input.sourceControlType === "github") {
     const githubIssues = GitHubIssuesConfigSchema.parse(input.issueTrackerConfig);
@@ -42,20 +54,8 @@ export function buildAdapterPair(input: BuildAdaptersInput): AdapterPair {
         "github-issues and github source control must use the same owner/repo — they're paired.",
       );
     }
-    const issuesAuth = githubIssues.auth;
-    const scAuth = githubSc.auth;
-    const token = scAuth?.token ?? issuesAuth?.token;
-    if (token === undefined) {
-      throw new CliError(
-        "GitHub adapter missing auth.token — add ${GITHUB_PAT} to redqueen.yaml and set GITHUB_PAT in .env",
-      );
-    }
-    if (issuesAuth !== undefined && scAuth !== undefined && issuesAuth.token !== scAuth.token) {
-      throw new CliError(
-        "github-issues and github adapters have divergent auth tokens — they must match.",
-      );
-    }
-    const strategy: GitHubAuthStrategy = new PatAuthStrategy({ token });
+    const effectiveAuth = pickPairedAuth(githubIssues.auth, githubSc.auth);
+    const strategy: GitHubAuthStrategy = buildAuthStrategy(effectiveAuth, options.configDir);
     const client = new GitHubClient({ auth: strategy });
 
     const sourceControl = new GitHubSourceControlAdapter({
@@ -79,8 +79,16 @@ export function buildAdapterPair(input: BuildAdaptersInput): AdapterPair {
     };
   }
 
-  const issueTracker = constructIssueTracker(input.issueTrackerType, input.issueTrackerConfig);
-  const sourceControl = constructSourceControl(input.sourceControlType, input.sourceControlConfig);
+  const issueTracker = constructIssueTracker(
+    input.issueTrackerType,
+    input.issueTrackerConfig,
+    options,
+  );
+  const sourceControl = constructSourceControl(
+    input.sourceControlType,
+    input.sourceControlConfig,
+    options,
+  );
 
   const warmup = async (): Promise<void> => {
     const warmers: Promise<unknown>[] = [];
@@ -99,7 +107,11 @@ export function buildAdapterPair(input: BuildAdaptersInput): AdapterPair {
   return { issueTracker, sourceControl, warmup };
 }
 
-export function constructIssueTracker(type: string, config: Record<string, unknown>): IssueTracker {
+export function constructIssueTracker(
+  type: string,
+  config: Record<string, unknown>,
+  options: BuildAdaptersOptions = {},
+): IssueTracker {
   if (type === "mock") {
     return new MockIssueTrackerAdapter();
   }
@@ -114,13 +126,7 @@ export function constructIssueTracker(type: string, config: Record<string, unkno
   }
   if (type === "github-issues") {
     const parsed = GitHubIssuesConfigSchema.parse(config);
-    const token = parsed.auth?.token;
-    if (token === undefined) {
-      throw new CliError(
-        "github-issues adapter requires auth.token — add ${GITHUB_PAT} to redqueen.yaml",
-      );
-    }
-    const strategy = new PatAuthStrategy({ token });
+    const strategy = buildAuthStrategy(parsed.auth, options.configDir);
     const client = new GitHubClient({ auth: strategy });
     return new GitHubIssuesAdapter({
       client,
@@ -135,19 +141,14 @@ export function constructIssueTracker(type: string, config: Record<string, unkno
 export function constructSourceControl(
   type: string,
   config: Record<string, unknown>,
+  options: BuildAdaptersOptions = {},
 ): SourceControl {
   if (type === "mock") {
     return new MockSourceControlAdapter();
   }
   if (type === "github") {
     const parsed = GitHubSourceControlConfigSchema.parse(config);
-    const token = parsed.auth?.token;
-    if (token === undefined) {
-      throw new CliError(
-        "github sourceControl requires auth.token — add ${GITHUB_PAT} to redqueen.yaml",
-      );
-    }
-    const strategy = new PatAuthStrategy({ token });
+    const strategy = buildAuthStrategy(parsed.auth, options.configDir);
     const client = new GitHubClient({ auth: strategy });
     return new GitHubSourceControlAdapter({
       client,
@@ -157,4 +158,75 @@ export function constructSourceControl(
     });
   }
   throw new CliError(`Unknown sourceControl type: ${type}`);
+}
+
+function buildAuthStrategy(
+  auth: GitHubAuthConfig | undefined,
+  configDir: string | undefined,
+): GitHubAuthStrategy {
+  if (auth === undefined) {
+    throw new CliError(
+      "GitHub adapter missing auth — add `auth: { type: pat, token: ${GITHUB_PAT} }` or `auth: { type: byo-app, ... }` to redqueen.yaml",
+    );
+  }
+  if (auth.type === "pat") {
+    return new PatAuthStrategy({ token: auth.token });
+  }
+  // byo-app
+  const pem = readPrivateKeyPem(auth.privateKeyPath, configDir);
+  return new ByoAppAuthStrategy({
+    appId: auth.appId,
+    installationId: auth.installationId,
+    privateKeyPem: pem,
+  });
+}
+
+function readPrivateKeyPem(path: string, configDir: string | undefined): string {
+  const resolvedPath = isAbsolute(path) ? path : resolve(configDir ?? process.cwd(), path);
+  try {
+    return readFileSync(resolvedPath, "utf8");
+  } catch (err) {
+    throw new CliError(
+      `GitHub App private key not readable at ${resolvedPath}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+function pickPairedAuth(
+  issuesAuth: GitHubAuthConfig | undefined,
+  scAuth: GitHubAuthConfig | undefined,
+): GitHubAuthConfig {
+  const effective = scAuth ?? issuesAuth;
+  if (effective === undefined) {
+    throw new CliError(
+      "GitHub adapter missing auth — add `auth: { type: pat, token: ${GITHUB_PAT} }` or `auth: { type: byo-app, ... }` to redqueen.yaml",
+    );
+  }
+  if (
+    issuesAuth !== undefined &&
+    scAuth !== undefined &&
+    authsMatch(issuesAuth, scAuth) === false
+  ) {
+    throw new CliError(
+      "github-issues and github adapters have divergent auth config — they must match.",
+    );
+  }
+  return effective;
+}
+
+function authsMatch(a: GitHubAuthConfig, b: GitHubAuthConfig): boolean {
+  if (a.type !== b.type) {
+    return false;
+  }
+  if (a.type === "pat" && b.type === "pat") {
+    return a.token === b.token;
+  }
+  if (a.type === "byo-app" && b.type === "byo-app") {
+    return (
+      a.appId === b.appId &&
+      a.installationId === b.installationId &&
+      a.privateKeyPath === b.privateKeyPath
+    );
+  }
+  return false;
 }

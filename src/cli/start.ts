@@ -88,12 +88,15 @@ export async function cmdStart(args: string[]): Promise<void> {
   const orchestratorState = new OrchestratorStateStore(database.db);
   const audit = new DualWriteAuditLogger(database.db, auditPath);
 
-  const adapterPair = buildAdapterPair({
-    issueTrackerType: config.issueTracker.type,
-    issueTrackerConfig: config.issueTracker.config,
-    sourceControlType: config.sourceControl.type,
-    sourceControlConfig: config.sourceControl.config,
-  });
+  const adapterPair = buildAdapterPair(
+    {
+      issueTrackerType: config.issueTracker.type,
+      issueTrackerConfig: config.issueTracker.config,
+      sourceControlType: config.sourceControl.type,
+      sourceControlConfig: config.sourceControl.config,
+    },
+    { configDir: dirname(configPath) },
+  );
   const { issueTracker, sourceControl } = adapterPair;
 
   const itValidation = issueTracker.validateConfig(config.issueTracker.config);

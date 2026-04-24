@@ -9,18 +9,14 @@ import type {
   SourceControl,
 } from "../source-control.js";
 import type { GitHubAuthStrategy, GitHubIdentity } from "./auth.js";
+import { GitHubAuthConfigSchema } from "./auth/config.js";
 import type { GitHubClient } from "./client.js";
 import { parseGitHubWebhookEvent, validateGitHubWebhook } from "./webhook.js";
 
 export const GitHubSourceControlConfigSchema = z.object({
   owner: z.string().min(1),
   repo: z.string().min(1),
-  auth: z
-    .object({
-      type: z.literal("pat"),
-      token: z.string().min(1),
-    })
-    .optional(),
+  auth: GitHubAuthConfigSchema.optional(),
   webhookSecret: z.string().optional(),
 });
 

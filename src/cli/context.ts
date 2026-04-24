@@ -41,12 +41,15 @@ export function loadCliContext(): CliContext {
   const pipelineState = new PipelineStateStore(database.db);
   const audit = new DualWriteAuditLogger(database.db, auditPath);
 
-  const pair = buildAdapterPair({
-    issueTrackerType: config.issueTracker.type,
-    issueTrackerConfig: config.issueTracker.config,
-    sourceControlType: config.sourceControl.type,
-    sourceControlConfig: config.sourceControl.config,
-  });
+  const pair = buildAdapterPair(
+    {
+      issueTrackerType: config.issueTracker.type,
+      issueTrackerConfig: config.issueTracker.config,
+      sourceControlType: config.sourceControl.type,
+      sourceControlConfig: config.sourceControl.config,
+    },
+    { configDir: dirname(configPath) },
+  );
 
   return {
     config: { ...config, project: { ...config.project, directory: projectDir } },
