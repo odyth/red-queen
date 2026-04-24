@@ -4,10 +4,11 @@ import { parseArgs } from "node:util";
 import { DualWriteAuditLogger } from "../core/audit.js";
 import { buildPhaseGraph, loadConfig, validatePhaseGraph } from "../core/config.js";
 import { RedQueenDatabase } from "../core/database.js";
+import { loadDotEnv } from "../core/env.js";
 import { RedQueen } from "../core/orchestrator.js";
 import { OrchestratorStateStore, PipelineStateStore } from "../core/pipeline-state.js";
 import { SqliteTaskQueue } from "../core/queue.js";
-import { constructIssueTracker, constructSourceControl } from "./adapters.js";
+import { buildAdapterPair } from "./adapters.js";
 import { findConfigUpward, projectRootFromConfigPath } from "./config-discovery.js";
 import { CliError } from "./errors.js";
 import { removePidFile, resolvePidPath, tryClaimPidFile } from "./pid.js";
@@ -36,6 +37,10 @@ export async function cmdStart(args: string[]): Promise<void> {
     throw new CliError(`redqueen.yaml not found (searched from ${process.cwd()} upward)`);
   }
   const projectRoot = projectRootFromConfigPath(configPath);
+  const envResult = loadDotEnv(dirname(configPath));
+  for (const warning of envResult.warnings) {
+    process.stderr.write(`warning (.env): ${warning}\n`);
+  }
   const config = loadConfig(configPath);
   const projectDir = resolve(projectRoot, config.project.directory);
 
@@ -83,11 +88,13 @@ export async function cmdStart(args: string[]): Promise<void> {
   const orchestratorState = new OrchestratorStateStore(database.db);
   const audit = new DualWriteAuditLogger(database.db, auditPath);
 
-  const issueTracker = constructIssueTracker(config.issueTracker.type, config.issueTracker.config);
-  const sourceControl = constructSourceControl(
-    config.sourceControl.type,
-    config.sourceControl.config,
-  );
+  const adapterPair = buildAdapterPair({
+    issueTrackerType: config.issueTracker.type,
+    issueTrackerConfig: config.issueTracker.config,
+    sourceControlType: config.sourceControl.type,
+    sourceControlConfig: config.sourceControl.config,
+  });
+  const { issueTracker, sourceControl } = adapterPair;
 
   const itValidation = issueTracker.validateConfig(config.issueTracker.config);
   for (const warning of itValidation.warnings) {
@@ -113,6 +120,18 @@ export async function cmdStart(args: string[]): Promise<void> {
   const phaseMapping = issueTracker.validatePhaseMapping(phaseGraph.getPhaseNames());
   for (const warning of phaseMapping.warnings) {
     process.stderr.write(`warning (phase mapping): ${warning}\n`);
+  }
+
+  try {
+    await withTimeout(adapterPair.warmup(), 2000);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (isAuthError(message)) {
+      database.close();
+      removePidFile(pidPath);
+      throw new CliError(`adapter auth failed: ${message}`);
+    }
+    process.stderr.write(`warning (adapter reachability): ${message} — proceeding anyway\n`);
   }
 
   if (values.quiet !== true) {
@@ -162,6 +181,34 @@ interface BannerInput {
   dashboard: { host: string; port: number; enabled: boolean };
   webhooksEnabled: boolean;
   pid: number;
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`timed out after ${String(ms)}ms`));
+    }, ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err: unknown) => {
+        clearTimeout(timer);
+        reject(err as Error);
+      },
+    );
+  });
+}
+
+function isAuthError(message: string): boolean {
+  const lowered = message.toLowerCase();
+  return (
+    lowered.includes("auth failed") ||
+    lowered.includes("authentication") ||
+    lowered.includes("401") ||
+    lowered.includes("403")
+  );
 }
 
 function printBanner(input: BannerInput): void {

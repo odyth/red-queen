@@ -44,11 +44,24 @@ describe("cmdInit --yes", () => {
     expect(gitignore).toContain(".redqueen/worktrees/");
 
     const yaml = readFileSync(join(tmp, "redqueen.yaml"), "utf8");
-    // Must load cleanly.
-    const config = parseConfig(yaml);
-    expect(config.project.buildCommand).toBe("npm run build");
-    expect(config.project.testCommand).toBe("npm test");
-    expect(config.pipeline.baseBranch).toMatch(/^origin\//);
+    // The generated yaml references ${GITHUB_PAT}; set it so parseConfig
+    // can interpolate cleanly.
+    process.env.GITHUB_PAT = "test-pat";
+    try {
+      const config = parseConfig(yaml);
+      expect(config.project.buildCommand).toBe("npm run build");
+      expect(config.project.testCommand).toBe("npm test");
+      expect(config.pipeline.baseBranch).toMatch(/^origin\//);
+    } finally {
+      delete process.env.GITHUB_PAT;
+    }
+
+    // .env file should be scaffolded with the GITHUB_PAT key.
+    const envContent = readFileSync(join(tmp, ".env"), "utf8");
+    expect(envContent).toContain("GITHUB_PAT=");
+
+    // .gitignore must include .env.
+    expect(gitignore).toContain(".env");
   });
 
   it("refuses to run twice without --force", async () => {

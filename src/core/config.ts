@@ -120,14 +120,48 @@ export type ProjectModule = NonNullable<RedQueenConfig["project"]["modules"]>[nu
 
 // --- Config loading ---
 
+export class ConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ConfigError";
+  }
+}
+
+const ENV_VAR_RE = /\$\{([A-Z_][A-Z0-9_]*)\}/g;
+
+export function interpolateEnv(
+  raw: string,
+  env: Record<string, string | undefined> = process.env,
+): string {
+  const unresolved: string[] = [];
+  const replaced = raw.replace(ENV_VAR_RE, (_match, name: string) => {
+    const value = env[name];
+    if (value === undefined) {
+      unresolved.push(name);
+      return "";
+    }
+    return value;
+  });
+  if (unresolved.length > 0) {
+    const unique = [...new Set(unresolved)];
+    const list = unique.map((n) => `$${n}`).join(", ");
+    throw new ConfigError(
+      `Config references ${list} but the environment variable${unique.length === 1 ? " is" : "s are"} not set. Did you forget to source your .env file?`,
+    );
+  }
+  return replaced;
+}
+
 export function loadConfig(filePath: string): RedQueenConfig {
   const raw = readFileSync(filePath, "utf-8");
-  const parsed: unknown = parseYaml(raw);
+  const interpolated = interpolateEnv(raw);
+  const parsed: unknown = parseYaml(interpolated);
   return ConfigSchema.parse(parsed);
 }
 
 export function parseConfig(yamlContent: string): RedQueenConfig {
-  const parsed: unknown = parseYaml(yamlContent);
+  const interpolated = interpolateEnv(yamlContent);
+  const parsed: unknown = parseYaml(interpolated);
   return ConfigSchema.parse(parsed);
 }
 

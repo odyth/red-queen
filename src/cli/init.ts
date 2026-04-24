@@ -96,12 +96,13 @@ export async function cmdInit(args: string[]): Promise<void> {
   process.stdout.write("\n");
   process.stdout.write("Setup complete.\n");
   process.stdout.write("  - redqueen.yaml         (edit to tune pipeline / adapter config)\n");
+  process.stdout.write("  - .env                  (fill in your tokens — gitignored)\n");
   process.stdout.write("  - .redqueen/codebase-map.md  (edit the 'Key Notes' section)\n");
   process.stdout.write(
     "  - .redqueen/references/      (coding standards + checklist + spec template)\n",
   );
   process.stdout.write("\n");
-  process.stdout.write("Next: run `npx redqueen start`.\n");
+  process.stdout.write("Next: fill in .env, then run `npx redqueen start`.\n");
   process.stdout.write(
     "Tip: ask Claude Code to tailor .redqueen/references/ to this codebase — the templates are a starting point.\n",
   );
@@ -193,9 +194,17 @@ async function answerWithDefaults(projectDir: string): Promise<InitAnswers> {
     testCommand: suggested.test.length > 0 ? suggested.test : "npm test",
     baseBranch,
     issueTrackerType: "github-issues",
-    issueTrackerConfig: { owner, repo },
+    issueTrackerConfig: {
+      owner,
+      repo,
+      auth: { type: "pat", token: "${GITHUB_PAT}" },
+    },
     sourceControlType: "github",
-    sourceControlConfig: { owner, repo },
+    sourceControlConfig: {
+      owner,
+      repo,
+      auth: { type: "pat", token: "${GITHUB_PAT}" },
+    },
     webhooksEnabled: false,
     webhookSecret: null,
     dashboardPort: 4400,
@@ -353,14 +362,38 @@ async function pickIssueTracker(
       issueTrackerConfig: {
         owner: owner.trim().length > 0 ? owner.trim() : (parsed?.owner ?? ""),
         repo: repo.trim().length > 0 ? repo.trim() : (parsed?.repo ?? ""),
+        auth: { type: "pat", token: "${GITHUB_PAT}" },
       },
     };
   }
+  const baseUrl = (await rl.question("Jira base URL (e.g. https://yourco.atlassian.net): ")).trim();
+  const email = (await rl.question("Jira account email: ")).trim();
   const cloudId = (await rl.question("Jira cloud ID: ")).trim();
   const projectKey = (await rl.question("Jira project key: ")).trim();
   return {
     issueTrackerType: "jira",
-    issueTrackerConfig: { cloudId, projectKey },
+    issueTrackerConfig: {
+      baseUrl,
+      email,
+      apiToken: "${JIRA_TOKEN}",
+      cloudId,
+      projectKey,
+      customFields: {
+        phase: "<CHANGE ME>",
+        spec: "<CHANGE ME>",
+      },
+      phaseMapping: {
+        "spec-writing": { optionId: "<CHANGE ME>" },
+        "spec-review": { optionId: "<CHANGE ME>" },
+        coding: { optionId: "<CHANGE ME>" },
+        "code-review": { optionId: "<CHANGE ME>" },
+        testing: { optionId: "<CHANGE ME>" },
+        "human-review": { optionId: "<CHANGE ME>" },
+        "spec-feedback": { optionId: "<CHANGE ME>" },
+        "code-feedback": { optionId: "<CHANGE ME>" },
+        blocked: { optionId: "<CHANGE ME>" },
+      },
+    },
   };
 }
 
@@ -380,6 +413,7 @@ async function pickSourceControl(
     sourceControlConfig: {
       owner: owner.trim().length > 0 ? owner.trim() : (parsed?.owner ?? ""),
       repo: repo.trim().length > 0 ? repo.trim() : (parsed?.repo ?? ""),
+      auth: { type: "pat", token: "${GITHUB_PAT}" },
     },
   };
 }
@@ -391,12 +425,11 @@ async function pickWebhooks(
   if (resp !== "y") {
     return { webhooksEnabled: false, webhookSecret: null };
   }
-  const secret = (
-    await rl.question('Webhook secret (leave blank for placeholder "<CHANGE ME>"): ')
-  ).trim();
+  // Secrets never live in the yaml file. Default to an env var ref; the user
+  // fills in the real value in .env.
   return {
     webhooksEnabled: true,
-    webhookSecret: secret.length > 0 ? secret : "<CHANGE ME>",
+    webhookSecret: "${REDQUEEN_WEBHOOK_SECRET}",
   };
 }
 
@@ -474,8 +507,45 @@ async function writeAllFiles(projectDir: string, answers: InitAnswers): Promise<
   copyTemplate("spec-template", answers.specTemplate, join(referencesDir, "spec-template.md"));
 
   updateGitignore(projectDir);
+  writeDotEnvScaffold(projectDir, answers);
 
   return Promise.resolve();
+}
+
+function writeDotEnvScaffold(projectDir: string, answers: InitAnswers): void {
+  const envPath = join(projectDir, ".env");
+  const needed: string[] = [];
+  // Every init picks GitHub source control, so a GitHub PAT is always needed.
+  needed.push("GITHUB_PAT");
+  if (answers.issueTrackerType === "jira") {
+    needed.push("JIRA_TOKEN");
+  }
+  if (answers.webhooksEnabled) {
+    needed.push("REDQUEEN_WEBHOOK_SECRET");
+  }
+
+  if (needed.length === 0) {
+    return;
+  }
+
+  const lines = [
+    "# Red Queen secrets — filled in by you, gitignored.",
+    "# Each key is referenced by redqueen.yaml as ${KEY}.",
+    "",
+    ...needed.map((key) => `${key}=`),
+    "",
+  ];
+
+  if (existsSync(envPath) === false) {
+    writeFileSync(envPath, lines.join("\n"), { encoding: "utf8" });
+    return;
+  }
+  const existing = readFileSync(envPath, "utf8");
+  const missing = needed.filter((key) => existing.includes(`${key}=`) === false);
+  if (missing.length === 0) {
+    return;
+  }
+  appendFileSync(envPath, `\n${missing.map((k) => `${k}=`).join("\n")}\n`);
 }
 
 function writeConfigFile(path: string, answers: InitAnswers): void {
@@ -542,6 +612,7 @@ function updateGitignore(projectDir: string): void {
   const block = [
     "",
     "# Red Queen",
+    ".env",
     ".redqueen/redqueen.db",
     ".redqueen/redqueen.db-*",
     ".redqueen/redqueen.pid",
@@ -555,7 +626,7 @@ function updateGitignore(projectDir: string): void {
     return;
   }
   const existing = readFileSync(gitignorePath, "utf8");
-  if (existing.includes(".redqueen/redqueen.db")) {
+  if (existing.includes(".redqueen/redqueen.db") && existing.includes(".env")) {
     return;
   }
   appendFileSync(gitignorePath, block);
