@@ -40,10 +40,11 @@ describe("validateGitHubWebhook", () => {
 describe("parseGitHubWebhookEvent", () => {
   const identity: GitHubIdentity = { login: "bot", accountId: "1", isBot: true };
 
-  it("returns null for self-echo", () => {
+  it("returns null for self-echo (matches by stable accountId, not login)", () => {
     const payload = JSON.stringify({
+      // login renamed post-install; id is stable and still matches identity.accountId=1
       action: "created",
-      sender: { login: "bot" },
+      sender: { login: "bot-renamed", id: 1 },
       issue: { number: 5 },
     });
     const result = parseGitHubWebhookEvent(
@@ -57,7 +58,7 @@ describe("parseGitHubWebhookEvent", () => {
   it("returns pr-feedback for foreign issue_comment", () => {
     const payload = JSON.stringify({
       action: "created",
-      sender: { login: "human" },
+      sender: { login: "human", id: 2 },
       issue: { number: 42 },
     });
     const result = parseGitHubWebhookEvent(
@@ -72,7 +73,7 @@ describe("parseGitHubWebhookEvent", () => {
   it("returns pr-merged on closed+merged", () => {
     const payload = JSON.stringify({
       action: "closed",
-      sender: { login: "human" },
+      sender: { login: "human", id: 2 },
       pull_request: { merged: true, head: { ref: "feature/123" } },
     });
     const result = parseGitHubWebhookEvent(
@@ -87,7 +88,7 @@ describe("parseGitHubWebhookEvent", () => {
   it("returns phase-change on label add", () => {
     const payload = JSON.stringify({
       action: "labeled",
-      sender: { login: "human" },
+      sender: { login: "human", id: 2 },
       issue: { number: 7 },
       label: { name: "rq:phase:coding" },
     });
@@ -100,7 +101,7 @@ describe("parseGitHubWebhookEvent", () => {
   it("ignores non-rq labels", () => {
     const payload = JSON.stringify({
       action: "labeled",
-      sender: { login: "human" },
+      sender: { login: "human", id: 2 },
       issue: { number: 7 },
       label: { name: "bug" },
     });
@@ -109,7 +110,7 @@ describe("parseGitHubWebhookEvent", () => {
   });
 
   it("returns null for unsupported events", () => {
-    const payload = JSON.stringify({ action: "whatever", sender: { login: "x" } });
+    const payload = JSON.stringify({ action: "whatever", sender: { login: "x", id: 99 } });
     const result = parseGitHubWebhookEvent({ identity }, { "x-github-event": "push" }, payload);
     expect(result).toBeNull();
   });
@@ -117,7 +118,7 @@ describe("parseGitHubWebhookEvent", () => {
   it("parses Jira-style branch names", () => {
     const payload = JSON.stringify({
       action: "closed",
-      sender: { login: "human" },
+      sender: { login: "human", id: 2 },
       pull_request: { merged: true, head: { ref: "feature/RQ-42" } },
     });
     const result = parseGitHubWebhookEvent(

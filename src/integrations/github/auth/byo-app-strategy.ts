@@ -1,6 +1,6 @@
 import { createPrivateKey, type KeyObject } from "node:crypto";
 import { SignJWT } from "jose";
-import { AdapterError, AuthError } from "../../http/retry.js";
+import { AdapterError, AuthError, redactSecrets } from "../../http/retry.js";
 import type { GitHubAuthStrategy, GitHubIdentity } from "../auth.js";
 
 export interface ByoAppAuthStrategyOptions {
@@ -40,10 +40,10 @@ export class ByoAppAuthStrategy implements GitHubAuthStrategy {
   private identityPromise: Promise<GitHubIdentity> | null = null;
 
   constructor(options: ByoAppAuthStrategyOptions) {
-    if (options.appId.length === 0) {
+    if (options.appId.trim().length === 0) {
       throw new AdapterError("GitHub App ID is empty");
     }
-    if (options.installationId.length === 0) {
+    if (options.installationId.trim().length === 0) {
       throw new AdapterError("GitHub installation ID is empty");
     }
     if (options.privateKeyPem.includes("BEGIN") === false) {
@@ -139,7 +139,7 @@ export class ByoAppAuthStrategy implements GitHubAuthStrategy {
     if (response.ok === false) {
       const body = await response.text().catch(() => "");
       throw new AdapterError(
-        `GitHub installation token endpoint returned HTTP ${String(response.status)}: ${body.slice(0, 200)}`,
+        `GitHub installation token endpoint returned HTTP ${String(response.status)}: ${redactSecrets(body.slice(0, 200))}`,
       );
     }
     const data = (await response.json()) as { token?: unknown; expires_at?: unknown };
@@ -169,7 +169,7 @@ export class ByoAppAuthStrategy implements GitHubAuthStrategy {
     if (response.ok === false) {
       const body = await response.text().catch(() => "");
       throw new AdapterError(
-        `GitHub /app returned HTTP ${String(response.status)}: ${body.slice(0, 200)}`,
+        `GitHub /app returned HTTP ${String(response.status)}: ${redactSecrets(body.slice(0, 200))}`,
       );
     }
     const data = (await response.json()) as { slug?: unknown; id?: unknown };

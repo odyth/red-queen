@@ -3,6 +3,7 @@ import {
   AuthError,
   classifyHttpResponse,
   classifyNetworkError,
+  redactSecrets,
   withRetry,
 } from "../http/retry.js";
 import type { RetryClassification } from "../http/retry.js";
@@ -171,7 +172,7 @@ function classifyJiraError(error: unknown): RetryClassification {
     }
     if (classification.kind === "fatal") {
       throw new AdapterError(
-        `Jira ${classification.reason ?? ""}: ${truncate(error.bodyText, 300)}`.trim(),
+        `Jira ${classification.reason ?? ""}: ${redactSecrets(truncate(error.bodyText, 300))}`.trim(),
         { status: error.status, url: error.url, bodyText: error.bodyText },
       );
     }

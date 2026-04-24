@@ -115,7 +115,7 @@ export class GitHubIssuesAdapter implements IssueTracker {
       }
     }
     const issue = await this.getIssue(issueId);
-    const reporter = issue.assignee ?? (await this.fetchReporter(number));
+    const reporter = issue.reporter;
     if (reporter !== null) {
       await this.addComment(
         issueId,
@@ -248,6 +248,10 @@ export class GitHubIssuesAdapter implements IssueTracker {
 
   parseWebhookEvent(headers: Record<string, string>, body: string): PipelineEvent | null {
     if (this.identityCached === null) {
+      this.audit("GitHub webhook dropped: identity not warmed yet (warmIdentity hasn't resolved)", {
+        event: headers["x-github-event"] ?? null,
+        delivery: headers["x-github-delivery"] ?? null,
+      });
       return null;
     }
     return parseGitHubWebhookEvent({ identity: this.identityCached }, headers, body);
@@ -359,23 +363,6 @@ export class GitHubIssuesAdapter implements IssueTracker {
       throw err;
     }
   }
-
-  private async fetchReporter(issueNumber: number): Promise<string | null> {
-    try {
-      const response = await this.client.call(
-        `GET /repos/${this.owner}/${this.repo}/issues/${String(issueNumber)}`,
-        () =>
-          this.client.rest.issues.get({
-            owner: this.owner,
-            repo: this.repo,
-            issue_number: issueNumber,
-          }),
-      );
-      return response.data.user?.login ?? null;
-    } catch {
-      return null;
-    }
-  }
 }
 
 interface IssueRaw {
@@ -401,15 +388,14 @@ function toIssue(raw: IssueRaw): Issue {
     })
     .filter((n): n is string => n !== null);
   const phase = labelNames.map(phaseFromLabel).find((p): p is string => p !== null) ?? null;
-  const reporter = raw.user?.login ?? null;
-  const assignee = raw.assignee?.login ?? null;
   return {
     id: `#${String(raw.number)}`,
     key: `#${String(raw.number)}`,
     summary: raw.title,
     status: raw.state,
     phase,
-    assignee: reporter ?? assignee,
+    assignee: raw.assignee?.login ?? null,
+    reporter: raw.user?.login ?? null,
     issueType: "feature",
     labels: labelNames,
     createdAt: raw.created_at,

@@ -193,9 +193,9 @@ describe("GitHubSourceControlAdapter", () => {
 
   it("dismisses only bot reviews with CHANGES_REQUESTED", async () => {
     fake.setPaginate(() => [
-      { id: 1, state: "CHANGES_REQUESTED", user: { login: "bot" } },
-      { id: 2, state: "CHANGES_REQUESTED", user: { login: "alice" } },
-      { id: 3, state: "APPROVED", user: { login: "bot" } },
+      { id: 1, state: "CHANGES_REQUESTED", user: { login: "bot", id: 1 } },
+      { id: 2, state: "CHANGES_REQUESTED", user: { login: "alice", id: 2 } },
+      { id: 3, state: "APPROVED", user: { login: "bot", id: 1 } },
     ]);
     const dismissed: number[] = [];
     fake.add("dismissReview", (args) => {
@@ -207,7 +207,7 @@ describe("GitHubSourceControlAdapter", () => {
   });
 
   it("swallows 422 on dismiss", async () => {
-    fake.setPaginate(() => [{ id: 1, state: "CHANGES_REQUESTED", user: { login: "bot" } }]);
+    fake.setPaginate(() => [{ id: 1, state: "CHANGES_REQUESTED", user: { login: "bot", id: 1 } }]);
     fake.add("dismissReview", () => Object.assign(new Error("already"), { status: 422 }));
     await adapter.dismissStaleReviews(5);
   });
@@ -240,19 +240,33 @@ describe("GitHubSourceControlAdapter", () => {
     expect(checks.map((c) => c.conclusion)).toEqual(["success", "failure", null]);
   });
 
-  it("parseWebhookEvent returns null before identity warm-up", () => {
-    const result = adapter.parseWebhookEvent(
+  it("parseWebhookEvent returns null before identity warm-up and audits", () => {
+    const auditMessages: string[] = [];
+    const client = new GitHubClient({
+      auth: new StubAuth(),
+      octokit: fake.octokit as GitHubClient["octokit"],
+      sleep: () => Promise.resolve(),
+    });
+    const local = new GitHubSourceControlAdapter({
+      client,
+      owner: "me",
+      repo: "r",
+      webhookSecret: null,
+      audit: (msg) => auditMessages.push(msg),
+    });
+    const result = local.parseWebhookEvent(
       { "x-github-event": "issues" },
       JSON.stringify({ action: "labeled", issue: { number: 1 }, label: { name: "rq:phase:x" } }),
     );
     expect(result).toBeNull();
+    expect(auditMessages.some((m) => m.includes("identity not warmed"))).toBe(true);
   });
 
   it("parseWebhookEvent works after warmIdentity", async () => {
     await adapter.warmIdentity();
     const payload = JSON.stringify({
       action: "labeled",
-      sender: { login: "alice" },
+      sender: { login: "alice", id: 2 },
       issue: { number: 9 },
       label: { name: "rq:phase:coding" },
     });

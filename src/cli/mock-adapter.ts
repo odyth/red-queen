@@ -16,6 +16,7 @@ export class MockIssueTrackerAdapter implements IssueTracker {
       status: "Open",
       phase: null,
       assignee: null,
+      reporter: null,
       issueType: "feature",
       labels: [],
       createdAt: new Date().toISOString(),

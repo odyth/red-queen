@@ -1,8 +1,8 @@
 import { createWriteStream } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
-import { Readable } from "node:stream";
-import { finished } from "node:stream/promises";
+import { Readable, Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { z } from "zod";
 import type { Comment, PipelineEvent, ValidationResult } from "../../core/types.js";
 import type { Attachment, Issue, IssueTracker } from "../issue-tracker.js";
@@ -44,6 +44,12 @@ export interface JiraAdapterOptions {
   client: JiraClient;
   config: JiraAdapterConfig;
   audit?: (message: string, metadata: Record<string, unknown>) => void;
+  /**
+   * Maximum bytes to accept per attachment download. Defaults to 100MB. Streams
+   * are aborted once the cap is exceeded so a hostile (or corrupted) upload
+   * cannot fill disk.
+   */
+  maxAttachmentBytes?: number;
 }
 
 interface JiraIssueRaw {
@@ -53,6 +59,7 @@ interface JiraIssueRaw {
     summary?: string;
     status?: { name?: string };
     assignee?: { accountId?: string; displayName?: string } | null;
+    reporter?: { accountId?: string; displayName?: string } | null;
     issuetype?: { name?: string };
     labels?: string[];
     created?: string;
@@ -84,11 +91,14 @@ interface JiraTransitionRaw {
   to?: { name?: string };
 }
 
+const DEFAULT_MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
+
 export class JiraIssueTrackerAdapter implements IssueTracker {
   private readonly client: JiraClient;
   private readonly config: JiraAdapterConfig;
   private readonly phaseByOptionId: Map<string, string>;
   private readonly audit: (message: string, metadata: Record<string, unknown>) => void;
+  private readonly maxAttachmentBytes: number;
   private botAccountId: string | null;
   private transitionCache = new Map<string, JiraTransitionRaw[]>();
 
@@ -100,6 +110,7 @@ export class JiraIssueTrackerAdapter implements IssueTracker {
       this.phaseByOptionId.set(mapping.optionId, phaseName);
     }
     this.audit = options.audit ?? ((): void => undefined);
+    this.maxAttachmentBytes = options.maxAttachmentBytes ?? DEFAULT_MAX_ATTACHMENT_BYTES;
     this.botAccountId = options.config.botAccountId ?? null;
   }
 
@@ -126,6 +137,7 @@ export class JiraIssueTrackerAdapter implements IssueTracker {
           "summary",
           "status",
           "assignee",
+          "reporter",
           "issuetype",
           "labels",
           "created",
@@ -166,9 +178,8 @@ export class JiraIssueTrackerAdapter implements IssueTracker {
 
   async assignToHuman(issueId: string): Promise<void> {
     const issue = await this.getIssue(issueId);
-    const reporter = issue.assignee;
     await this.client.request("PUT", `/rest/api/3/issue/${encodeURIComponent(issueId)}/assignee`, {
-      accountId: reporter ?? null,
+      accountId: issue.reporter ?? null,
     });
   }
 
@@ -250,12 +261,37 @@ export class JiraIssueTrackerAdapter implements IssueTracker {
     if (bodyStream === null) {
       throw new Error("Jira attachment download: empty response body");
     }
-    const nodeReadable = Readable.fromWeb(
+    // Cap at whichever is smaller: the globally-configured max, or the declared
+    // attachment size with a small slack for metadata overhead.
+    const declaredCap =
+      attachment.sizeBytes > 0 ? attachment.sizeBytes + 1024 : Number.POSITIVE_INFINITY;
+    const cap = Math.min(this.maxAttachmentBytes, declaredCap);
+
+    let received = 0;
+    const cappedReadable = Readable.fromWeb(
       bodyStream as unknown as Parameters<typeof Readable.fromWeb>[0],
     );
+    const limiter = new Transform({
+      transform(chunk: Buffer, _enc, cb): void {
+        received += chunk.length;
+        if (received > cap) {
+          cb(
+            new Error(
+              `Jira attachment download exceeded size cap (${String(cap)} bytes, attachment id=${attachment.id})`,
+            ),
+          );
+          return;
+        }
+        cb(null, chunk);
+      },
+    });
     const writeStream = createWriteStream(destPath);
-    nodeReadable.pipe(writeStream);
-    await finished(writeStream);
+    try {
+      await pipeline(cappedReadable, limiter, writeStream);
+    } catch (err) {
+      await unlink(destPath).catch((): void => undefined);
+      throw err;
+    }
     attachment.localPath = destPath;
   }
 
@@ -282,6 +318,12 @@ export class JiraIssueTrackerAdapter implements IssueTracker {
 
   parseWebhookEvent(headers: Record<string, string>, body: string): PipelineEvent | null {
     if (this.botAccountId === null) {
+      this.audit(
+        "Jira webhook dropped: bot identity not warmed yet (warmIdentity hasn't resolved)",
+        {
+          event: headers["x-atlassian-webhook-identifier"] ?? null,
+        },
+      );
       return null;
     }
     return parseJiraWebhookEvent(
@@ -367,6 +409,7 @@ export class JiraIssueTrackerAdapter implements IssueTracker {
       status: raw.fields.status?.name ?? "unknown",
       phase,
       assignee: raw.fields.assignee?.accountId ?? null,
+      reporter: raw.fields.reporter?.accountId ?? null,
       issueType: raw.fields.issuetype?.name ?? "unknown",
       labels: raw.fields.labels ?? [],
       createdAt: raw.fields.created ?? "",

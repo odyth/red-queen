@@ -28,6 +28,7 @@ export interface GitHubSourceControlAdapterOptions {
   repo: string;
   webhookSecret: string | null;
   resolveIssueIdFromBranch?: (branch: string) => string | null;
+  audit?: (message: string, metadata: Record<string, unknown>) => void;
 }
 
 interface OctokitRestError extends Error {
@@ -40,6 +41,7 @@ export class GitHubSourceControlAdapter implements SourceControl {
   private readonly repo: string;
   private readonly webhookSecret: string | null;
   private readonly resolveIssueIdFromBranch: ((branch: string) => string | null) | undefined;
+  private readonly audit: (message: string, metadata: Record<string, unknown>) => void;
   private identityPromise: Promise<GitHubIdentity> | null = null;
   private identityCached: GitHubIdentity | null = null;
 
@@ -49,6 +51,7 @@ export class GitHubSourceControlAdapter implements SourceControl {
     this.repo = options.repo;
     this.webhookSecret = options.webhookSecret;
     this.resolveIssueIdFromBranch = options.resolveIssueIdFromBranch;
+    this.audit = options.audit ?? ((): void => undefined);
   }
 
   get auth(): GitHubAuthStrategy {
@@ -195,13 +198,13 @@ export class GitHubSourceControlAdapter implements SourceControl {
     })) as {
       id: number;
       state: string;
-      user: { login?: string } | null;
+      user: { login?: string; id?: number } | null;
     }[];
     for (const review of reviews) {
       if (review.state !== "CHANGES_REQUESTED") {
         continue;
       }
-      if (review.user?.login !== identity.login) {
+      if (review.user?.id === undefined || String(review.user.id) !== identity.accountId) {
         continue;
       }
       try {
@@ -298,6 +301,10 @@ export class GitHubSourceControlAdapter implements SourceControl {
 
   parseWebhookEvent(headers: Record<string, string>, body: string): PipelineEvent | null {
     if (this.identityCached === null) {
+      this.audit("GitHub webhook dropped: identity not warmed yet (warmIdentity hasn't resolved)", {
+        event: headers["x-github-event"] ?? null,
+        delivery: headers["x-github-delivery"] ?? null,
+      });
       return null;
     }
     return parseGitHubWebhookEvent(

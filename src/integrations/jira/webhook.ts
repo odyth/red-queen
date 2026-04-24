@@ -1,6 +1,11 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { PipelineEvent } from "../../core/types.js";
 
+// Jira Cloud webhooks do not natively sign payloads. For HMAC validation to work,
+// the delivery path must attach an `x-hub-signature` header (e.g. via Jira Automation
+// "Send web request" with a computed HMAC, or an intermediate gateway). If your
+// deployment can't provide that, omit `webhookSecret` and rely on network-level
+// controls for the webhook endpoint.
 export function validateJiraWebhook(
   secret: string | null,
   headers: Record<string, string>,
@@ -9,11 +14,10 @@ export function validateJiraWebhook(
   if (secret === null || secret.length === 0) {
     return false;
   }
-  const raw = headers["x-hub-signature"] ?? headers["x-atlassian-webhook-identifier"];
-  if (raw === undefined) {
+  const signature = headers["x-hub-signature"];
+  if (signature === undefined || signature.startsWith("sha256=") === false) {
     return false;
   }
-  const signature = raw.startsWith("sha256=") ? raw : `sha256=${raw}`;
   const expected = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
   try {
     const a = Buffer.from(signature);

@@ -54,4 +54,8 @@ describe("PatAuthStrategy", () => {
   it("throws on empty token", () => {
     expect(() => new PatAuthStrategy({ token: "" })).toThrow();
   });
+
+  it("throws on whitespace-only token", () => {
+    expect(() => new PatAuthStrategy({ token: "   \t\n" })).toThrow();
+  });
 });

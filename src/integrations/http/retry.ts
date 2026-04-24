@@ -163,7 +163,8 @@ export function classifyHttpResponse(
   }
   return {
     kind: "fatal",
-    reason: `HTTP ${String(status)} ${response.statusText ?? ""} ${bodyText ?? ""}`.trim(),
+    reason:
+      `HTTP ${String(status)} ${response.statusText ?? ""} ${redactSecrets(bodyText ?? "")}`.trim(),
   };
 }
 

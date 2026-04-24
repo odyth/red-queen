@@ -1,5 +1,5 @@
 import { Octokit } from "@octokit/rest";
-import { AdapterError, AuthError, withRetry } from "../http/retry.js";
+import { AdapterError, AuthError, redactSecrets, withRetry } from "../http/retry.js";
 import type { RetryClassification } from "../http/retry.js";
 import type { GitHubAuthStrategy } from "./auth.js";
 
@@ -210,10 +210,10 @@ function serializeBody(data: unknown): string {
     return "";
   }
   if (typeof data === "string") {
-    return data.slice(0, 300);
+    return redactSecrets(data.slice(0, 300));
   }
   try {
-    return JSON.stringify(data).slice(0, 300);
+    return redactSecrets(JSON.stringify(data).slice(0, 300));
   } catch {
     return "<unserializable>";
   }

@@ -1,4 +1,7 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { JiraClient } from "../client.js";
 import { JiraIssueTrackerAdapter } from "../adapter.js";
 import type { JiraAdapterConfig } from "../adapter.js";
@@ -265,5 +268,87 @@ describe("JiraIssueTrackerAdapter", () => {
     const result = h.adapter.parseWebhookEvent({}, body);
     expect(result?.type).toBe("phase-change");
     expect(result?.payload.phase).toBe("coding");
+  });
+});
+
+describe("JiraIssueTrackerAdapter downloadAttachment", () => {
+  let tmpDir: string;
+  let originalFetch: typeof fetch;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "rq-jira-attach-"));
+    originalFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function buildAdapter(maxAttachmentBytes?: number): JiraIssueTrackerAdapter {
+    const client = new JiraClient({
+      baseUrl: "https://example.atlassian.net",
+      email: "a@b.com",
+      apiToken: "x",
+      fetchImpl: (() => Promise.reject(new Error("not used"))) as typeof fetch,
+      sleep: () => Promise.resolve(),
+    });
+    const config: JiraAdapterConfig = {
+      baseUrl: "https://example.atlassian.net",
+      email: "a@b.com",
+      apiToken: "x",
+      projectKey: "RQ",
+      customFields: { phase: "customfield_10158", spec: "customfield_10157" },
+      phaseMapping: { coding: { optionId: "10056" } },
+      statusTransitions: {},
+      botAccountId: "bot-1",
+    };
+    return new JiraIssueTrackerAdapter({
+      client,
+      config,
+      ...(maxAttachmentBytes !== undefined ? { maxAttachmentBytes } : {}),
+    });
+  }
+
+  it("writes file within cap", async () => {
+    const payload = Buffer.from("hello world");
+    globalThis.fetch = (() =>
+      Promise.resolve(new Response(payload, { status: 200 }))) as typeof fetch;
+    const adapter = buildAdapter(1024);
+    const destPath = join(tmpDir, "file.bin");
+    await adapter.downloadAttachment(
+      {
+        id: "a1",
+        filename: "file.bin",
+        contentType: "application/octet-stream",
+        sizeBytes: payload.length,
+        url: "https://example.com/att",
+        localPath: null,
+      },
+      destPath,
+    );
+    expect(readFileSync(destPath).toString()).toBe("hello world");
+  });
+
+  it("rejects and cleans up when stream exceeds cap", async () => {
+    const payload = Buffer.alloc(1024, 1);
+    globalThis.fetch = (() =>
+      Promise.resolve(new Response(payload, { status: 200 }))) as typeof fetch;
+    const adapter = buildAdapter(64);
+    const destPath = join(tmpDir, "huge.bin");
+    await expect(
+      adapter.downloadAttachment(
+        {
+          id: "a2",
+          filename: "huge.bin",
+          contentType: "application/octet-stream",
+          sizeBytes: 0,
+          url: "https://example.com/huge",
+          localPath: null,
+        },
+        destPath,
+      ),
+    ).rejects.toThrow(/size cap/);
+    expect(() => readFileSync(destPath)).toThrow();
   });
 });

@@ -50,8 +50,8 @@ export function parseGitHubWebhookEvent(
     return null;
   }
 
-  const sender = extractNested(payload, ["sender", "login"]);
-  if (typeof sender === "string" && sender === context.identity.login) {
+  const senderId = extractNested(payload, ["sender", "id"]);
+  if (typeof senderId === "number" && String(senderId) === context.identity.accountId) {
     return null;
   }
 

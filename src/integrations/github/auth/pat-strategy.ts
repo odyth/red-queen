@@ -1,4 +1,4 @@
-import { AdapterError, AuthError } from "../../http/retry.js";
+import { AdapterError, AuthError, redactSecrets } from "../../http/retry.js";
 import type { GitHubAuthStrategy, GitHubIdentity } from "../auth.js";
 
 export interface PatAuthStrategyOptions {
@@ -16,7 +16,7 @@ export class PatAuthStrategy implements GitHubAuthStrategy {
   private identityPromise: Promise<GitHubIdentity> | null = null;
 
   constructor(options: PatAuthStrategyOptions) {
-    if (options.token.length === 0) {
+    if (options.token.trim().length === 0) {
       throw new AdapterError("GitHub PAT token is empty");
     }
     this.token = options.token;
@@ -51,7 +51,7 @@ export class PatAuthStrategy implements GitHubAuthStrategy {
     if (response.ok === false) {
       const body = await response.text().catch(() => "");
       throw new AdapterError(
-        `GitHub /user returned HTTP ${String(response.status)}: ${body.slice(0, 200)}`,
+        `GitHub /user returned HTTP ${String(response.status)}: ${redactSecrets(body.slice(0, 200))}`,
       );
     }
     const data = (await response.json()) as { login?: unknown; id?: unknown; type?: unknown };

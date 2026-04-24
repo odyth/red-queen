@@ -77,6 +77,28 @@ describe("ByoAppAuthStrategy", () => {
       ).toThrow(AdapterError);
     });
 
+    it("throws on whitespace-only appId", () => {
+      expect(
+        () =>
+          new ByoAppAuthStrategy({
+            appId: "   ",
+            installationId: "789",
+            privateKeyPem: pkcs1Pem,
+          }),
+      ).toThrow(AdapterError);
+    });
+
+    it("throws on whitespace-only installationId", () => {
+      expect(
+        () =>
+          new ByoAppAuthStrategy({
+            appId: "123",
+            installationId: "\t\n",
+            privateKeyPem: pkcs1Pem,
+          }),
+      ).toThrow(AdapterError);
+    });
+
     it("throws on non-PEM key", () => {
       expect(
         () =>

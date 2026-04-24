@@ -102,20 +102,21 @@ describe("GitHubIssuesAdapter", () => {
     });
   });
 
-  it("getIssue maps labels to phase", async () => {
+  it("getIssue maps labels to phase and keeps assignee/reporter distinct", async () => {
     fake.add("get", () => ({
       number: 5,
       title: "t",
       state: "open",
       labels: [{ name: "bug" }, { name: "rq:phase:coding" }],
-      assignee: null,
+      assignee: { login: "bob" },
       user: { login: "alice" },
       created_at: "2026-01-01",
       updated_at: "2026-01-02",
     }));
     const issue = await adapter.getIssue("#5");
     expect(issue.phase).toBe("coding");
-    expect(issue.assignee).toBe("alice");
+    expect(issue.assignee).toBe("bob");
+    expect(issue.reporter).toBe("alice");
     expect(issue.labels).toContain("bug");
   });
 
@@ -244,17 +245,31 @@ describe("GitHubIssuesAdapter", () => {
     expect(result.errors).toEqual([]);
   });
 
-  it("parseWebhookEvent drops events before warmIdentity", () => {
-    const result = adapter.parseWebhookEvent(
+  it("parseWebhookEvent drops events before warmIdentity and audits", () => {
+    const auditMessages: string[] = [];
+    const client = new GitHubClient({
+      auth: new StubAuth(),
+      octokit: fake.octokit as GitHubClient["octokit"],
+      sleep: () => Promise.resolve(),
+    });
+    const local = new GitHubIssuesAdapter({
+      client,
+      owner: "me",
+      repo: "r",
+      webhookSecret: null,
+      audit: (msg) => auditMessages.push(msg),
+    });
+    const result = local.parseWebhookEvent(
       { "x-github-event": "issues" },
       JSON.stringify({
         action: "labeled",
-        sender: { login: "alice" },
+        sender: { login: "alice", id: 2 },
         issue: { number: 1 },
         label: { name: "rq:phase:coding" },
       }),
     );
     expect(result).toBeNull();
+    expect(auditMessages.some((m) => m.includes("identity not warmed"))).toBe(true);
   });
 
   it("parseWebhookEvent works after warmIdentity", async () => {
@@ -263,7 +278,7 @@ describe("GitHubIssuesAdapter", () => {
       { "x-github-event": "issues" },
       JSON.stringify({
         action: "labeled",
-        sender: { login: "alice" },
+        sender: { login: "alice", id: 2 },
         issue: { number: 9 },
         label: { name: "rq:phase:coding" },
       }),

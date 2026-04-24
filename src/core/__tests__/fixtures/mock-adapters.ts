@@ -205,6 +205,7 @@ export function makeIssue(id: string, phase: string | null = null): Issue {
     status: "In Progress",
     phase,
     assignee: "ai",
+    reporter: null,
     issueType: "task",
     labels: [],
     createdAt: new Date().toISOString(),

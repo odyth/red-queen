@@ -7,6 +7,7 @@ export interface Issue {
   status: string;
   phase: string | null;
   assignee: string | null;
+  reporter: string | null;
   issueType: string;
   labels: string[];
   createdAt: string;
