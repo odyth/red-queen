@@ -1,0 +1,29 @@
+# Red Queen — GitHub Issues + GitHub source control, PAT auth.
+# Simplest possible setup. No Jira.
+
+issueTracker:
+  type: github-issues
+  config:
+    owner: my-org
+    repo: my-project
+    auth:
+      type: pat
+      token: ${GITHUB_PAT}
+    webhookSecret: ${GITHUB_WEBHOOK_SECRET}  # optional — only if webhooks enabled
+
+sourceControl:
+  type: github
+  config:
+    owner: my-org
+    repo: my-project
+    auth:
+      type: pat
+      token: ${GITHUB_PAT}
+    webhookSecret: ${GITHUB_WEBHOOK_SECRET}  # optional
+
+project:
+  buildCommand: npm run build
+  testCommand: npm test
+
+pipeline:
+  baseBranch: origin/main

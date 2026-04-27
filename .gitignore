@@ -34,6 +34,10 @@ Thumbs.db
 
 # Red Queen state files
 *.state.json
+.redqueen/redqueen.db*
+.redqueen/redqueen.pid
+.redqueen/worktrees/
+.redqueen/attachments/
 
 # User config with secrets
 config.local.json

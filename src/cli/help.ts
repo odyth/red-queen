@@ -64,7 +64,7 @@ export function printHelp(command?: string): void {
 }
 
 export function printVersion(): void {
-  process.stdout.write(`redqueen ${VERSION}\n`);
+  process.stdout.write(`redqueen ${VERSION} (preview — see https://github.com/odyth/red-queen)\n`);
 }
 
 export function getVersion(): string {

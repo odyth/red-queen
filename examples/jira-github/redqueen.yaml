@@ -1,0 +1,47 @@
+# Red Queen — Jira issue tracker + GitHub source control, BYO GitHub App auth.
+# Matches the prototype this project was extracted from.
+
+issueTracker:
+  type: jira
+  config:
+    baseUrl: https://yourco.atlassian.net
+    email: bot@yourco.com
+    apiToken: ${JIRA_TOKEN}
+    cloudId: a7fa29d9-xxxx-xxxx-xxxx-xxxxxxxxxxxx  # from /_edge/tenant_info
+    projectKey: PROJ
+    customFields:
+      phase: customfield_10158  # your "AI Phase" dropdown field ID
+      spec: customfield_10157   # your spec text field ID
+    phaseMapping:
+      spec-writing:  { optionId: "10054", label: "Prompt Writing" }
+      spec-review:   { optionId: "10055", label: "Prompt Review" }
+      coding:        { optionId: "10056", label: "Coding" }
+      code-review:   { optionId: "10057", label: "Code Review" }
+      testing:       { optionId: "10058", label: "Testing" }
+      human-review:  { optionId: "10059", label: "Human Review" }
+      spec-feedback: { optionId: "10060", label: "Addressing Feedback" }
+      code-feedback: { optionId: "10060", label: "Addressing Feedback" }
+      blocked:       { optionId: "10061", label: "Blocked" }
+    statusTransitions:
+      inProgress: "In Progress"
+      done: "Done"
+    webhookSecret: ${JIRA_WEBHOOK_SECRET}
+
+sourceControl:
+  type: github
+  config:
+    owner: my-org
+    repo: my-project
+    auth:
+      type: byo-app
+      appId: ${GITHUB_APP_ID}
+      installationId: ${GITHUB_APP_INSTALLATION_ID}
+      privateKeyPath: ./redqueen-app.private-key.pem
+    webhookSecret: ${GITHUB_WEBHOOK_SECRET}
+
+project:
+  buildCommand: dotnet build MyProject.sln
+  testCommand: dotnet test MyProject.sln
+
+pipeline:
+  baseBranch: origin/main
