@@ -40,79 +40,102 @@ const DEFAULT_BRANCH_PREFIXES: Record<string, string> = {
   default: "feature/",
 };
 
-const ConfigSchema = z.object({
-  issueTracker: z.object({
-    type: z.enum(["jira", "github-issues", "mock"]),
-    config: z.record(z.string(), z.unknown()).default({}),
-  }),
-  sourceControl: z.object({
-    type: z.enum(["github", "mock"]),
-    config: z.record(z.string(), z.unknown()).default({}),
-  }),
-  project: z.object({
-    buildCommand: z.string(),
-    testCommand: z.string(),
-    directory: z.string().default("."),
-    modules: z
-      .array(
-        z.object({
-          name: z.string().min(1),
-          paths: z.array(z.string().min(1)).min(1),
-          buildCommand: z.string().min(1),
-          testCommandTargeted: z.string().min(1).nullable().default(null),
-          testCommandFull: z.string().min(1).optional(),
-        }),
-      )
-      .optional(),
-  }),
-  // Zod v4 requires explicit outer .default() values for nested objects — the field-level
-  // defaults only apply when the parent key is present. The duplication is intentional.
-  pipeline: z
-    .object({
-      pollInterval: z.number().default(30),
-      maxRetries: z.number().default(2),
-      workerTimeout: z.number().default(2700),
-      baseBranch: z.string().default("origin/main"),
-      branchPrefixes: z.record(z.string(), z.string()).default(DEFAULT_BRANCH_PREFIXES),
-      webhooks: WebhooksSchema,
-      claudeBin: z.string().optional(),
-      model: z.string().default("opus"),
-      effort: z.string().default("high"),
-      stallThresholdMs: z.number().default(300000),
-      reconcileInterval: z.number().default(300),
-    })
-    .default({
-      pollInterval: 30,
-      maxRetries: 2,
-      workerTimeout: 2700,
-      baseBranch: "origin/main",
-      branchPrefixes: DEFAULT_BRANCH_PREFIXES,
-      webhooks: { enabled: false },
-      model: "opus",
-      effort: "high",
-      stallThresholdMs: 300000,
-      reconcileInterval: 300,
+const ConfigSchema = z
+  .object({
+    issueTracker: z.object({
+      type: z.enum(["jira", "github-issues", "mock"]),
+      config: z.record(z.string(), z.unknown()).default({}),
     }),
-  phases: z.array(PhaseDefinitionSchema).default(DEFAULT_PHASES),
-  skills: z
-    .object({
-      directory: z.string().default(".redqueen/skills"),
-    })
-    .default({ directory: ".redqueen/skills" }),
-  dashboard: z
-    .object({
-      enabled: z.boolean().default(true),
-      port: z.number().default(4400),
-      host: z.string().default("127.0.0.1"),
-    })
-    .default({ enabled: true, port: 4400, host: "127.0.0.1" }),
-  audit: z
-    .object({
-      logFile: z.string().default("audit.log"),
-      retentionDays: z.number().default(30),
-    })
-    .default({ logFile: "audit.log", retentionDays: 30 }),
-});
+    sourceControl: z.object({
+      type: z.enum(["github", "mock"]),
+      config: z.record(z.string(), z.unknown()).default({}),
+    }),
+    project: z.object({
+      buildCommand: z.string(),
+      testCommand: z.string(),
+      directory: z.string().default("."),
+      modules: z
+        .array(
+          z.object({
+            name: z.string().min(1),
+            paths: z.array(z.string().min(1)).min(1),
+            buildCommand: z.string().min(1),
+            testCommandTargeted: z.string().min(1).nullable().default(null),
+            testCommandFull: z.string().min(1).optional(),
+          }),
+        )
+        .optional(),
+    }),
+    // Zod v4 requires explicit outer .default() values for nested objects — the field-level
+    // defaults only apply when the parent key is present. The duplication is intentional.
+    pipeline: z
+      .object({
+        pollInterval: z.number().default(30),
+        maxRetries: z.number().default(2),
+        workerTimeout: z.number().default(2700),
+        baseBranch: z.string().default("origin/main"),
+        branchPrefixes: z.record(z.string(), z.string()).default(DEFAULT_BRANCH_PREFIXES),
+        webhooks: WebhooksSchema,
+        claudeBin: z.string().optional(),
+        model: z.string().default("opus"),
+        effort: z.string().default("high"),
+        stallThresholdMs: z.number().default(300000),
+        reconcileInterval: z.number().default(300),
+      })
+      .default({
+        pollInterval: 30,
+        maxRetries: 2,
+        workerTimeout: 2700,
+        baseBranch: "origin/main",
+        branchPrefixes: DEFAULT_BRANCH_PREFIXES,
+        webhooks: { enabled: false },
+        model: "opus",
+        effort: "high",
+        stallThresholdMs: 300000,
+        reconcileInterval: 300,
+      }),
+    phases: z.array(PhaseDefinitionSchema).default(DEFAULT_PHASES),
+    skills: z
+      .object({
+        directory: z.string().default(".redqueen/skills"),
+      })
+      .default({ directory: ".redqueen/skills" }),
+    dashboard: z
+      .object({
+        enabled: z.boolean().default(true),
+        port: z.number().default(4400),
+        host: z.string().default("127.0.0.1"),
+      })
+      .default({ enabled: true, port: 4400, host: "127.0.0.1" }),
+    audit: z
+      .object({
+        logFile: z.string().default("audit.log"),
+        retentionDays: z.number().default(30),
+      })
+      .default({ logFile: "audit.log", retentionDays: 30 }),
+  })
+  .superRefine((config, ctx) => {
+    if (config.pipeline.webhooks.enabled === false) {
+      return;
+    }
+    // Webhooks rely on HMAC signature validation. If enabled, every adapter that exposes
+    // a webhook surface must carry a non-empty secret — empty strings from unset env vars
+    // would otherwise silently fall through to adapters that accept unsigned payloads.
+    const adapterConfigs: { path: string; config: Record<string, unknown> }[] = [
+      { path: "issueTracker", config: config.issueTracker.config },
+      { path: "sourceControl", config: config.sourceControl.config },
+    ];
+    for (const { path, config: adapterConfig } of adapterConfigs) {
+      const secret = adapterConfig.webhookSecret;
+      if (typeof secret !== "string" || secret.length === 0) {
+        ctx.addIssue({
+          code: "custom",
+          path: [path, "config", "webhookSecret"],
+          message: `pipeline.webhooks.enabled is true but ${path}.config.webhookSecret is empty — set the corresponding env var or disable webhooks`,
+        });
+      }
+    }
+  });
 
 export type RedQueenConfig = z.infer<typeof ConfigSchema>;
 

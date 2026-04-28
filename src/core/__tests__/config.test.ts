@@ -99,6 +99,54 @@ project:
     expect(config.sourceControl.config).toEqual({ appId: 12345 });
   });
 
+  it("rejects webhooks.enabled when adapter secrets are missing or empty", () => {
+    const yaml = `
+issueTracker:
+  type: github-issues
+  config:
+    owner: o
+    repo: r
+sourceControl:
+  type: github
+  config:
+    owner: o
+    repo: r
+    webhookSecret: ""
+project:
+  buildCommand: "npm run build"
+  testCommand: "npm test"
+pipeline:
+  webhooks:
+    enabled: true
+`;
+    expect(() => parseConfig(yaml)).toThrow(/webhookSecret is empty/);
+  });
+
+  it("accepts webhooks.enabled when every adapter has a non-empty secret", () => {
+    const yaml = `
+issueTracker:
+  type: github-issues
+  config:
+    owner: o
+    repo: r
+    webhookSecret: "shh"
+sourceControl:
+  type: github
+  config:
+    owner: o
+    repo: r
+    webhookSecret: "shh"
+project:
+  buildCommand: "npm run build"
+  testCommand: "npm test"
+pipeline:
+  webhooks:
+    enabled: true
+`;
+    const config = parseConfig(yaml);
+    expect(config.pipeline.webhooks.enabled).toBe(true);
+  });
+
   it("parses custom phases", () => {
     const yaml = `
 issueTracker:

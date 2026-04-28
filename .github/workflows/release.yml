@@ -21,6 +21,14 @@ jobs:
           cache: npm
           registry-url: "https://registry.npmjs.org"
 
+      - name: Validate tag format
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Tag v$VERSION does not look like a SemVer version" >&2
+            exit 1
+          fi
+
       - run: npm ci
       - run: npm run check
       - run: npm run test:ci
@@ -49,10 +57,20 @@ jobs:
 
       - name: Extract CHANGELOG section
         id: changelog
+        env:
+          VERSION: ${{ github.ref_name }}
         run: |
-          VERSION="${GITHUB_REF#refs/tags/v}"
-          # Extract the ## [X.Y.Z] ... ## [previous-version] block
-          awk "/^## \\[$VERSION\\]/{flag=1;next}/^## \\[/{flag=0}flag" CHANGELOG.md > RELEASE_NOTES.md
+          # Strip leading "v" from refs/tags/vX.Y.Z for the CHANGELOG heading match.
+          VERSION="${VERSION#v}"
+          # Stamp today's date into the heading if it still has the YYYY-MM-DD placeholder.
+          TODAY="$(date -u +%Y-%m-%d)"
+          sed -i "s|^## \[$VERSION\] - YYYY-MM-DD|## [$VERSION] - $TODAY|" CHANGELOG.md
+          # Literal-string header match via awk -v — no shell interpolation into the awk program.
+          awk -v header="## [$VERSION]" '
+            index($0, header) == 1 { flag = 1; next }
+            /^## \[/ { flag = 0 }
+            flag
+          ' CHANGELOG.md > RELEASE_NOTES.md
 
       - name: Create GitHub Release
         env:

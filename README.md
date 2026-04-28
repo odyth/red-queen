@@ -116,31 +116,31 @@ through `rq:phase:spec-writing` → `rq:phase:spec-review` →
 on its own while it's working — don't add that one manually.
 
 That's the loop. See the [GitHub Issues adapter
-README](src/integrations/github-issues/README.md) for full label
-conventions, webhook setup (which enables the `new-ticket` on-assign
-flow), and troubleshooting.
+README](https://github.com/odyth/red-queen/blob/master/src/integrations/github-issues/README.md)
+for full label conventions, webhook setup (which enables the
+`new-ticket` on-assign flow), and troubleshooting.
 
 ## Full Setup
 
 - **Jira + GitHub source control** — see
-  [`src/integrations/jira/README.md`](src/integrations/jira/README.md)
+  [Jira adapter README](https://github.com/odyth/red-queen/blob/master/src/integrations/jira/README.md)
   and
-  [`src/integrations/github/README.md`](src/integrations/github/README.md).
-- **GitHub Issues + GitHub source control** (easiest) — see
-  [`src/integrations/github-issues/README.md`](src/integrations/github-issues/README.md).
+  [GitHub source control README](https://github.com/odyth/red-queen/blob/master/src/integrations/github/README.md).
+- **GitHub Issues + GitHub source control** (easiest) — see the
+  [GitHub Issues adapter README](https://github.com/odyth/red-queen/blob/master/src/integrations/github-issues/README.md).
 - **Webhooks** — see each adapter's README for setup. Polling works
   out of the box; webhooks are a latency optimization.
 
 ## Example Configs
 
-Two complete, copy-pasteable configurations live under
-[`examples/`](examples/):
+Two complete, copy-pasteable configurations live in
+[`examples/`](https://github.com/odyth/red-queen/tree/master/examples):
 
-- [`examples/github-issues/`](examples/github-issues/) — GitHub Issues +
-  GitHub source control with a PAT. The simplest possible setup.
-- [`examples/jira-github/`](examples/jira-github/) — Jira issue tracker
-  + GitHub source control with a BYO GitHub App. Mirrors the prototype
-  this project was extracted from.
+- [`examples/github-issues/`](https://github.com/odyth/red-queen/tree/master/examples/github-issues) —
+  GitHub Issues + GitHub source control with a PAT. The simplest possible setup.
+- [`examples/jira-github/`](https://github.com/odyth/red-queen/tree/master/examples/jira-github) —
+  Jira issue tracker + GitHub source control with a BYO GitHub App.
+  Mirrors the prototype this project was extracted from.
 
 ## Architecture
 
@@ -239,8 +239,8 @@ Most AI coding tools use AI to orchestrate AI — spending tokens to decide what
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev loop, code style, and
-how to add a new adapter.
+See [CONTRIBUTING.md](https://github.com/odyth/red-queen/blob/master/CONTRIBUTING.md)
+for the dev loop, code style, and how to add a new adapter.
 
 ## Requirements
 
