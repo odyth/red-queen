@@ -1,3 +1,4 @@
+import { userAgent as defaultUserAgent } from "../../core/version.js";
 import {
   AdapterError,
   AuthError,
@@ -39,7 +40,7 @@ export class JiraClient {
           setTimeout(res, ms);
         }));
     this.onRetry = options.onRetry ?? null;
-    this.userAgent = options.userAgent ?? "red-queen/0.1.0";
+    this.userAgent = options.userAgent ?? defaultUserAgent();
   }
 
   get authorization(): string {

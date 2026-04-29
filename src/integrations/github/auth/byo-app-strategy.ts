@@ -1,5 +1,6 @@
 import { createPrivateKey, type KeyObject } from "node:crypto";
 import { SignJWT } from "jose";
+import { userAgent as defaultUserAgent } from "../../../core/version.js";
 import { AdapterError, AuthError, redactSecrets } from "../../http/retry.js";
 import type { GitHubAuthStrategy, GitHubIdentity } from "../auth.js";
 
@@ -56,7 +57,7 @@ export class ByoAppAuthStrategy implements GitHubAuthStrategy {
     this.apiBase = options.apiBase ?? DEFAULT_API_BASE;
     this.clockSkewSec = options.clockSkewSec ?? DEFAULT_CLOCK_SKEW_SEC;
     this.refreshBufferMs = options.refreshBufferMs ?? DEFAULT_REFRESH_BUFFER_MS;
-    this.userAgent = options.userAgent ?? "red-queen/0.1.0";
+    this.userAgent = options.userAgent ?? defaultUserAgent();
   }
 
   async getToken(): Promise<string> {

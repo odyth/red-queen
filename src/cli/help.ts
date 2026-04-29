@@ -1,6 +1,6 @@
-const VERSION = "0.1.0";
+import { packageVersion } from "../core/version.js";
 
-const HELP_TEXT = `Red Queen v${VERSION} — deterministic orchestrator for AI coding agents
+const HELP_TEXT = `Red Queen v${packageVersion()} — deterministic orchestrator for AI coding agents
 
 Usage:
   redqueen <command> [options]
@@ -64,9 +64,11 @@ export function printHelp(command?: string): void {
 }
 
 export function printVersion(): void {
-  process.stdout.write(`redqueen ${VERSION} (preview — see https://github.com/odyth/red-queen)\n`);
+  process.stdout.write(
+    `redqueen ${packageVersion()} (preview — see https://github.com/odyth/red-queen)\n`,
+  );
 }
 
 export function getVersion(): string {
-  return VERSION;
+  return packageVersion();
 }

@@ -1,3 +1,4 @@
+import { userAgent as defaultUserAgent } from "../../../core/version.js";
 import { AdapterError, AuthError, redactSecrets } from "../../http/retry.js";
 import type { GitHubAuthStrategy, GitHubIdentity } from "../auth.js";
 
@@ -39,7 +40,7 @@ export class PatAuthStrategy implements GitHubAuthStrategy {
       headers: {
         Accept: "application/vnd.github+json",
         Authorization: `Bearer ${this.token}`,
-        "User-Agent": "red-queen/0.1.0",
+        "User-Agent": defaultUserAgent(),
         "X-GitHub-Api-Version": "2022-11-28",
       },
     });

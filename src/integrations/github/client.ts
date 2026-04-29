@@ -1,4 +1,5 @@
 import { Octokit } from "@octokit/rest";
+import { userAgent as defaultUserAgent } from "../../core/version.js";
 import { AdapterError, AuthError, redactSecrets, withRetry } from "../http/retry.js";
 import type { RetryClassification } from "../http/retry.js";
 import type { GitHubAuthStrategy } from "./auth.js";
@@ -94,7 +95,7 @@ function buildOctokit(options: GitHubClientOptions): Octokit {
         return request(merged);
       },
     }),
-    userAgent: options.userAgent ?? "red-queen/0.1.0",
+    userAgent: options.userAgent ?? defaultUserAgent(),
     request: { retries: 0 },
     baseUrl: options.apiBase,
   });

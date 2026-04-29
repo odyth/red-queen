@@ -8,6 +8,7 @@ import { loadDotEnv } from "../core/env.js";
 import { RedQueen } from "../core/orchestrator.js";
 import { OrchestratorStateStore, PipelineStateStore } from "../core/pipeline-state.js";
 import { SqliteTaskQueue } from "../core/queue.js";
+import { packageVersion } from "../core/version.js";
 import { buildAdapterPair } from "./adapters.js";
 import { findConfigUpward, projectRootFromConfigPath } from "./config-discovery.js";
 import { CliError } from "./errors.js";
@@ -218,7 +219,7 @@ function printBanner(input: BannerInput): void {
   const dash = input.dashboard.enabled
     ? `http://${input.dashboard.host}:${String(input.dashboard.port)}`
     : "disabled";
-  process.stdout.write(`Red Queen v0.1.0 [preview]\n`);
+  process.stdout.write(`Red Queen v${packageVersion()} [preview]\n`);
   process.stdout.write(`  project:   ${input.projectDir}\n`);
   process.stdout.write(`  database:  ${input.dbPath}\n`);
   process.stdout.write(`  dashboard: ${dash}\n`);

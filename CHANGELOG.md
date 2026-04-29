@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - YYYY-MM-DD
+
+### Fixed
+
+- `redqueen --version`, the `start` banner, and HTTP `User-Agent`
+  headers no longer print a stale hardcoded version. All now read
+  from `package.json` at runtime.
+
+### Changed
+
+- CI and release workflows bumped from `actions/checkout@v4` +
+  `actions/setup-node@v4` to `@v5` to silence the Node 20 deprecation
+  warning.
+
 ## [0.1.1-rc.1] - 2026-04-29
 
 Release-automation smoke test. No functional changes.
