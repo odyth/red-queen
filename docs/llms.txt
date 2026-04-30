@@ -1,0 +1,41 @@
+# Red Queen
+
+> Deterministic orchestrator for AI coding agents. A zero-token state machine
+> dispatches isolated AI workers through a full SDLC pipeline: spec writing,
+> coding, code review, testing, and human review. Human-in-the-loop gates are
+> first-class configuration, not an afterthought. Open source, MIT-licensed,
+> self-hosted on Node.js 24+. Ships integrations for GitHub Issues, Jira, and
+> GitHub source control; dispatches Claude Code workers today.
+
+## Site
+
+- [Landing page](https://redqueen.sh/): product overview, features, FAQ
+- [Quickstart section](https://redqueen.sh/#quickstart): install + run in ~15 minutes
+- [Comparison table](https://redqueen.sh/#compare): Red Queen vs. Devin, Cline, Aider, Claude Code
+
+## Repository
+
+- [GitHub README](https://github.com/odyth/red-queen/blob/master/README.md): full product overview, quickstart, FAQ, pipeline examples
+- [AGENTS.md](https://github.com/odyth/red-queen/blob/master/AGENTS.md): architecture, interfaces, code style for AI agents working in the repo
+- [CONTRIBUTING.md](https://github.com/odyth/red-queen/blob/master/CONTRIBUTING.md): dev loop, release process, how to add an adapter
+- [CHANGELOG](https://github.com/odyth/red-queen/blob/master/CHANGELOG.md)
+
+## Adapters
+
+- [GitHub Issues](https://github.com/odyth/red-queen/blob/master/src/integrations/github-issues/README.md): label-based phase tracking, easiest setup
+- [Jira](https://github.com/odyth/red-queen/blob/master/src/integrations/jira/README.md): API token auth, custom field mapping, ADF converter
+- [GitHub source control](https://github.com/odyth/red-queen/blob/master/src/integrations/github/README.md): Octokit-based, PAT or BYO GitHub App
+
+## Examples
+
+- [GitHub Issues + PAT](https://github.com/odyth/red-queen/tree/master/examples/github-issues): simplest complete config
+- [Jira + GitHub App](https://github.com/odyth/red-queen/tree/master/examples/jira-github): full production-shape config
+
+## Package
+
+- [npm package](https://www.npmjs.com/package/redqueen): `npm install -g redqueen`
+
+## Optional
+
+- [Skills contract](https://github.com/odyth/red-queen/blob/master/src/skills/README.md): how to write and override skill prompts
+- [Issues](https://github.com/odyth/red-queen/issues): bug reports, feature requests
