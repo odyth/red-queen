@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- README overhaul: plain-English TL;DR, customization section, FAQ,
+  troubleshooting, named competitor comparison, For-AI-agents block.
+- `llms.txt` at repo root for AI crawler discoverability.
+- Inline SVG logo + tagline in dashboard header.
+- Expanded `package.json` keywords for discoverability.
+
 ## [0.1.2] - YYYY-MM-DD
 
 ### Fixed

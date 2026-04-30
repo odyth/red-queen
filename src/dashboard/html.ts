@@ -40,6 +40,17 @@ export function renderDashboardHtml(): string {
     text-transform: uppercase;
     color: var(--accent);
   }
+  header .logo {
+    color: var(--accent);
+    width: 24px;
+    height: 24px;
+    flex: 0 0 auto;
+  }
+  header .tagline {
+    color: var(--muted);
+    font-size: 12px;
+    letter-spacing: 0.02em;
+  }
   header .status {
     margin-left: auto;
     color: var(--muted);
@@ -96,7 +107,12 @@ export function renderDashboardHtml(): string {
 </head>
 <body>
 <header>
+  <svg class="logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M3 8l3 11h12l3-11-5 4-4-7-4 7-5-4z" />
+    <line x1="6" y1="19" x2="18" y2="19" />
+  </svg>
   <h1>Red Queen</h1>
+  <span class="tagline">Yours runs your SDLC.</span>
   <span id="status-line" class="muted">connecting...</span>
   <span class="status" id="uptime"></span>
 </header>
