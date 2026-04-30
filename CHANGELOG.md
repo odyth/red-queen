@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Inline SVG logo + tagline in dashboard header.
 - Expanded `package.json` keywords for discoverability.
 
-## [0.1.2] - YYYY-MM-DD
+## [0.1.2] - 2026-04-29
 
 ### Fixed
 
