@@ -13,6 +13,7 @@
   },
   "files": [
     "dist",
+    "assets/brand/logo.png",
     "README.md",
     "LICENSE",
     "CHANGELOG.md"

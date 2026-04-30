@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `llms.txt` at repo root for AI crawler discoverability.
 - Inline SVG logo + tagline in dashboard header.
 - Expanded `package.json` keywords for discoverability.
+- Brand assets (logo, social card) under `assets/brand/` and tagline
+  wired into README and dashboard header.
 
 ## [0.1.2] - 2026-04-29
 

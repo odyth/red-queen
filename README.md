@@ -1,14 +1,14 @@
 # Red Queen
 
+<p align="center"><img src="./assets/brand/logo.png" alt="Red Queen" width="200" /></p>
+
+> Named for the AI that ran The Hive. Yours runs your SDLC.
+
 [![CI](https://github.com/odyth/red-queen/actions/workflows/ci.yml/badge.svg)](https://github.com/odyth/red-queen/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Preview](https://img.shields.io/badge/release-preview-orange.svg)](#preview-release)
 
-<p align="center"><!-- TODO-MEDIA: logo | path: ./assets/brand/logo.png | size: 200px wide --></p>
-
 **The Red Queen doesn't think. It commands.**
-
-> Named for the AI that ran The Hive. Yours runs your SDLC.
 
 Deterministic **AI agent orchestrator** for **autonomous coding** — zero tokens on routing, full SDLC pipeline, first-class **human-in-the-loop AI** gates.
 
