@@ -1,0 +1,12 @@
+# Red Queen — redqueen.sh
+# All crawlers welcome. We want to be indexed.
+
+User-agent: *
+Allow: /
+
+# Sitemap for traditional search crawlers
+Sitemap: https://redqueen.sh/sitemap.xml
+
+# LLM-friendly index (llms.txt spec)
+# https://llmstxt.org/
+# See also: https://redqueen.sh/llms.txt

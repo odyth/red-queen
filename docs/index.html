@@ -1,0 +1,747 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Red Queen — Deterministic AI Agent Orchestrator for Autonomous Coding</title>
+<meta name="description" content="Red Queen is a deterministic, zero-token orchestrator for AI coding agents. Runs your full SDLC — spec, code, review, test — with first-class human-in-the-loop gates. Open source. Self-hosted. Node.js." />
+<meta name="keywords" content="AI orchestrator, AI agent orchestrator, autonomous coding, SDLC automation, deterministic orchestrator, human-in-the-loop AI, Claude Code, agentic workflow, multi-agent coding, LLM orchestrator, AI coding agent, state machine" />
+<meta name="author" content="Odyth" />
+<meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large" />
+<meta name="theme-color" content="#0f1115" />
+<link rel="canonical" href="https://redqueen.sh/" />
+<link rel="icon" type="image/png" href="/assets/brand/logo.png" />
+<link rel="apple-touch-icon" href="/assets/brand/logo.png" />
+
+<!-- Open Graph -->
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content="Red Queen" />
+<meta property="og:title" content="Red Queen — Deterministic AI Agent Orchestrator" />
+<meta property="og:description" content="Zero-token state machine dispatches AI coding workers through spec → code → review → test → human review. Named for the AI that ran The Hive. Yours runs your SDLC." />
+<meta property="og:url" content="https://redqueen.sh/" />
+<meta property="og:image" content="https://redqueen.sh/assets/brand/og-card.png" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<meta property="og:image:alt" content="Red Queen — deterministic orchestrator for AI coding agents" />
+
+<!-- Twitter / X -->
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="Red Queen — Deterministic AI Agent Orchestrator" />
+<meta name="twitter:description" content="Zero-token orchestration for AI coding agents. Full SDLC. Human-in-the-loop. Open source." />
+<meta name="twitter:image" content="https://redqueen.sh/assets/brand/og-card.png" />
+<meta name="twitter:image:alt" content="Red Queen logo and tagline" />
+
+<!-- AI crawler hints -->
+<link rel="alternate" type="text/plain" href="/llms.txt" title="LLM-friendly site index" />
+
+<!-- JSON-LD: SoftwareApplication -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Red Queen",
+  "alternateName": "redqueen",
+  "applicationCategory": "DeveloperApplication",
+  "applicationSubCategory": "AI Orchestrator",
+  "operatingSystem": "macOS, Linux, Windows (Node.js 24+)",
+  "description": "Deterministic orchestrator for AI coding agents. A zero-token state machine dispatches AI workers through the full software development lifecycle: spec writing, coding, code review, testing, and human review. Configurable human-in-the-loop gates keep you in control.",
+  "softwareVersion": "0.1.2",
+  "url": "https://redqueen.sh/",
+  "downloadUrl": "https://www.npmjs.com/package/redqueen",
+  "codeRepository": "https://github.com/odyth/red-queen",
+  "programmingLanguage": "TypeScript",
+  "license": "https://opensource.org/licenses/MIT",
+  "author": {
+    "@type": "Organization",
+    "name": "Odyth",
+    "url": "https://github.com/odyth"
+  },
+  "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "USD"
+  },
+  "keywords": "AI orchestrator, autonomous coding, SDLC automation, deterministic orchestrator, human-in-the-loop, Claude Code, agentic workflow"
+}
+</script>
+
+<!-- JSON-LD: FAQPage -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "What is Red Queen?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Red Queen is a deterministic orchestrator for AI coding agents. It is a state machine that dispatches isolated AI workers through a complete software development lifecycle: spec writing, coding, review, testing, and human review. The orchestrator spends zero AI tokens on routing — all decisions are made by pure deterministic logic, not an LLM."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "How is Red Queen different from Devin, Cline, or Aider?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Most AI coding tools use an LLM to orchestrate other LLMs, spending tokens to decide what to do next. Red Queen does the opposite: a deterministic state machine orchestrates isolated, focused AI workers. This is cheaper, faster, and fully debuggable. Human-in-the-loop gates are first-class configuration, not an afterthought."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does Red Queen require Claude Code?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Today yes — Red Queen dispatches Claude Code workers. The adapter pattern makes adding support for other coding CLIs straightforward, and that is on the roadmap."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can I self-host Red Queen?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. Red Queen runs as a local Node.js 24+ process on your laptop or any server you own. No hosted service is required. Your code is only sent to the AI CLI you configure; Red Queen itself talks to GitHub or Jira over HTTPS."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Which issue trackers and source control systems are supported?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "GitHub Issues, Jira, and GitHub (source control) ship today. Linear is on the roadmap. New adapters implement the IssueTracker or SourceControl interface — no core changes required."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Is Red Queen open source?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. Red Queen is MIT-licensed and developed in the open at github.com/odyth/red-queen."
+      }
+    }
+  ]
+}
+</script>
+
+<!-- JSON-LD: BreadcrumbList -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    {
+      "@type": "ListItem",
+      "position": 1,
+      "name": "Home",
+      "item": "https://redqueen.sh/"
+    }
+  ]
+}
+</script>
+
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0f1115;
+    --panel: #171a21;
+    --border: #2a2f3a;
+    --text: #e6e8eb;
+    --muted: #7d8595;
+    --accent: #d14343;
+    --accent-hi: #ef5c5c;
+    --ok: #4ade80;
+    --warn: #facc15;
+    --err: #f87171;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent-hi); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, pre, .mono { font-family: var(--mono); }
+  pre {
+    background: #0a0c10;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    font-size: 13px;
+    line-height: 1.5;
+    margin: 12px 0;
+  }
+  code { font-size: 0.92em; }
+  :not(pre) > code {
+    background: #1c2029;
+    padding: 1px 6px;
+    border-radius: 3px;
+    border: 1px solid var(--border);
+  }
+
+  .container { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+
+  /* Top nav */
+  nav.top {
+    position: sticky;
+    top: 0;
+    background: rgba(15, 17, 21, 0.85);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--border);
+    z-index: 50;
+  }
+  nav.top .container {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    padding-top: 12px;
+    padding-bottom: 12px;
+  }
+  nav.top .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+  nav.top .brand img { width: 28px; height: 28px; display: block; }
+  nav.top .brand span { color: var(--accent); text-transform: uppercase; font-size: 14px; letter-spacing: 0.1em; }
+  nav.top ul { list-style: none; display: flex; gap: 18px; margin: 0 0 0 auto; padding: 0; }
+  nav.top ul a { color: var(--muted); font-size: 14px; }
+  nav.top ul a:hover { color: var(--text); text-decoration: none; }
+  nav.top .github {
+    background: var(--accent);
+    color: #fff;
+    padding: 6px 12px;
+    border-radius: 4px;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  nav.top .github:hover { background: var(--accent-hi); text-decoration: none; }
+
+  /* Hero */
+  header.hero {
+    padding: 80px 0 64px;
+    text-align: center;
+    border-bottom: 1px solid var(--border);
+    background: radial-gradient(ellipse at top, rgba(209, 67, 67, 0.12), transparent 60%);
+  }
+  header.hero img.logo { width: 160px; height: 160px; display: block; margin: 0 auto 24px; }
+  header.hero h1 {
+    margin: 0 0 16px;
+    font-size: 52px;
+    line-height: 1.1;
+    letter-spacing: -0.02em;
+    font-weight: 700;
+  }
+  header.hero .tagline {
+    color: var(--muted);
+    font-size: 20px;
+    margin: 0 auto 12px;
+    max-width: 720px;
+    font-style: italic;
+  }
+  header.hero .subline {
+    color: var(--text);
+    font-size: 18px;
+    margin: 0 auto 32px;
+    max-width: 760px;
+  }
+  header.hero .ctas {
+    display: flex;
+    gap: 12px;
+    justify-content: center;
+    flex-wrap: wrap;
+    margin-bottom: 24px;
+  }
+  .btn {
+    display: inline-block;
+    padding: 12px 22px;
+    border-radius: 6px;
+    font-weight: 600;
+    font-size: 15px;
+    border: 1px solid var(--border);
+    transition: transform 80ms ease-out, background 120ms ease-out;
+  }
+  .btn:hover { text-decoration: none; transform: translateY(-1px); }
+  .btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .btn.primary:hover { background: var(--accent-hi); border-color: var(--accent-hi); }
+  .btn.secondary { background: var(--panel); color: var(--text); }
+  .btn.secondary:hover { background: #1c2029; }
+  header.hero .install {
+    display: inline-block;
+    background: #0a0c10;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 14px;
+    font-family: var(--mono);
+    font-size: 14px;
+    color: var(--text);
+  }
+  header.hero .install::before { content: "$ "; color: var(--muted); }
+
+  /* Sections */
+  section { padding: 72px 0; border-bottom: 1px solid var(--border); }
+  section:last-of-type { border-bottom: 0; }
+  section h2 {
+    font-size: 32px;
+    margin: 0 0 12px;
+    letter-spacing: -0.01em;
+  }
+  section .lede {
+    color: var(--muted);
+    font-size: 17px;
+    margin: 0 0 36px;
+    max-width: 720px;
+  }
+
+  /* Feature grid */
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 20px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 22px;
+  }
+  .card h3 {
+    margin: 0 0 8px;
+    font-size: 17px;
+    color: var(--accent-hi);
+    letter-spacing: 0.01em;
+  }
+  .card p { margin: 0; color: var(--muted); font-size: 14.5px; line-height: 1.55; }
+
+  /* Comparison table */
+  .compare-wrap { overflow-x: auto; }
+  table.compare {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+    min-width: 700px;
+  }
+  table.compare th, table.compare td {
+    padding: 12px 14px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  table.compare thead th {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+    font-weight: 600;
+  }
+  table.compare tbody th {
+    color: var(--muted);
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  table.compare td.rq { color: var(--ok); font-weight: 600; }
+  table.compare td .muted { color: var(--muted); }
+
+  /* Quickstart */
+  ol.steps { padding-left: 20px; }
+  ol.steps li { margin: 14px 0; color: var(--text); }
+  ol.steps li strong { color: var(--accent-hi); }
+
+  /* FAQ */
+  details.faq {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px 18px;
+    margin-bottom: 12px;
+  }
+  details.faq[open] { background: #1c2029; }
+  details.faq summary {
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 15.5px;
+    list-style: none;
+    padding: 4px 0;
+  }
+  details.faq summary::-webkit-details-marker { display: none; }
+  details.faq summary::after {
+    content: "+";
+    float: right;
+    color: var(--muted);
+    font-weight: 400;
+    font-size: 20px;
+    line-height: 1;
+  }
+  details.faq[open] summary::after { content: "−"; }
+  details.faq p { color: var(--muted); margin: 12px 0 4px; font-size: 14.5px; }
+
+  /* Footer */
+  footer {
+    padding: 36px 0 48px;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 14px;
+  }
+  footer .container { display: flex; flex-wrap: wrap; gap: 20px; align-items: center; }
+  footer ul { list-style: none; margin: 0 0 0 auto; padding: 0; display: flex; gap: 16px; }
+  footer a { color: var(--muted); }
+  footer a:hover { color: var(--text); }
+
+  @media (max-width: 640px) {
+    header.hero { padding: 56px 0 48px; }
+    header.hero h1 { font-size: 36px; }
+    header.hero .tagline { font-size: 17px; }
+    header.hero .subline { font-size: 16px; }
+    section { padding: 56px 0; }
+    section h2 { font-size: 26px; }
+    nav.top ul { display: none; }
+  }
+</style>
+</head>
+
+<body>
+
+<nav class="top" aria-label="Primary">
+  <div class="container">
+    <a href="/" class="brand" aria-label="Red Queen home">
+      <img src="/assets/brand/logo.png" alt="" width="28" height="28" />
+      <span>Red Queen</span>
+    </a>
+    <ul>
+      <li><a href="#features">Features</a></li>
+      <li><a href="#how">How it works</a></li>
+      <li><a href="#quickstart">Quickstart</a></li>
+      <li><a href="#compare">Compare</a></li>
+      <li><a href="#faq">FAQ</a></li>
+    </ul>
+    <a class="github" href="https://github.com/odyth/red-queen" rel="noopener">GitHub ★</a>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="container">
+    <img class="logo" src="/assets/brand/logo.png" alt="Red Queen logo" width="160" height="160" />
+    <h1>The deterministic orchestrator<br />for AI coding agents.</h1>
+    <p class="tagline">Named for the AI that ran The Hive. Yours runs your SDLC.</p>
+    <p class="subline">
+      A zero-token state machine dispatches isolated AI workers through
+      <strong>spec → code → review → test → human review</strong>. No LLM deciding what to do next.
+      No wasted tokens on routing. First-class human-in-the-loop gates. Open source, self-hosted, Node.js 24+.
+    </p>
+    <div class="ctas">
+      <a class="btn primary" href="#quickstart">Get Started</a>
+      <a class="btn secondary" href="https://github.com/odyth/red-queen" rel="noopener">Star on GitHub</a>
+    </div>
+    <div class="install" aria-label="Install command">npm install -g redqueen</div>
+  </div>
+</header>
+
+<section id="features" aria-labelledby="features-h">
+  <div class="container">
+    <h2 id="features-h">Why Red Queen</h2>
+    <p class="lede">
+      Most AI coding tools use an LLM to orchestrate other LLMs — spending tokens to decide what to do next.
+      Red Queen takes the opposite approach: a deterministic state machine commands focused AI workers.
+      Cheaper. Faster. Debuggable. Yours.
+    </p>
+    <div class="grid">
+      <article class="card">
+        <h3>Zero-token orchestration</h3>
+        <p>The ~600-line state machine is pure deterministic logic. No LLM calls in the routing layer. You only spend tokens on the actual code work.</p>
+      </article>
+      <article class="card">
+        <h3>Isolated skill workers</h3>
+        <p>Each phase — spec writer, coder, reviewer, tester, comment-handler — runs a purpose-built prompt in isolation. Focused beats kitchen-sink.</p>
+      </article>
+      <article class="card">
+        <h3>Human-in-the-loop gates</h3>
+        <p>Review checkpoints are first-class workflow configuration, not an afterthought. Add them, remove them, reorder them in <code>redqueen.yaml</code>.</p>
+      </article>
+      <article class="card">
+        <h3>Issue tracker native</h3>
+        <p>Bidirectional sync with Jira and GitHub Issues. Work flows from your tracker through the pipeline and back. Linear on the roadmap.</p>
+      </article>
+      <article class="card">
+        <h3>Retry with escalation</h3>
+        <p>Failed phases retry up to three times, then escalate to a human gate. No infinite loops. No runaway token bills.</p>
+      </article>
+      <article class="card">
+        <h3>Webhook + polling</h3>
+        <p>Optional webhook server for instant response, with a polling reconciler that works out of the box. No external queue required.</p>
+      </article>
+      <article class="card">
+        <h3>User-overridable skills</h3>
+        <p>Skills are markdown prompt templates. Drop <code>SKILL.md</code> into <code>.redqueen/skills/&lt;name&gt;/</code> and your version wins over the built-in.</p>
+      </article>
+      <article class="card">
+        <h3>Adapter pattern</h3>
+        <p>Every integration implements the <code>IssueTracker</code> or <code>SourceControl</code> interface. New trackers = new adapter, never a core change.</p>
+      </article>
+      <article class="card">
+        <h3>Works while you sleep</h3>
+        <p>Background orchestrator keeps tickets moving through automated phases and parks work at human gates for when you're back at the keyboard.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section id="how" aria-labelledby="how-h">
+  <div class="container">
+    <h2 id="how-h">How it works</h2>
+    <p class="lede">
+      You file a ticket. Red Queen has Claude write a spec for it. You approve. Claude writes the code and opens a PR.
+      Another Claude reviews it. Another tests it. You review the final PR and merge. You can jump in at any gate with
+      feedback, or rip the gates out entirely. A tiny AI dev team — and you're the tech lead.
+    </p>
+<pre><code>┌─────────────┐     ┌──────────────┐     ┌────────┐     ┌──────────────┐     ┌─────────┐     ┌──────────────┐
+│ spec-writer │ ──▶ │ spec-review  │ ──▶ │ coder  │ ──▶ │ code-review  │ ──▶ │ testing │ ──▶ │ human-review │
+└─────────────┘     └──────┬───────┘     └────────┘     └──────┬───────┘     └────┬────┘     └──────┬───────┘
+                           │ rework                             │ rework           │ fail            │ approve
+                           ▼                                    ▼                  ▼                 ▼
+                     spec-feedback                       code-feedback          coder             merged
+</code></pre>
+    <p>
+      Phases are <strong>dynamic</strong> — defined in <code>redqueen.yaml</code>, not baked into the code.
+      Add a <code>security-review</code> gate. Remove <code>spec-writing</code> if you ship from existing tickets.
+      The graph is yours to shape.
+    </p>
+  </div>
+</section>
+
+<section id="quickstart" aria-labelledby="quickstart-h">
+  <div class="container">
+    <h2 id="quickstart-h">Quickstart</h2>
+    <p class="lede">From zero to your first AI-driven ticket in about 15 minutes.</p>
+    <ol class="steps">
+      <li><strong>Install Claude Code</strong> and run <code>claude --version</code>. Red Queen dispatches Claude Code workers, so the CLI must be logged in.</li>
+      <li><strong>Install Red Queen:</strong>
+<pre><code>npm install -g redqueen</code></pre></li>
+      <li><strong>Generate a GitHub PAT</strong> at <a href="https://github.com/settings/personal-access-tokens/new" rel="noopener">github.com/settings/personal-access-tokens/new</a> with Contents, Issues, Pull requests, Workflows, Metadata permissions on your target repo.</li>
+      <li><strong>Initialize</strong> inside your repo:
+<pre><code>redqueen init -y</code></pre></li>
+      <li><strong>Add your token</strong> to <code>.env</code>:
+<pre><code>GITHUB_PAT=ghp_xxxxxxxxxxxxxxxxxxxx</code></pre></li>
+      <li><strong>Start the orchestrator:</strong>
+<pre><code>redqueen start</code></pre>
+      Open <a href="http://127.0.0.1:4400">http://127.0.0.1:4400</a> — the live dashboard.</li>
+      <li><strong>Open a test issue</strong> in GitHub and apply the <code>rq:phase:spec-writing</code> label. Watch the phases move.</li>
+    </ol>
+    <p style="margin-top: 28px;">
+      Full docs, adapter guides, and configuration reference live in the
+      <a href="https://github.com/odyth/red-queen#readme" rel="noopener">GitHub README</a>.
+    </p>
+  </div>
+</section>
+
+<section id="compare" aria-labelledby="compare-h">
+  <div class="container">
+    <h2 id="compare-h">How Red Queen compares</h2>
+    <p class="lede">
+      Red Queen isn't a replacement for the tools below — it's the manager that delegates to them.
+      It dispatches Claude Code today; the adapter pattern means swapping in other coding CLIs is a config change, not a rewrite.
+    </p>
+    <div class="compare-wrap">
+      <table class="compare">
+        <thead>
+          <tr>
+            <th></th>
+            <th>Red Queen</th>
+            <th>Claude Code (solo)</th>
+            <th>Aider</th>
+            <th>Cline / Roo</th>
+            <th>Devin / OpenHands</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th>Form factor</th>
+            <td class="rq">Background orchestrator</td>
+            <td>Interactive CLI</td>
+            <td>Interactive pair</td>
+            <td>IDE agent</td>
+            <td>Autonomous agent</td>
+          </tr>
+          <tr>
+            <th>Orchestration</th>
+            <td class="rq">Deterministic state machine</td>
+            <td>You are the orchestrator</td>
+            <td>You are the orchestrator</td>
+            <td>IDE-driven loop</td>
+            <td>LLM-driven loop</td>
+          </tr>
+          <tr>
+            <th>Human gates</th>
+            <td class="rq">First-class, configurable</td>
+            <td>Ad-hoc</td>
+            <td>Ad-hoc</td>
+            <td>Ad-hoc</td>
+            <td>Minimal</td>
+          </tr>
+          <tr>
+            <th>Token cost for routing</th>
+            <td class="rq">Zero</td>
+            <td><span class="muted">N/A (you route)</span></td>
+            <td><span class="muted">N/A (you route)</span></td>
+            <td>Per decision</td>
+            <td>Per decision</td>
+          </tr>
+          <tr>
+            <th>Works while you sleep</th>
+            <td class="rq">Yes</td>
+            <td>No</td>
+            <td>No</td>
+            <td>No</td>
+            <td>Yes</td>
+          </tr>
+          <tr>
+            <th>Debuggable flow</th>
+            <td class="rq">Read the state machine</td>
+            <td><span class="muted">N/A</span></td>
+            <td><span class="muted">N/A</span></td>
+            <td>Hope the LLM explains</td>
+            <td>Hope the LLM explains</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section id="faq" aria-labelledby="faq-h">
+  <div class="container">
+    <h2 id="faq-h">FAQ</h2>
+    <p class="lede">The questions you'd ask before adopting.</p>
+
+    <details class="faq">
+      <summary>What is Red Queen?</summary>
+      <p>
+        A deterministic orchestrator for AI coding agents. It's a state machine that dispatches isolated AI workers
+        through a complete software development lifecycle: spec writing, coding, review, testing, and human review.
+        The orchestrator spends zero AI tokens on routing — all decisions are made by pure deterministic logic, not an LLM.
+      </p>
+    </details>
+
+    <details class="faq">
+      <summary>How is it different from Devin, Cline, or Aider?</summary>
+      <p>
+        Most AI coding tools use an LLM to orchestrate other LLMs, spending tokens to decide what to do next.
+        Red Queen does the opposite: a deterministic state machine orchestrates isolated, focused AI workers.
+        This is cheaper, faster, and fully debuggable. Human-in-the-loop gates are first-class configuration, not an afterthought.
+      </p>
+    </details>
+
+    <details class="faq">
+      <summary>Do I need Claude Code?</summary>
+      <p>
+        Today, yes. Red Queen dispatches Claude Code workers. The adapter pattern makes adding support for
+        other coding CLIs straightforward, and that's on the roadmap.
+      </p>
+    </details>
+
+    <details class="faq">
+      <summary>How much does it cost to run?</summary>
+      <p>
+        The orchestration itself is free — zero tokens spent on routing. Tokens are what your Claude subscription
+        or API already charges for the actual code work.
+      </p>
+    </details>
+
+    <details class="faq">
+      <summary>Can I self-host?</summary>
+      <p>
+        Yes. Red Queen runs as a local Node.js 24+ process on your laptop or any server you own. No hosted service
+        is required. Your code is only sent to the AI CLI you configure; Red Queen itself talks to GitHub or Jira over HTTPS.
+      </p>
+    </details>
+
+    <details class="faq">
+      <summary>Does it work with monorepos?</summary>
+      <p>
+        Yes — <code>project.buildCommand</code> and <code>testCommand</code> scope per-run, and per-module commands
+        are configurable.
+      </p>
+    </details>
+
+    <details class="faq">
+      <summary>What happens if an AI worker gets stuck?</summary>
+      <p>
+        Phases retry up to three times and then escalate to a human gate. No infinite loops, no runaway bills.
+      </p>
+    </details>
+
+    <details class="faq">
+      <summary>Can I remove the human gates?</summary>
+      <p>
+        Yes — edit <code>redqueen.yaml</code>. Gates are configuration, not hardcoded.
+      </p>
+    </details>
+
+    <details class="faq">
+      <summary>Can I add my own skills?</summary>
+      <p>
+        Yes. Drop a <code>SKILL.md</code> at <code>.redqueen/skills/&lt;name&gt;/</code> and it wins over the built-in.
+        See the skills contract in the GitHub repository.
+      </p>
+    </details>
+
+    <details class="faq">
+      <summary>Which trackers are supported?</summary>
+      <p>
+        GitHub Issues, Jira, and GitHub (source control) ship today. Linear is on the roadmap.
+      </p>
+    </details>
+
+    <details class="faq">
+      <summary>Is this production-ready?</summary>
+      <p>
+        It's a v0.1 preview. Use it, file bugs, expect rough edges — the API surface is stable enough to build on.
+      </p>
+    </details>
+
+    <details class="faq">
+      <summary>Is Red Queen open source?</summary>
+      <p>
+        Yes — MIT-licensed, developed in the open at
+        <a href="https://github.com/odyth/red-queen" rel="noopener">github.com/odyth/red-queen</a>.
+      </p>
+    </details>
+  </div>
+</section>
+
+<section id="cta" aria-labelledby="cta-h" style="background: radial-gradient(ellipse at center, rgba(209, 67, 67, 0.12), transparent 70%);">
+  <div class="container" style="text-align: center;">
+    <h2 id="cta-h">Stop orchestrating with LLMs.<br />Start commanding them.</h2>
+    <p class="lede" style="margin: 0 auto 32px;">
+      Open source. Self-hosted. Deterministic. Star the repo, kick the tires, file bugs.
+    </p>
+    <div class="ctas" style="display: flex; gap: 12px; justify-content: center; flex-wrap: wrap;">
+      <a class="btn primary" href="https://github.com/odyth/red-queen" rel="noopener">Star on GitHub ★</a>
+      <a class="btn secondary" href="https://www.npmjs.com/package/redqueen" rel="noopener">View on npm</a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    <div>© 2026 Odyth · MIT License</div>
+    <ul>
+      <li><a href="https://github.com/odyth/red-queen" rel="noopener">GitHub</a></li>
+      <li><a href="https://www.npmjs.com/package/redqueen" rel="noopener">npm</a></li>
+      <li><a href="https://github.com/odyth/red-queen/issues" rel="noopener">Issues</a></li>
+      <li><a href="/llms.txt">llms.txt</a></li>
+    </ul>
+  </div>
+</footer>
+
+</body>
+</html>

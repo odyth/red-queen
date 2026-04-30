@@ -1,5 +1,8 @@
+import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { AuditLogger } from "../core/audit.js";
 import type { TaskQueue } from "../core/queue.js";
 import type { OrchestratorStateStore } from "../core/pipeline-state.js";
@@ -7,6 +10,21 @@ import type { Task } from "../core/types.js";
 import { SSEManager } from "./events.js";
 import type { DashboardEvent } from "./events.js";
 import { renderDashboardHtml } from "./html.js";
+
+const LOGO_ASSET_PATH = "/assets/brand/logo.png";
+
+function resolveLogoFile(): string {
+  const here = dirname(fileURLToPath(import.meta.url));
+  // Dev: src/dashboard/server.ts -> ../../assets/brand/logo.png
+  // Built: dist/dashboard/server.js -> ../../assets/brand/logo.png
+  return resolve(here, "..", "..", "assets", "brand", "logo.png");
+}
+
+let cachedLogoBytes: Buffer | null = null;
+function loadLogoBytes(): Buffer {
+  cachedLogoBytes ??= readFileSync(resolveLogoFile());
+  return cachedLogoBytes;
+}
 
 export type RouteHandler = (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
 
@@ -110,6 +128,20 @@ export class DashboardServer {
     if (method === "GET" && pathOnly === "/") {
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
       res.end(renderDashboardHtml());
+      return;
+    }
+
+    if (method === "GET" && pathOnly === LOGO_ASSET_PATH) {
+      try {
+        const bytes = loadLogoBytes();
+        res.writeHead(200, {
+          "Content-Type": "image/png",
+          "Cache-Control": "public, max-age=86400",
+        });
+        res.end(bytes);
+      } catch {
+        this.sendText(res, 404, "Not Found");
+      }
       return;
     }
 

@@ -1,0 +1,27 @@
+# Red Queen
+
+> Deterministic orchestrator for AI coding agents. Zero-token state machine
+> dispatches Claude Code workers through a full SDLC pipeline (spec → code →
+> review → test → human review) with configurable human gates.
+
+## Docs
+
+- [README](https://github.com/odyth/red-queen/blob/master/README.md): product overview, quickstart, FAQ
+- [AGENTS.md](https://github.com/odyth/red-queen/blob/master/AGENTS.md): architecture, interfaces, style for AI agents working in the repo
+- [Contributing](https://github.com/odyth/red-queen/blob/master/CONTRIBUTING.md): dev loop, release process, how to add an adapter
+
+## Adapters
+
+- [GitHub Issues](https://github.com/odyth/red-queen/blob/master/src/integrations/github-issues/README.md)
+- [Jira](https://github.com/odyth/red-queen/blob/master/src/integrations/jira/README.md)
+- [GitHub source control](https://github.com/odyth/red-queen/blob/master/src/integrations/github/README.md)
+
+## Examples
+
+- [GitHub Issues + PAT](https://github.com/odyth/red-queen/tree/master/examples/github-issues)
+- [Jira + GitHub App](https://github.com/odyth/red-queen/tree/master/examples/jira-github)
+
+## Optional
+
+- [Skills contract](https://github.com/odyth/red-queen/blob/master/src/skills/README.md): how to write / override skills
+- [Changelog](https://github.com/odyth/red-queen/blob/master/CHANGELOG.md)

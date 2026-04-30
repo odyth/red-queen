@@ -13,6 +13,7 @@
   },
   "files": [
     "dist",
+    "assets/brand/logo.png",
     "README.md",
     "LICENSE",
     "CHANGELOG.md"
@@ -36,9 +37,19 @@
   },
   "keywords": [
     "ai",
-    "orchestrator",
+    "ai-agent",
+    "ai-orchestrator",
+    "agentic-workflow",
+    "autonomous-coding",
     "claude",
+    "claude-code",
+    "coding-agent",
+    "deterministic-orchestrator",
+    "human-in-the-loop",
+    "llm-orchestrator",
+    "multi-agent",
     "sdlc",
+    "sdlc-automation",
     "automation",
     "developer-tools",
     "cli"

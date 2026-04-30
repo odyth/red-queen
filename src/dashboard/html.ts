@@ -40,6 +40,17 @@ export function renderDashboardHtml(): string {
     text-transform: uppercase;
     color: var(--accent);
   }
+  header .logo {
+    width: 28px;
+    height: 28px;
+    flex: 0 0 auto;
+    display: block;
+  }
+  header .tagline {
+    color: var(--muted);
+    font-size: 12px;
+    letter-spacing: 0.02em;
+  }
   header .status {
     margin-left: auto;
     color: var(--muted);
@@ -96,7 +107,9 @@ export function renderDashboardHtml(): string {
 </head>
 <body>
 <header>
+  <img class="logo" src="/assets/brand/logo.png" alt="Red Queen" />
   <h1>Red Queen</h1>
+  <span class="tagline">Named for the AI that ran The Hive. Yours runs your SDLC.</span>
   <span id="status-line" class="muted">connecting...</span>
   <span class="status" id="uptime"></span>
 </header>
