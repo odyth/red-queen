@@ -1,6 +1,6 @@
 {
   "name": "redqueen",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Deterministic orchestrator for AI coding agents — zero tokens, full SDLC pipeline, human-in-the-loop gates.",
   "type": "module",
   "main": "dist/index.js",

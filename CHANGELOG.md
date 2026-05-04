@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Brand assets (logo, social card) under `assets/brand/` and tagline
   wired into README and dashboard header.
 
-## [0.1.3] - YYYY-MM-DD
+## [0.1.3] - 2026-05-04
 
 ### Fixed
 
