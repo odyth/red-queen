@@ -412,6 +412,7 @@ describe("RedQueen orchestrator", () => {
     );
     h.issueTracker.listByPhaseResults.set("coding", [makeIssue("PROJ-99", "coding")]);
     h.issueTracker.phases.set("PROJ-99", "coding");
+    h.pipelineState.create("PROJ-99", "coding");
 
     await runUntilAfterRuns(h, 1, 3000);
 

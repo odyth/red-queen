@@ -483,4 +483,13 @@ describe("buildPhaseGraph", () => {
     expect(graph.getPhaseNames()).toContain("spec-writing");
     expect(graph.getAllPhases()).toHaveLength(DEFAULT_PHASES.length);
   });
+
+  it("getEntryPhases returns phases never referenced as targets", () => {
+    const graph = buildPhaseGraph(DEFAULT_PHASES);
+    const entryNames = graph.getEntryPhases().map((p) => p.name);
+    expect(entryNames).toContain("spec-writing");
+    expect(entryNames).not.toContain("coding");
+    expect(entryNames).not.toContain("code-review");
+    expect(entryNames).not.toContain("spec-review");
+  });
 });

@@ -122,7 +122,7 @@ export class WebhookServer {
     }
 
     try {
-      this.dispatchEvent(event, component);
+      await this.dispatchEvent(event, component);
     } catch (err) {
       this.deps.audit.log({
         component,
@@ -133,8 +133,8 @@ export class WebhookServer {
     }
   }
 
-  private dispatchEvent(event: PipelineEvent, component: string): void {
-    const { queue, phaseGraph, pipelineState, audit } = this.deps;
+  private async dispatchEvent(event: PipelineEvent, component: string): Promise<void> {
+    const { issueTracker, queue, phaseGraph, pipelineState, audit } = this.deps;
 
     switch (event.type) {
       case "phase-change": {
@@ -160,6 +160,19 @@ export class WebhookServer {
             metadata: { phase: phaseName },
           });
           return;
+        }
+        const entryPhaseNames = new Set(phaseGraph.getEntryPhases().map((p) => p.name));
+        if (entryPhaseNames.has(phaseName) === false) {
+          const record = pipelineState.get(event.issueId);
+          if (record === null) {
+            audit.log({
+              component,
+              issueId: event.issueId,
+              message: "no local pipeline state — run new-ticket first",
+              metadata: { phase: phaseName },
+            });
+            break;
+          }
         }
         if (queue.hasOpenTask(event.issueId, phaseName)) {
           break;
@@ -205,11 +218,27 @@ export class WebhookServer {
         if (record !== null && record.currentPhase !== null) {
           break;
         }
-        if (queue.hasOpenTask(event.issueId, "new-ticket")) {
+        const currentJiraPhase = await issueTracker.getPhase(event.issueId);
+        const entryPhaseNames = new Set(phaseGraph.getEntryPhases().map((p) => p.name));
+        let taskType: string;
+        if (currentJiraPhase === null) {
+          taskType = "new-ticket";
+        } else if (entryPhaseNames.has(currentJiraPhase)) {
+          taskType = currentJiraPhase;
+        } else {
+          audit.log({
+            component,
+            issueId: event.issueId,
+            message: "no local pipeline state — run new-ticket first",
+            metadata: { phase: currentJiraPhase },
+          });
+          break;
+        }
+        if (queue.hasOpenTask(event.issueId, taskType)) {
           break;
         }
         queue.enqueue({
-          type: "new-ticket",
+          type: taskType,
           issueId: event.issueId,
           description: "Assigned to AI",
         });

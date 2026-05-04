@@ -63,6 +63,18 @@ export class PhaseGraph {
     return [...this.phases.values()].filter((p) => p.type === "human-gate");
   }
 
+  getEntryPhases(): PhaseDefinition[] {
+    const referenced = new Set<string>();
+    for (const phase of this.phases.values()) {
+      for (const target of [phase.next, phase.onFail, phase.rework, phase.escalateTo]) {
+        if (target !== undefined && target !== "done") {
+          referenced.add(target);
+        }
+      }
+    }
+    return [...this.phases.values()].filter((p) => referenced.has(p.name) === false);
+  }
+
   getAllPhases(): PhaseDefinition[] {
     return [...this.phases.values()];
   }

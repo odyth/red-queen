@@ -127,26 +127,26 @@ export class JiraIssueTrackerAdapter implements IssueTracker {
     if (mapping === undefined) {
       return [];
     }
-    const jql = `project = "${escapeJql(this.config.projectKey)}" AND "${this.config.customFields.phase}" = "${escapeJql(mapping.optionId)}"`;
+    const jql = `project = "${escapeJql(this.config.projectKey)}" AND "${this.config.customFields.phase}" = "${escapeJql(mapping.optionId)}" AND statusCategory != Done`;
+    const params = new URLSearchParams({
+      jql,
+      fields: [
+        "summary",
+        "status",
+        "assignee",
+        "reporter",
+        "issuetype",
+        "labels",
+        "created",
+        "updated",
+        this.config.customFields.phase,
+        this.config.customFields.spec,
+      ].join(","),
+      maxResults: "50",
+    });
     const response = await this.client.request<{ issues?: JiraIssueRaw[] }>(
-      "POST",
-      "/rest/api/3/search",
-      {
-        jql,
-        fields: [
-          "summary",
-          "status",
-          "assignee",
-          "reporter",
-          "issuetype",
-          "labels",
-          "created",
-          "updated",
-          this.config.customFields.phase,
-          this.config.customFields.spec,
-        ],
-        maxResults: 50,
-      },
+      "GET",
+      `/rest/api/3/search/jql?${params.toString()}`,
     );
     return (response.issues ?? []).map((r) => this.toIssue(r));
   }
@@ -403,7 +403,7 @@ export class JiraIssueTrackerAdapter implements IssueTracker {
       }
     }
     return {
-      id: raw.id,
+      id: raw.key,
       key: raw.key,
       summary: raw.fields.summary ?? "",
       status: raw.fields.status?.name ?? "unknown",

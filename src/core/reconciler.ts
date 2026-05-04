@@ -1,4 +1,5 @@
 import type { AuditLogger } from "./audit.js";
+import type { PipelineStateStore } from "./pipeline-state.js";
 import type { TaskQueue } from "./queue.js";
 import type { PhaseGraph } from "./types.js";
 import type { IssueTracker } from "../integrations/issue-tracker.js";
@@ -7,6 +8,7 @@ export interface ReconcilerDeps {
   issueTracker: IssueTracker;
   queue: TaskQueue;
   phaseGraph: PhaseGraph;
+  pipelineState: PipelineStateStore;
   audit: AuditLogger;
 }
 
@@ -17,13 +19,14 @@ export interface ReconcileResult {
 }
 
 export async function reconcile(deps: ReconcilerDeps): Promise<ReconcileResult> {
-  const { issueTracker, queue, phaseGraph, audit } = deps;
+  const { issueTracker, queue, phaseGraph, pipelineState, audit } = deps;
   let issuesFound = 0;
   let tasksCreated = 0;
   let skipped = 0;
 
   const seenIssueIds = new Set<string>();
   const automatedPhases = phaseGraph.getAutomatedPhases();
+  const entryPhaseNames = new Set(phaseGraph.getEntryPhases().map((p) => p.name));
 
   for (const phase of automatedPhases) {
     let issues;
@@ -49,6 +52,20 @@ export async function reconcile(deps: ReconcilerDeps): Promise<ReconcileResult> 
       if (queue.hasOpenTask(issue.id, phase.name)) {
         skipped++;
         continue;
+      }
+
+      if (entryPhaseNames.has(phase.name) === false) {
+        const record = pipelineState.get(issue.id);
+        if (record === null) {
+          skipped++;
+          audit.log({
+            component: "reconciler",
+            issueId: issue.id,
+            message: "no local pipeline state — run new-ticket first",
+            metadata: { phase: phase.name },
+          });
+          continue;
+        }
       }
 
       queue.enqueue({

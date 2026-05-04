@@ -93,6 +93,7 @@ export class RedQueen {
         issueTracker: this.deps.issueTracker,
         queue: this.deps.queue,
         phaseGraph: this.deps.phaseGraph,
+        pipelineState: this.deps.pipelineState,
         audit: this.deps.audit,
       });
     } catch (err) {
@@ -839,6 +840,7 @@ export class RedQueen {
         issueTracker: this.deps.issueTracker,
         queue: this.deps.queue,
         phaseGraph: this.deps.phaseGraph,
+        pipelineState: this.deps.pipelineState,
         audit: this.deps.audit,
         onTick: () => {
           this.emitQueueChanged();

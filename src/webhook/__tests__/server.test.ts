@@ -93,6 +93,7 @@ describe("WebhookServer", () => {
 
   it("accepts valid signature and enqueues phase-change task", async () => {
     issueTracker.validateResult = true;
+    pipelineState.create("PROJ-1", "spec-writing");
     const event: PipelineEvent = {
       source: "webhook",
       type: "phase-change",
@@ -164,6 +165,7 @@ describe("WebhookServer", () => {
   });
 
   it("dedups duplicate events", async () => {
+    pipelineState.create("PROJ-1", "spec-writing");
     const event: PipelineEvent = {
       source: "webhook",
       type: "phase-change",
@@ -199,6 +201,76 @@ describe("WebhookServer", () => {
     await postWebhook("/webhook/source-control", "{}");
     await new Promise((r) => setTimeout(r, 30));
     expect(pipelineState.get("PROJ-1")?.currentPhase).toBe("done");
+  });
+
+  it("phase-change to non-entry phase with no local state logs skip", async () => {
+    issueTracker.parseResult = {
+      source: "webhook",
+      type: "phase-change",
+      issueId: "PROJ-5",
+      timestamp: new Date().toISOString(),
+      payload: { phase: "coding" },
+    };
+    await postWebhook("/webhook/issue-tracker", "{}");
+    await new Promise((r) => setTimeout(r, 30));
+    expect(queue.hasOpenTask("PROJ-5", "coding")).toBe(false);
+  });
+
+  it("phase-change to entry phase on fresh DB enqueues", async () => {
+    issueTracker.parseResult = {
+      source: "webhook",
+      type: "phase-change",
+      issueId: "PROJ-6",
+      timestamp: new Date().toISOString(),
+      payload: { phase: "spec-writing" },
+    };
+    await postWebhook("/webhook/issue-tracker", "{}");
+    await new Promise((r) => setTimeout(r, 30));
+    expect(queue.hasOpenTask("PROJ-6", "spec-writing")).toBe(true);
+  });
+
+  it("assignment-change on stale non-entry Jira phase logs skip, no enqueue", async () => {
+    issueTracker.phases.set("PROJ-7", "code-review");
+    issueTracker.parseResult = {
+      source: "webhook",
+      type: "assignment-change",
+      issueId: "PROJ-7",
+      timestamp: new Date().toISOString(),
+      payload: {},
+    };
+    await postWebhook("/webhook/issue-tracker", "{}");
+    await new Promise((r) => setTimeout(r, 30));
+    expect(queue.hasOpenTask("PROJ-7", "new-ticket")).toBe(false);
+    expect(queue.hasOpenTask("PROJ-7", "code-review")).toBe(false);
+    expect(queue.listByStatus("ready")).toHaveLength(0);
+  });
+
+  it("assignment-change with null Jira phase enqueues new-ticket", async () => {
+    issueTracker.parseResult = {
+      source: "webhook",
+      type: "assignment-change",
+      issueId: "PROJ-8",
+      timestamp: new Date().toISOString(),
+      payload: {},
+    };
+    await postWebhook("/webhook/issue-tracker", "{}");
+    await new Promise((r) => setTimeout(r, 30));
+    expect(queue.hasOpenTask("PROJ-8", "new-ticket")).toBe(true);
+  });
+
+  it("assignment-change with entry-phase Jira phase enqueues that phase", async () => {
+    issueTracker.phases.set("PROJ-10", "spec-writing");
+    issueTracker.parseResult = {
+      source: "webhook",
+      type: "assignment-change",
+      issueId: "PROJ-10",
+      timestamp: new Date().toISOString(),
+      payload: {},
+    };
+    await postWebhook("/webhook/issue-tracker", "{}");
+    await new Promise((r) => setTimeout(r, 30));
+    expect(queue.hasOpenTask("PROJ-10", "spec-writing")).toBe(true);
+    expect(queue.hasOpenTask("PROJ-10", "new-ticket")).toBe(false);
   });
 });
 
@@ -251,6 +323,7 @@ describe("WebhookServer custom paths", () => {
   });
 
   it("accepts issue-tracker events on the custom path", async () => {
+    pipelineState2.create("PROJ-9", "spec-writing");
     issueTracker2.parseResult = {
       source: "webhook",
       type: "phase-change",

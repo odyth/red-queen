@@ -1,4 +1,5 @@
 import type { AuditLogger } from "./audit.js";
+import type { PipelineStateStore } from "./pipeline-state.js";
 import type { TaskQueue } from "./queue.js";
 import { reconcile } from "./reconciler.js";
 import type { PhaseGraph } from "./types.js";
@@ -8,6 +9,7 @@ export interface PollerDeps {
   issueTracker: IssueTracker;
   queue: TaskQueue;
   phaseGraph: PhaseGraph;
+  pipelineState: PipelineStateStore;
   audit: AuditLogger;
   onTick?: () => void;
 }
@@ -49,6 +51,7 @@ export class Poller {
         issueTracker: this.deps.issueTracker,
         queue: this.deps.queue,
         phaseGraph: this.deps.phaseGraph,
+        pipelineState: this.deps.pipelineState,
         audit: this.deps.audit,
       });
       if (this.deps.onTick) {

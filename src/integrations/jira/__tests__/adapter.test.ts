@@ -127,6 +127,24 @@ describe("JiraIssueTrackerAdapter", () => {
     const issue = await h.adapter.getIssue("RQ-1");
     expect(issue.phase).toBe("coding");
     expect(issue.summary).toBe("test");
+    expect(issue.id).toBe("RQ-1");
+  });
+
+  it("listIssuesByPhase hits GET /search/jql with query string", async () => {
+    h.setResponse((c) => c.method === "GET" && c.url.includes("/rest/api/3/search/jql"), {
+      issues: [{ id: "10000", key: "RQ-7", fields: { summary: "s", issuetype: { name: "Task" } } }],
+    });
+    const issues = await h.adapter.listIssuesByPhase("coding");
+    const searchCall = h.calls.find((c) => c.url.includes("/rest/api/3/search/jql"));
+    expect(searchCall?.method).toBe("GET");
+    expect(searchCall?.url).toContain("jql=");
+    expect(searchCall?.url).toContain("fields=");
+    expect(searchCall?.url).toContain("maxResults=50");
+    // JQL must filter out Done status category (unquoted form)
+    const parsedJql = new URL(searchCall?.url ?? "").searchParams.get("jql") ?? "";
+    expect(parsedJql).toContain("statusCategory != Done");
+    // Issue.id must be the Jira key, not the numeric id
+    expect(issues[0]?.id).toBe("RQ-7");
   });
 
   it("setPhase sends PUT with option id", async () => {

@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SCHEMA_SQL } from "../database.js";
 import { SqliteTaskQueue } from "../queue.js";
+import { PipelineStateStore } from "../pipeline-state.js";
 import { DualWriteAuditLogger } from "../audit.js";
 import { buildPhaseGraph } from "../config.js";
 import { DEFAULT_PHASES } from "../defaults.js";
@@ -14,6 +15,7 @@ import { MockIssueTracker, makeIssue } from "./fixtures/mock-adapters.js";
 
 let db: BetterSqlite3.Database;
 let queue: SqliteTaskQueue;
+let pipelineState: PipelineStateStore;
 let audit: DualWriteAuditLogger;
 let tempDir: string;
 
@@ -23,6 +25,7 @@ describe("Poller", () => {
     db = new Database(":memory:");
     db.exec(SCHEMA_SQL);
     queue = new SqliteTaskQueue(db);
+    pipelineState = new PipelineStateStore(db);
     audit = new DualWriteAuditLogger(db, join(tempDir, "audit.log"));
   });
 
@@ -34,16 +37,16 @@ describe("Poller", () => {
   it("tick() creates tasks for new work", async () => {
     const phaseGraph = buildPhaseGraph(DEFAULT_PHASES);
     const issueTracker = new MockIssueTracker();
-    issueTracker.listByPhaseResults.set("coding", [makeIssue("PROJ-1")]);
-    const poller = new Poller({ issueTracker, queue, phaseGraph, audit }, 1_000_000);
+    issueTracker.listByPhaseResults.set("spec-writing", [makeIssue("PROJ-1")]);
+    const poller = new Poller({ issueTracker, queue, phaseGraph, pipelineState, audit }, 1_000_000);
     await poller.tick();
-    expect(queue.hasOpenTask("PROJ-1", "coding")).toBe(true);
+    expect(queue.hasOpenTask("PROJ-1", "spec-writing")).toBe(true);
   });
 
   it("start/stop schedule and cancel the interval", () => {
     const phaseGraph = buildPhaseGraph(DEFAULT_PHASES);
     const issueTracker = new MockIssueTracker();
-    const poller = new Poller({ issueTracker, queue, phaseGraph, audit }, 10_000);
+    const poller = new Poller({ issueTracker, queue, phaseGraph, pipelineState, audit }, 10_000);
     poller.start();
     poller.stop();
   });
@@ -60,7 +63,7 @@ describe("Poller", () => {
         }, 20);
       });
     };
-    const poller = new Poller({ issueTracker, queue, phaseGraph, audit }, 1_000_000);
+    const poller = new Poller({ issueTracker, queue, phaseGraph, pipelineState, audit }, 1_000_000);
     const a = poller.tick();
     const b = poller.tick();
     await Promise.all([a, b]);
