@@ -26,12 +26,37 @@ const PhaseDefinitionSchema = z.object({
   priority: z.number().int().min(0).optional(),
 });
 
+const WEBHOOK_PATH_RE = /^\/[A-Za-z0-9._~\-/]*$/;
+
+const WebhookPathsSchema = z
+  .object({
+    issueTracker: z
+      .string()
+      .regex(WEBHOOK_PATH_RE, "webhook path must start with '/' and be URL-safe")
+      .default("/webhook/issue-tracker"),
+    sourceControl: z
+      .string()
+      .regex(WEBHOOK_PATH_RE, "webhook path must start with '/' and be URL-safe")
+      .default("/webhook/source-control"),
+  })
+  .default({
+    issueTracker: "/webhook/issue-tracker",
+    sourceControl: "/webhook/source-control",
+  });
+
 const WebhooksSchema = z
   .object({
     enabled: z.boolean().default(false),
-    secret: z.string().optional(),
+    publicBaseUrl: z.url().optional(),
+    paths: WebhookPathsSchema,
   })
-  .default({ enabled: false });
+  .default({
+    enabled: false,
+    paths: {
+      issueTracker: "/webhook/issue-tracker",
+      sourceControl: "/webhook/source-control",
+    },
+  });
 
 const DEFAULT_BRANCH_PREFIXES: Record<string, string> = {
   feature: "feature/",
@@ -88,7 +113,13 @@ const ConfigSchema = z
         workerTimeout: 2700,
         baseBranch: "origin/main",
         branchPrefixes: DEFAULT_BRANCH_PREFIXES,
-        webhooks: { enabled: false },
+        webhooks: {
+          enabled: false,
+          paths: {
+            issueTracker: "/webhook/issue-tracker",
+            sourceControl: "/webhook/source-control",
+          },
+        },
         model: "opus",
         effort: "high",
         stallThresholdMs: 300000,
@@ -134,6 +165,15 @@ const ConfigSchema = z
           message: `pipeline.webhooks.enabled is true but ${path}.config.webhookSecret is empty — set the corresponding env var or disable webhooks`,
         });
       }
+    }
+    if (
+      config.pipeline.webhooks.paths.issueTracker === config.pipeline.webhooks.paths.sourceControl
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["pipeline", "webhooks", "paths"],
+        message: `issueTracker and sourceControl webhook paths collide ("${config.pipeline.webhooks.paths.issueTracker}")`,
+      });
     }
   });
 

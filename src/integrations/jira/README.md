@@ -98,7 +98,10 @@ Webhooks reduce polling latency but are **optional** — Red Queen's
 poller keeps things working without them.
 
 1. In Jira: **Settings → System → Webhooks → Create webhook**.
-2. URL: `<red-queen-public-url>/webhook/issue-tracker`.
+2. URL: `<red-queen-public-url>/webhook/issue-tracker` (or whatever you
+   configured under `pipeline.webhooks.paths.issueTracker` — `redqueen start`
+   prints the exact URL to paste when `pipeline.webhooks.publicBaseUrl`
+   is set).
 3. Events: `Issue: updated`.
 4. JQL: `project = "RQ"` (restrict to your project).
 5. Secret: put the same string in `JIRA_WEBHOOK_SECRET`.

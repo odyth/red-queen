@@ -826,7 +826,7 @@ export class RedQueen {
         this.emitQueueChanged();
       },
     });
-    this.webhook.register(this.dashboard);
+    this.webhook.register(this.dashboard, this.deps.config.pipeline.webhooks.paths);
   }
 
   private startPollerIfConfigured(): void {

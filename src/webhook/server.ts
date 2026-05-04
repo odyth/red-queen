@@ -17,6 +17,16 @@ export interface WebhookServerDeps {
   onEvent?: (event: PipelineEvent) => void;
 }
 
+export interface WebhookRoutePaths {
+  issueTracker: string;
+  sourceControl: string;
+}
+
+const DEFAULT_ROUTE_PATHS: WebhookRoutePaths = {
+  issueTracker: "/webhook/issue-tracker",
+  sourceControl: "/webhook/source-control",
+};
+
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 
 export class WebhookServer {
@@ -26,15 +36,15 @@ export class WebhookServer {
     this.deps = deps;
   }
 
-  register(dashboard: DashboardServer): void {
+  register(dashboard: DashboardServer, paths: WebhookRoutePaths = DEFAULT_ROUTE_PATHS): void {
     dashboard.registerRoute(
       "POST",
-      "/webhook/issue-tracker",
+      paths.issueTracker,
       this.handleIssueTracker.bind(this) as RouteHandler,
     );
     dashboard.registerRoute(
       "POST",
-      "/webhook/source-control",
+      paths.sourceControl,
       this.handleSourceControl.bind(this) as RouteHandler,
     );
   }

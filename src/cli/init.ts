@@ -45,7 +45,9 @@ interface InitAnswers {
   sourceControlConfig: Record<string, unknown>;
   githubAuthKind: GitHubAuthKind;
   webhooksEnabled: boolean;
-  webhookSecret: string | null;
+  webhookPublicBaseUrl: string | null;
+  webhookIssueTrackerPath: string | null;
+  webhookSourceControlPath: string | null;
   dashboardPort: number;
   codingStandardsTemplate: string;
   reviewChecklistTemplate: string;
@@ -140,17 +142,19 @@ async function interactivePrompt(projectDir: string): Promise<InitAnswers> {
 
     const githubAuthKind = await pickGitHubAuthKind(rl);
     const githubAuthBlock = buildGitHubAuthBlock(githubAuthKind);
+    const webhookAnswers = await pickWebhooks(rl);
     const { issueTrackerType, issueTrackerConfig } = await pickIssueTracker(
       rl,
       projectDir,
       githubAuthBlock,
+      webhookAnswers.webhooksEnabled,
     );
     const { sourceControlType, sourceControlConfig } = await pickSourceControl(
       rl,
       projectDir,
       githubAuthBlock,
+      webhookAnswers.webhooksEnabled,
     );
-    const { webhooksEnabled, webhookSecret } = await pickWebhooks(rl);
     const dashboardPort = await pickDashboardPort(rl);
 
     const codingStandardsTemplate = await pickTemplate(
@@ -178,8 +182,10 @@ async function interactivePrompt(projectDir: string): Promise<InitAnswers> {
       sourceControlType,
       sourceControlConfig,
       githubAuthKind,
-      webhooksEnabled,
-      webhookSecret,
+      webhooksEnabled: webhookAnswers.webhooksEnabled,
+      webhookPublicBaseUrl: webhookAnswers.publicBaseUrl,
+      webhookIssueTrackerPath: webhookAnswers.issueTrackerPath,
+      webhookSourceControlPath: webhookAnswers.sourceControlPath,
       dashboardPort,
       codingStandardsTemplate,
       reviewChecklistTemplate,
@@ -222,7 +228,9 @@ async function answerWithDefaults(projectDir: string): Promise<InitAnswers> {
     },
     githubAuthKind: "pat",
     webhooksEnabled: false,
-    webhookSecret: null,
+    webhookPublicBaseUrl: null,
+    webhookIssueTrackerPath: null,
+    webhookSourceControlPath: null,
     dashboardPort: 4400,
     codingStandardsTemplate: primary === "blank" ? "blank" : primary,
     reviewChecklistTemplate: "web-api",
@@ -359,6 +367,7 @@ async function pickIssueTracker(
   rl: ReturnType<typeof createInterface>,
   projectDir: string,
   githubAuthBlock: Record<string, unknown>,
+  webhooksEnabled: boolean,
 ): Promise<{
   issueTrackerType: "jira" | "github-issues";
   issueTrackerConfig: Record<string, unknown>;
@@ -374,43 +383,51 @@ async function pickIssueTracker(
     const parsed = remote !== null ? parseGitRemote(remote) : null;
     const owner = await rl.question(`GitHub owner [${parsed?.owner ?? ""}]: `);
     const repo = await rl.question(`GitHub repo [${parsed?.repo ?? ""}]: `);
+    const base: Record<string, unknown> = {
+      owner: owner.trim().length > 0 ? owner.trim() : (parsed?.owner ?? ""),
+      repo: repo.trim().length > 0 ? repo.trim() : (parsed?.repo ?? ""),
+      auth: githubAuthBlock,
+    };
+    if (webhooksEnabled) {
+      base.webhookSecret = "${GITHUB_WEBHOOK_SECRET}";
+    }
     return {
       issueTrackerType: "github-issues",
-      issueTrackerConfig: {
-        owner: owner.trim().length > 0 ? owner.trim() : (parsed?.owner ?? ""),
-        repo: repo.trim().length > 0 ? repo.trim() : (parsed?.repo ?? ""),
-        auth: githubAuthBlock,
-      },
+      issueTrackerConfig: base,
     };
   }
   const baseUrl = (await rl.question("Jira base URL (e.g. https://yourco.atlassian.net): ")).trim();
   const email = (await rl.question("Jira account email: ")).trim();
   const cloudId = (await rl.question("Jira cloud ID: ")).trim();
   const projectKey = (await rl.question("Jira project key: ")).trim();
+  const jiraConfig: Record<string, unknown> = {
+    baseUrl,
+    email,
+    apiToken: "${JIRA_TOKEN}",
+    cloudId,
+    projectKey,
+    customFields: {
+      phase: "<CHANGE ME>",
+      spec: "<CHANGE ME>",
+    },
+    phaseMapping: {
+      "spec-writing": { optionId: "<CHANGE ME>" },
+      "spec-review": { optionId: "<CHANGE ME>" },
+      coding: { optionId: "<CHANGE ME>" },
+      "code-review": { optionId: "<CHANGE ME>" },
+      testing: { optionId: "<CHANGE ME>" },
+      "human-review": { optionId: "<CHANGE ME>" },
+      "spec-feedback": { optionId: "<CHANGE ME>" },
+      "code-feedback": { optionId: "<CHANGE ME>" },
+      blocked: { optionId: "<CHANGE ME>" },
+    },
+  };
+  if (webhooksEnabled) {
+    jiraConfig.webhookSecret = "${JIRA_WEBHOOK_SECRET}";
+  }
   return {
     issueTrackerType: "jira",
-    issueTrackerConfig: {
-      baseUrl,
-      email,
-      apiToken: "${JIRA_TOKEN}",
-      cloudId,
-      projectKey,
-      customFields: {
-        phase: "<CHANGE ME>",
-        spec: "<CHANGE ME>",
-      },
-      phaseMapping: {
-        "spec-writing": { optionId: "<CHANGE ME>" },
-        "spec-review": { optionId: "<CHANGE ME>" },
-        coding: { optionId: "<CHANGE ME>" },
-        "code-review": { optionId: "<CHANGE ME>" },
-        testing: { optionId: "<CHANGE ME>" },
-        "human-review": { optionId: "<CHANGE ME>" },
-        "spec-feedback": { optionId: "<CHANGE ME>" },
-        "code-feedback": { optionId: "<CHANGE ME>" },
-        blocked: { optionId: "<CHANGE ME>" },
-      },
-    },
+    issueTrackerConfig: jiraConfig,
   };
 }
 
@@ -418,6 +435,7 @@ async function pickSourceControl(
   rl: ReturnType<typeof createInterface>,
   projectDir: string,
   githubAuthBlock: Record<string, unknown>,
+  webhooksEnabled: boolean,
 ): Promise<{
   sourceControlType: "github";
   sourceControlConfig: Record<string, unknown>;
@@ -426,13 +444,17 @@ async function pickSourceControl(
   const parsed = remote !== null ? parseGitRemote(remote) : null;
   const owner = await rl.question(`GitHub owner [${parsed?.owner ?? ""}]: `);
   const repo = await rl.question(`GitHub repo [${parsed?.repo ?? ""}]: `);
+  const base: Record<string, unknown> = {
+    owner: owner.trim().length > 0 ? owner.trim() : (parsed?.owner ?? ""),
+    repo: repo.trim().length > 0 ? repo.trim() : (parsed?.repo ?? ""),
+    auth: githubAuthBlock,
+  };
+  if (webhooksEnabled) {
+    base.webhookSecret = "${GITHUB_WEBHOOK_SECRET}";
+  }
   return {
     sourceControlType: "github",
-    sourceControlConfig: {
-      owner: owner.trim().length > 0 ? owner.trim() : (parsed?.owner ?? ""),
-      repo: repo.trim().length > 0 ? repo.trim() : (parsed?.repo ?? ""),
-      auth: githubAuthBlock,
-    },
+    sourceControlConfig: base,
   };
 }
 
@@ -456,19 +478,56 @@ function buildGitHubAuthBlock(kind: GitHubAuthKind): Record<string, unknown> {
   };
 }
 
-async function pickWebhooks(
-  rl: ReturnType<typeof createInterface>,
-): Promise<{ webhooksEnabled: boolean; webhookSecret: string | null }> {
+async function pickWebhooks(rl: ReturnType<typeof createInterface>): Promise<{
+  webhooksEnabled: boolean;
+  publicBaseUrl: string | null;
+  issueTrackerPath: string | null;
+  sourceControlPath: string | null;
+}> {
   const resp = (await rl.question("Enable webhook receiver? [y/N]: ")).trim().toLowerCase();
   if (resp !== "y") {
-    return { webhooksEnabled: false, webhookSecret: null };
+    return {
+      webhooksEnabled: false,
+      publicBaseUrl: null,
+      issueTrackerPath: null,
+      sourceControlPath: null,
+    };
   }
-  // Secrets never live in the yaml file. Default to an env var ref; the user
-  // fills in the real value in .env.
+  // Per-adapter secrets live on the adapter config (issueTracker.config.webhookSecret,
+  // sourceControl.config.webhookSecret). The init caller wires those in based on
+  // webhooksEnabled — this function only handles pipeline-level webhook settings.
+  const publicRaw = (
+    await rl.question(
+      "Public base URL for webhooks (e.g. https://hooks.example.com, blank to skip): ",
+    )
+  ).trim();
+  const publicBaseUrl = publicRaw.length > 0 ? publicRaw.replace(/\/$/, "") : null;
+  const itPath = await promptWebhookPath(rl, "issue-tracker");
+  const scPath = await promptWebhookPath(rl, "source-control");
   return {
     webhooksEnabled: true,
-    webhookSecret: "${REDQUEEN_WEBHOOK_SECRET}",
+    publicBaseUrl,
+    issueTrackerPath: itPath,
+    sourceControlPath: scPath,
   };
+}
+
+async function promptWebhookPath(
+  rl: ReturnType<typeof createInterface>,
+  kind: "issue-tracker" | "source-control",
+): Promise<string | null> {
+  const defaultPath = `/webhook/${kind}`;
+  for (;;) {
+    const resp = (await rl.question(`Webhook path for ${kind} [${defaultPath}]: `)).trim();
+    if (resp.length === 0) {
+      return null;
+    }
+    if (resp.startsWith("/") === false) {
+      process.stdout.write("Path must start with '/'. Try again.\n");
+      continue;
+    }
+    return resp;
+  }
 }
 
 async function pickDashboardPort(rl: ReturnType<typeof createInterface>): Promise<number> {
@@ -564,7 +623,14 @@ function writeDotEnvScaffold(projectDir: string, answers: InitAnswers): void {
     needed.push("JIRA_TOKEN");
   }
   if (answers.webhooksEnabled) {
-    needed.push("REDQUEEN_WEBHOOK_SECRET");
+    // Per-adapter webhook secrets. Issue-tracker adapter reads from
+    // whichever env var matches its integration; source-control adapter
+    // reads GITHUB_WEBHOOK_SECRET. github-issues reuses the GitHub secret
+    // because the webhook comes from the same GitHub webhook provider.
+    if (answers.issueTrackerType === "jira") {
+      needed.push("JIRA_WEBHOOK_SECRET");
+    }
+    needed.push("GITHUB_WEBHOOK_SECRET");
   }
 
   if (needed.length === 0) {
@@ -592,6 +658,27 @@ function writeDotEnvScaffold(projectDir: string, answers: InitAnswers): void {
 }
 
 function writeConfigFile(path: string, answers: InitAnswers): void {
+  const pipeline: Record<string, unknown> = {
+    baseBranch: answers.baseBranch,
+  };
+  if (answers.webhooksEnabled) {
+    const webhooks: Record<string, unknown> = { enabled: true };
+    if (answers.webhookPublicBaseUrl !== null) {
+      webhooks.publicBaseUrl = answers.webhookPublicBaseUrl;
+    }
+    const paths: Record<string, string> = {};
+    if (answers.webhookIssueTrackerPath !== null) {
+      paths.issueTracker = answers.webhookIssueTrackerPath;
+    }
+    if (answers.webhookSourceControlPath !== null) {
+      paths.sourceControl = answers.webhookSourceControlPath;
+    }
+    if (Object.keys(paths).length > 0) {
+      webhooks.paths = paths;
+    }
+    pipeline.webhooks = webhooks;
+  }
+
   const config: Record<string, unknown> = {
     issueTracker: {
       type: answers.issueTrackerType,
@@ -601,17 +688,7 @@ function writeConfigFile(path: string, answers: InitAnswers): void {
       type: answers.sourceControlType,
       config: answers.sourceControlConfig,
     },
-    pipeline: {
-      baseBranch: answers.baseBranch,
-      ...(answers.webhooksEnabled
-        ? {
-            webhooks: {
-              enabled: true,
-              secret: answers.webhookSecret ?? "<CHANGE ME>",
-            },
-          }
-        : {}),
-    },
+    pipeline,
     project: {
       buildCommand: answers.buildCommand,
       testCommand: answers.testCommand,

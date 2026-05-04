@@ -145,6 +145,117 @@ pipeline:
 `;
     const config = parseConfig(yaml);
     expect(config.pipeline.webhooks.enabled).toBe(true);
+    expect(config.pipeline.webhooks.paths.issueTracker).toBe("/webhook/issue-tracker");
+    expect(config.pipeline.webhooks.paths.sourceControl).toBe("/webhook/source-control");
+  });
+
+  it("accepts custom webhook paths and publicBaseUrl", () => {
+    const yaml = `
+issueTracker:
+  type: github-issues
+  config:
+    owner: o
+    repo: r
+    webhookSecret: "shh"
+sourceControl:
+  type: github
+  config:
+    owner: o
+    repo: r
+    webhookSecret: "shh"
+project:
+  buildCommand: "npm run build"
+  testCommand: "npm test"
+pipeline:
+  webhooks:
+    enabled: true
+    publicBaseUrl: https://hooks.example.com
+    paths:
+      issueTracker: /webhook/jira
+      sourceControl: /webhook/github
+`;
+    const config = parseConfig(yaml);
+    expect(config.pipeline.webhooks.paths.issueTracker).toBe("/webhook/jira");
+    expect(config.pipeline.webhooks.paths.sourceControl).toBe("/webhook/github");
+    expect(config.pipeline.webhooks.publicBaseUrl).toBe("https://hooks.example.com");
+  });
+
+  it("rejects webhook paths that do not start with '/'", () => {
+    const yaml = `
+issueTracker:
+  type: github-issues
+  config:
+    owner: o
+    repo: r
+    webhookSecret: "shh"
+sourceControl:
+  type: github
+  config:
+    owner: o
+    repo: r
+    webhookSecret: "shh"
+project:
+  buildCommand: "npm run build"
+  testCommand: "npm test"
+pipeline:
+  webhooks:
+    enabled: true
+    paths:
+      issueTracker: webhook/jira
+`;
+    expect(() => parseConfig(yaml)).toThrow(/webhook path must start with/);
+  });
+
+  it("rejects colliding webhook paths", () => {
+    const yaml = `
+issueTracker:
+  type: github-issues
+  config:
+    owner: o
+    repo: r
+    webhookSecret: "shh"
+sourceControl:
+  type: github
+  config:
+    owner: o
+    repo: r
+    webhookSecret: "shh"
+project:
+  buildCommand: "npm run build"
+  testCommand: "npm test"
+pipeline:
+  webhooks:
+    enabled: true
+    paths:
+      issueTracker: /webhook/same
+      sourceControl: /webhook/same
+`;
+    expect(() => parseConfig(yaml)).toThrow(/collide/);
+  });
+
+  it("rejects invalid publicBaseUrl", () => {
+    const yaml = `
+issueTracker:
+  type: github-issues
+  config:
+    owner: o
+    repo: r
+    webhookSecret: "shh"
+sourceControl:
+  type: github
+  config:
+    owner: o
+    repo: r
+    webhookSecret: "shh"
+project:
+  buildCommand: "npm run build"
+  testCommand: "npm test"
+pipeline:
+  webhooks:
+    enabled: true
+    publicBaseUrl: not-a-url
+`;
+    expect(() => parseConfig(yaml)).toThrow();
   });
 
   it("parses custom phases", () => {

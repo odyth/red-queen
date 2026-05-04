@@ -201,3 +201,99 @@ describe("WebhookServer", () => {
     expect(pipelineState.get("PROJ-1")?.currentPhase).toBe("done");
   });
 });
+
+describe("WebhookServer custom paths", () => {
+  let db2: BetterSqlite3.Database;
+  let tempDir2: string;
+  let queue2: SqliteTaskQueue;
+  let pipelineState2: PipelineStateStore;
+  let audit2: DualWriteAuditLogger;
+  let dashboard2: DashboardServer;
+  let port2: number;
+  let issueTracker2: MockIssueTracker;
+  let sourceControl2: MockSourceControl;
+
+  beforeEach(async () => {
+    tempDir2 = mkdtempSync(join(tmpdir(), "rq-webhook-paths-"));
+    db2 = new Database(":memory:");
+    db2.exec(SCHEMA_SQL);
+    queue2 = new SqliteTaskQueue(db2);
+    pipelineState2 = new PipelineStateStore(db2);
+    const orchestratorState2 = new OrchestratorStateStore(db2);
+    audit2 = new DualWriteAuditLogger(db2, join(tempDir2, "audit.log"));
+    issueTracker2 = new MockIssueTracker();
+    sourceControl2 = new MockSourceControl();
+    port2 = await getFreePort();
+    dashboard2 = new DashboardServer(
+      { queue: queue2, orchestratorState: orchestratorState2, audit: audit2 },
+      { host: "127.0.0.1", port: port2, enableDashboardUi: true },
+    );
+    await dashboard2.start();
+    const phaseGraph = buildPhaseGraph(DEFAULT_PHASES);
+    const webhook = new WebhookServer({
+      issueTracker: issueTracker2,
+      sourceControl: sourceControl2,
+      queue: queue2,
+      pipelineState: pipelineState2,
+      phaseGraph,
+      audit: audit2,
+    });
+    webhook.register(dashboard2, {
+      issueTracker: "/webhook/jira",
+      sourceControl: "/webhook/github",
+    });
+  });
+
+  afterEach(async () => {
+    await dashboard2.stop();
+    db2.close();
+    rmSync(tempDir2, { recursive: true, force: true });
+  });
+
+  it("accepts issue-tracker events on the custom path", async () => {
+    issueTracker2.parseResult = {
+      source: "webhook",
+      type: "phase-change",
+      issueId: "PROJ-9",
+      timestamp: new Date().toISOString(),
+      payload: { phase: "coding" },
+    };
+    const res = await fetch(`http://127.0.0.1:${String(port2)}/webhook/jira`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    expect(res.status).toBe(200);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(queue2.hasOpenTask("PROJ-9", "coding")).toBe(true);
+  });
+
+  it("accepts source-control events on the custom path", async () => {
+    pipelineState2.create("PROJ-9", "code-review");
+    pipelineState2.updatePrNumber("PROJ-9", 7);
+    sourceControl2.parseResult = {
+      source: "webhook",
+      type: "pr-feedback",
+      issueId: "PROJ-9",
+      timestamp: new Date().toISOString(),
+      payload: {},
+    };
+    const res = await fetch(`http://127.0.0.1:${String(port2)}/webhook/github`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    expect(res.status).toBe(200);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(queue2.hasOpenTask("PROJ-9", "code-feedback")).toBe(true);
+  });
+
+  it("404s on the default path when custom paths are registered", async () => {
+    const res = await fetch(`http://127.0.0.1:${String(port2)}/webhook/issue-tracker`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    expect(res.status).toBe(404);
+  });
+});

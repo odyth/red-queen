@@ -52,7 +52,10 @@ poller keeps everything working without them.
    ```
    The CLI prints a public URL like `https://<random>.trycloudflare.com`.
 2. In your repo: **Settings → Webhooks → Add webhook**.
-   - Payload URL: `<public-url>/webhook/source-control`
+   - Payload URL: `<public-url>/webhook/source-control` (or whatever you
+     configured under `pipeline.webhooks.paths.sourceControl` — `redqueen start`
+     prints the exact URL to paste when `pipeline.webhooks.publicBaseUrl`
+     is set).
    - Content type: `application/json`
    - Secret: the same string you put in `GITHUB_WEBHOOK_SECRET`.
    - Events: `issues`, `issue_comment`, `pull_request`,

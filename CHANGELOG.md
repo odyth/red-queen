@@ -17,6 +17,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Brand assets (logo, social card) under `assets/brand/` and tagline
   wired into README and dashboard header.
 
+## [0.1.3] - YYYY-MM-DD
+
+### Fixed
+
+- `redqueen init` with webhooks enabled now produces a config that
+  passes `redqueen start` validation without manual editing. Previously
+  init wrote `pipeline.webhooks.secret` while the validator expected
+  adapter-scoped `issueTracker.config.webhookSecret` and
+  `sourceControl.config.webhookSecret` — enabling webhooks through init
+  would always fail to start.
+
+### Added
+
+- `pipeline.webhooks.paths.issueTracker` and `pipeline.webhooks.paths.sourceControl`
+  are now configurable. Defaults remain `/webhook/issue-tracker` and
+  `/webhook/source-control`. Paths must start with `/` and must not
+  collide.
+- `pipeline.webhooks.publicBaseUrl` (optional). When set, the `start`
+  banner prints the full public webhook URLs for issue tracker and
+  source control — making the "paste this into Jira/GitHub" step
+  explicit.
+- `redqueen init` now prompts for `publicBaseUrl` and custom webhook
+  paths when webhooks are enabled, and scaffolds per-adapter secrets
+  (`JIRA_WEBHOOK_SECRET` + `GITHUB_WEBHOOK_SECRET`) in `.env` instead
+  of the unused `REDQUEEN_WEBHOOK_SECRET`.
+
 ## [0.1.2] - 2026-04-29
 
 ### Fixed

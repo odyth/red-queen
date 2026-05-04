@@ -147,7 +147,11 @@ export async function cmdStart(args: string[]): Promise<void> {
         port: config.dashboard.port,
         enabled: config.dashboard.enabled,
       },
-      webhooksEnabled: config.pipeline.webhooks.enabled,
+      webhooks: {
+        enabled: config.pipeline.webhooks.enabled,
+        publicBaseUrl: config.pipeline.webhooks.publicBaseUrl ?? null,
+        paths: config.pipeline.webhooks.paths,
+      },
       pid: process.pid,
     });
   }
@@ -183,7 +187,11 @@ interface BannerInput {
   projectDir: string;
   dbPath: string;
   dashboard: { host: string; port: number; enabled: boolean };
-  webhooksEnabled: boolean;
+  webhooks: {
+    enabled: boolean;
+    publicBaseUrl: string | null;
+    paths: { issueTracker: string; sourceControl: string };
+  };
   pid: number;
 }
 
@@ -223,6 +231,24 @@ function printBanner(input: BannerInput): void {
   process.stdout.write(`  project:   ${input.projectDir}\n`);
   process.stdout.write(`  database:  ${input.dbPath}\n`);
   process.stdout.write(`  dashboard: ${dash}\n`);
-  process.stdout.write(`  webhooks:  ${input.webhooksEnabled ? "enabled" : "disabled"}\n`);
+  process.stdout.write(`  webhooks:  ${input.webhooks.enabled ? "enabled" : "disabled"}\n`);
   process.stdout.write(`  pid:       ${String(input.pid)}\n`);
+  if (input.webhooks.enabled) {
+    const localBase = `http://${input.dashboard.host}:${String(input.dashboard.port)}`;
+    process.stdout.write(
+      `  issue-tracker webhook:  ${localBase}${input.webhooks.paths.issueTracker}\n`,
+    );
+    process.stdout.write(
+      `  source-control webhook: ${localBase}${input.webhooks.paths.sourceControl}\n`,
+    );
+    if (input.webhooks.publicBaseUrl !== null) {
+      const pub = input.webhooks.publicBaseUrl;
+      process.stdout.write(
+        `  (paste into issue tracker): ${pub}${input.webhooks.paths.issueTracker}\n`,
+      );
+      process.stdout.write(
+        `  (paste into source control): ${pub}${input.webhooks.paths.sourceControl}\n`,
+      );
+    }
+  }
 }
