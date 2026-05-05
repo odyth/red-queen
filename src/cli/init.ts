@@ -108,6 +108,11 @@ export async function cmdInit(args: string[]): Promise<void> {
   );
   process.stdout.write("\n");
   process.stdout.write("Next: fill in .env, then run `npx redqueen start`.\n");
+  if (answers.issueTrackerType === "jira") {
+    process.stdout.write(
+      "Next: run `redqueen jira discover` to auto-fill customFields and phaseMapping.\n",
+    );
+  }
   process.stdout.write(
     "Tip: ask Claude Code to tailor .redqueen/references/ to this codebase — the templates are a starting point.\n",
   );

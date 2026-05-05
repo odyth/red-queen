@@ -11,6 +11,7 @@ Top-level commands:
   stop                        Stop a running orchestrator
   status                      Show orchestrator status
   service <sub>               Manage the background daemon (install/start/stop/restart/status/uninstall)
+  jira <sub>                  Jira helpers (discover)
 
 Helper commands (called by skills):
   issue get <id>              Fetch an issue as JSON
@@ -62,6 +63,14 @@ Subcommands:
   restart          Restart the service
   status           Show install/run state and log paths
   uninstall        Stop, disable, and remove the service
+`,
+  jira: `redqueen jira — Jira helper commands
+Subcommands:
+  discover         Auto-fill customFields and phaseMapping by querying Jira
+
+Options for 'discover':
+  -y, --yes        Apply without prompting (CI-friendly)
+  --dry-run        Print the proposed diff; never write
 `,
 };
 

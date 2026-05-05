@@ -10,6 +10,7 @@ import { cmdSpec } from "./spec.js";
 import { cmdPr } from "./pr.js";
 import { cmdPipeline } from "./pipeline.js";
 import { cmdService } from "./service.js";
+import { cmdJira } from "./jira.js";
 
 async function main(argv: string[]): Promise<void> {
   const [command, ...rest] = argv;
@@ -50,6 +51,9 @@ async function main(argv: string[]): Promise<void> {
       return;
     case "service":
       await cmdService(rest);
+      return;
+    case "jira":
+      await cmdJira(rest);
       return;
     default:
       throw new CliError(`Unknown command: ${command}. Run 'redqueen --help' for usage.`);
