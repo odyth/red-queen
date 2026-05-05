@@ -255,6 +255,7 @@ export class JiraIssueTrackerAdapter implements IssueTracker {
     const response = await fetch(attachment.url, {
       headers: {
         Authorization: this.client.authorization,
+        // Jira's attachment CDN 406s when we narrow content negotiation to the declared MIME type.
         Accept: "*/*",
       },
     });

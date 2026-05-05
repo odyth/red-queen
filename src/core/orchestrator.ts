@@ -492,6 +492,8 @@ export class RedQueen {
       return;
     }
 
+    // pipelineState is the source of truth for delegator; task.metadata.delegator only
+    // seeds it on first create. Updates to an existing record happen at webhook time.
     const delegatorFromTask =
       typeof task.metadata.delegator === "string" ? task.metadata.delegator : null;
     const pipelineRecord =

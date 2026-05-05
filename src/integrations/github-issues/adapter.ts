@@ -116,6 +116,8 @@ export class GitHubIssuesAdapter implements IssueTracker {
     }
     const issue = await this.getIssue(issueId);
     const target = preferredAssignee ?? issue.reporter;
+    const source =
+      preferredAssignee !== null && preferredAssignee !== undefined ? "delegator" : "reporter";
     if (target !== null) {
       await this.addComment(
         issueId,
@@ -136,6 +138,7 @@ export class GitHubIssuesAdapter implements IssueTracker {
         // 422 or 403 — not assignable. Swallow; the comment covers us.
         this.audit(`assignToHuman: could not assign ${target}`, {
           error: (err as Error).message,
+          source,
         });
       }
     }

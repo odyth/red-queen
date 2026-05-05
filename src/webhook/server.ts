@@ -178,6 +178,13 @@ export class WebhookServer {
           if (delegator !== null) {
             pipelineState.updateDelegator(event.issueId, delegator);
           }
+        } else if (delegator !== null) {
+          // Entry phase: the new-ticket task created below carries delegator in metadata
+          // and persists it on create. If a record already exists (re-entry), keep it in sync.
+          const record = pipelineState.get(event.issueId);
+          if (record !== null) {
+            pipelineState.updateDelegator(event.issueId, delegator);
+          }
         }
         if (queue.hasOpenTask(event.issueId, phaseName)) {
           break;

@@ -468,9 +468,8 @@ describe("RedQueen orchestrator", () => {
   });
 
   it("transitionTo on failure passes stored delegator to assignToHuman", async () => {
-    // spec-writing's rework target is spec-feedback (automated), so force escalation via blocked.
-    // Use default config which has maxIterations; we hit onFail path.
-    // Simpler: use maxRetries = 0 to skip retries and use code-review failure path.
+    // Pre-bump reviewIterations past maxIterations so code-review failure escalates
+    // immediately via transitionTo, which is the path that reads delegator.
     const h = setupHarness(() =>
       Promise.resolve({
         success: false,
@@ -480,10 +479,8 @@ describe("RedQueen orchestrator", () => {
         error: "rejected",
       }),
     );
-    // Force immediate escalation by bumping reviewIterations to exceed maxIterations.
     h.pipelineState.create("PROJ-60", "code-review", "justin-60");
     h.issueTracker.phases.set("PROJ-60", "code-review");
-    // Push iterations high so escalation triggers immediately.
     for (let i = 0; i < 10; i++) {
       h.pipelineState.incrementReviewIterations("PROJ-60");
     }
