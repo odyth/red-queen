@@ -78,6 +78,7 @@ export function parseJiraWebhookEvent(
   }
 
   const nowIso = new Date().toISOString();
+  const delegator: string | null = typeof userAccount === "string" ? userAccount : null;
 
   for (const raw of items as ChangelogItem[]) {
     const fieldId = raw.fieldId ?? raw.field;
@@ -95,7 +96,7 @@ export function parseJiraWebhookEvent(
         type: "phase-change",
         issueId: issueKey,
         timestamp: nowIso,
-        payload: { phase: phaseName },
+        payload: { phase: phaseName, delegator },
       };
     }
     if (fieldId === "assignee") {
@@ -105,7 +106,7 @@ export function parseJiraWebhookEvent(
           type: "assignment-change",
           issueId: issueKey,
           timestamp: nowIso,
-          payload: {},
+          payload: { delegator },
         };
       }
     }

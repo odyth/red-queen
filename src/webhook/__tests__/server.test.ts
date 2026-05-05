@@ -274,6 +274,68 @@ describe("WebhookServer", () => {
     expect(queue.hasOpenTask("PROJ-10", "spec-writing")).toBe(true);
     expect(queue.hasOpenTask("PROJ-10", "new-ticket")).toBe(false);
   });
+
+  it("assignment-change updates delegator on existing record", async () => {
+    pipelineState.create("PROJ-11", "coding");
+    issueTracker.parseResult = {
+      source: "webhook",
+      type: "assignment-change",
+      issueId: "PROJ-11",
+      timestamp: new Date().toISOString(),
+      payload: { delegator: "justin-123" },
+    };
+    await postWebhook("/webhook/issue-tracker", "{}");
+    await new Promise((r) => setTimeout(r, 30));
+    expect(pipelineState.get("PROJ-11")?.delegatorAccountId).toBe("justin-123");
+  });
+
+  it("assignment-change on entry-phase Jira state plumbs delegator into task metadata", async () => {
+    issueTracker.phases.set("PROJ-12", "spec-writing");
+    issueTracker.parseResult = {
+      source: "webhook",
+      type: "assignment-change",
+      issueId: "PROJ-12",
+      timestamp: new Date().toISOString(),
+      payload: { delegator: "justin-99" },
+    };
+    await postWebhook("/webhook/issue-tracker", "{}");
+    await new Promise((r) => setTimeout(r, 30));
+    const ready = queue.listByStatus("ready");
+    const task = ready.find((t) => t.issueId === "PROJ-12" && t.type === "spec-writing");
+    expect(task?.metadata.delegator).toBe("justin-99");
+  });
+
+  it("assignment-change without pipeline row plumbs delegator into new-ticket task", async () => {
+    issueTracker.parseResult = {
+      source: "webhook",
+      type: "assignment-change",
+      issueId: "PROJ-13",
+      timestamp: new Date().toISOString(),
+      payload: { delegator: "justin-13" },
+    };
+    await postWebhook("/webhook/issue-tracker", "{}");
+    await new Promise((r) => setTimeout(r, 30));
+    const ready = queue.listByStatus("ready");
+    const task = ready.find((t) => t.issueId === "PROJ-13" && t.type === "new-ticket");
+    expect(task?.metadata.delegator).toBe("justin-13");
+  });
+
+  it("phase-change updates delegator and propagates to task metadata", async () => {
+    pipelineState.create("PROJ-14", "spec-writing");
+    issueTracker.parseResult = {
+      source: "webhook",
+      type: "phase-change",
+      issueId: "PROJ-14",
+      timestamp: new Date().toISOString(),
+      payload: { phase: "coding", delegator: "justin-14" },
+    };
+    await postWebhook("/webhook/issue-tracker", "{}");
+    await new Promise((r) => setTimeout(r, 30));
+    expect(pipelineState.get("PROJ-14")?.delegatorAccountId).toBe("justin-14");
+    const ready = queue.listByStatus("ready");
+    const task = ready.find((t) => t.issueId === "PROJ-14" && t.type === "coding");
+    expect(task?.metadata.delegator).toBe("justin-14");
+  });
 });
 
 describe("WebhookServer custom paths", () => {

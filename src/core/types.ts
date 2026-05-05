@@ -127,6 +127,7 @@ export interface PipelineRecord {
   feedbackIterations: number;
   specContent: string | null;
   priorContext: string | null;
+  delegatorAccountId: string | null;
   createdAt: string;
   updatedAt: string;
 }

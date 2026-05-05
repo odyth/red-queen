@@ -13,6 +13,7 @@ interface PipelineRow {
   feedback_iterations: number;
   spec_content: string | null;
   prior_context: string | null;
+  delegator_account_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -26,14 +27,18 @@ export class PipelineStateStore {
     this.db = db;
   }
 
-  create(issueId: string, initialPhase?: string): PipelineRecord {
+  create(
+    issueId: string,
+    initialPhase?: string,
+    delegatorAccountId?: string | null,
+  ): PipelineRecord {
     const now = new Date().toISOString();
     this.db
       .prepare(
-        `INSERT INTO pipeline_state (issue_id, current_phase, created_at, updated_at)
-         VALUES (?, ?, ?, ?)`,
+        `INSERT INTO pipeline_state (issue_id, current_phase, delegator_account_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?)`,
       )
-      .run(issueId, initialPhase ?? null, now, now);
+      .run(issueId, initialPhase ?? null, delegatorAccountId ?? null, now, now);
     const record = this.get(issueId);
     if (record === null) {
       throw new Error(`Failed to create pipeline record for issue ${issueId}`);
@@ -172,6 +177,16 @@ export class PipelineStateStore {
     return result.changes > 0;
   }
 
+  updateDelegator(issueId: string, accountId: string | null): boolean {
+    const now = new Date().toISOString();
+    const result = this.db
+      .prepare(
+        "UPDATE pipeline_state SET delegator_account_id = ?, updated_at = ? WHERE issue_id = ?",
+      )
+      .run(accountId, now, issueId);
+    return result.changes > 0;
+  }
+
   delete(issueId: string): boolean {
     const result = this.db.prepare("DELETE FROM pipeline_state WHERE issue_id = ?").run(issueId);
     return result.changes > 0;
@@ -293,6 +308,7 @@ function toPipelineRecord(row: PipelineRow): PipelineRecord {
     feedbackIterations: row.feedback_iterations,
     specContent: row.spec_content,
     priorContext: row.prior_context,
+    delegatorAccountId: row.delegator_account_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

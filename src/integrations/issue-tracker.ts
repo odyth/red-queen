@@ -34,7 +34,7 @@ export interface IssueTracker {
 
   // Assignment
   assignToAi(issueId: string): Promise<void>;
-  assignToHuman(issueId: string): Promise<void>;
+  assignToHuman(issueId: string, preferredAssignee?: string | null): Promise<void>;
 
   // Spec storage (adapter-owned)
   getSpec(issueId: string): Promise<string | null>;

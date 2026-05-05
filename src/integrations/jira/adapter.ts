@@ -176,10 +176,14 @@ export class JiraIssueTrackerAdapter implements IssueTracker {
     });
   }
 
-  async assignToHuman(issueId: string): Promise<void> {
-    const issue = await this.getIssue(issueId);
+  async assignToHuman(issueId: string, preferredAssignee?: string | null): Promise<void> {
+    let accountId: string | null = preferredAssignee ?? null;
+    if (accountId === null) {
+      const issue = await this.getIssue(issueId);
+      accountId = issue.reporter ?? null;
+    }
     await this.client.request("PUT", `/rest/api/3/issue/${encodeURIComponent(issueId)}/assignee`, {
-      accountId: issue.reporter ?? null,
+      accountId,
     });
   }
 
@@ -251,7 +255,7 @@ export class JiraIssueTrackerAdapter implements IssueTracker {
     const response = await fetch(attachment.url, {
       headers: {
         Authorization: this.client.authorization,
-        Accept: attachment.contentType || "application/octet-stream",
+        Accept: "*/*",
       },
     });
     if (response.ok === false) {

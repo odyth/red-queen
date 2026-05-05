@@ -33,6 +33,7 @@ export const SCHEMA_SQL = `
     feedback_iterations INTEGER NOT NULL DEFAULT 0,
     spec_content TEXT,
     prior_context TEXT,
+    delegator_account_id TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -77,6 +78,14 @@ export class RedQueenDatabase {
     // ALTER fails with a duplicate-column error on already-migrated DBs — swallow it.
     try {
       this.db.exec("ALTER TABLE pipeline_state ADD COLUMN worktree_path TEXT");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("duplicate column") === false) {
+        throw err;
+      }
+    }
+    try {
+      this.db.exec("ALTER TABLE pipeline_state ADD COLUMN delegator_account_id TEXT");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes("duplicate column") === false) {

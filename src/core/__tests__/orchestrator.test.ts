@@ -420,4 +420,81 @@ describe("RedQueen orchestrator", () => {
     // Task got created by reconciler and processed
     expect(h.runs.length).toBeGreaterThanOrEqual(1);
   });
+
+  it("new-ticket persists delegator from task metadata", async () => {
+    const h = setupHarness(() =>
+      Promise.resolve({
+        success: false,
+        exitCode: 1,
+        elapsed: 0,
+        summary: "",
+        error: "stop cascade",
+      }),
+    );
+    h.queue.enqueue({
+      type: "new-ticket",
+      issueId: "PROJ-42",
+      metadata: { delegator: "justin-42" },
+    });
+
+    await runUntil(h, () => h.pipelineState.get("PROJ-42") !== null);
+
+    const record = h.pipelineState.get("PROJ-42");
+    expect(record?.delegatorAccountId).toBe("justin-42");
+  });
+
+  it("passes stored delegator to assignToHuman on phase advance", async () => {
+    const h = setupHarness(() =>
+      Promise.resolve({
+        success: true,
+        exitCode: 0,
+        elapsed: 1,
+        summary: "done",
+        error: null,
+      }),
+    );
+    h.pipelineState.create("PROJ-50", "spec-writing", "justin-50");
+    h.issueTracker.phases.set("PROJ-50", "spec-writing");
+    h.queue.enqueue({ type: "spec-writing", issueId: "PROJ-50" });
+
+    await runUntil(
+      h,
+      () =>
+        h.issueTracker.calls.some((c) => c === "assignToHuman:PROJ-50:justin-50") ||
+        h.issueTracker.assignments.get("PROJ-50") === "human",
+    );
+
+    expect(h.issueTracker.calls).toContain("assignToHuman:PROJ-50:justin-50");
+  });
+
+  it("transitionTo on failure passes stored delegator to assignToHuman", async () => {
+    // spec-writing's rework target is spec-feedback (automated), so force escalation via blocked.
+    // Use default config which has maxIterations; we hit onFail path.
+    // Simpler: use maxRetries = 0 to skip retries and use code-review failure path.
+    const h = setupHarness(() =>
+      Promise.resolve({
+        success: false,
+        exitCode: 1,
+        elapsed: 1,
+        summary: "",
+        error: "rejected",
+      }),
+    );
+    // Force immediate escalation by bumping reviewIterations to exceed maxIterations.
+    h.pipelineState.create("PROJ-60", "code-review", "justin-60");
+    h.issueTracker.phases.set("PROJ-60", "code-review");
+    // Push iterations high so escalation triggers immediately.
+    for (let i = 0; i < 10; i++) {
+      h.pipelineState.incrementReviewIterations("PROJ-60");
+    }
+    h.queue.enqueue({ type: "code-review", issueId: "PROJ-60" });
+
+    await runUntil(
+      h,
+      () => h.issueTracker.calls.some((c) => c.startsWith("assignToHuman:PROJ-60:")),
+      { maxMs: 5000 },
+    );
+
+    expect(h.issueTracker.calls.some((c) => c === "assignToHuman:PROJ-60:justin-60")).toBe(true);
+  });
 });

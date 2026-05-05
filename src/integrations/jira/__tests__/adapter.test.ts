@@ -167,6 +167,46 @@ describe("JiraIssueTrackerAdapter", () => {
     expect(call?.body).toContain("bot-1");
   });
 
+  it("assignToHuman uses preferredAssignee and skips getIssue", async () => {
+    h.setResponse((c) => c.url.endsWith("/assignee") && c.method === "PUT", {}, 204);
+    await h.adapter.assignToHuman("RQ-1", "delegator-42");
+    expect(h.calls).toHaveLength(1);
+    const call = h.calls[0];
+    expect(call?.method).toBe("PUT");
+    expect(call?.url).toContain("/assignee");
+    expect(call?.body).toContain("delegator-42");
+  });
+
+  it("assignToHuman falls back to reporter when preferredAssignee is null", async () => {
+    h.setResponse((c) => c.url.endsWith("/issue/RQ-1") && c.method === "GET", {
+      id: "1",
+      key: "RQ-1",
+      fields: {
+        reporter: { accountId: "reporter-7" },
+        issuetype: { name: "Task" },
+      },
+    });
+    h.setResponse((c) => c.url.endsWith("/assignee") && c.method === "PUT", {}, 204);
+    await h.adapter.assignToHuman("RQ-1", null);
+    const putCall = h.calls.find((c) => c.method === "PUT");
+    expect(putCall?.body).toContain("reporter-7");
+  });
+
+  it("assignToHuman falls back to reporter when argument omitted", async () => {
+    h.setResponse((c) => c.url.endsWith("/issue/RQ-1") && c.method === "GET", {
+      id: "1",
+      key: "RQ-1",
+      fields: {
+        reporter: { accountId: "reporter-9" },
+        issuetype: { name: "Task" },
+      },
+    });
+    h.setResponse((c) => c.url.endsWith("/assignee") && c.method === "PUT", {}, 204);
+    await h.adapter.assignToHuman("RQ-1");
+    const putCall = h.calls.find((c) => c.method === "PUT");
+    expect(putCall?.body).toContain("reporter-9");
+  });
+
   it("getSpec reads custom field as ADF", async () => {
     h.setResponse((c) => c.url.includes("/issue/RQ-1"), {
       id: "1",

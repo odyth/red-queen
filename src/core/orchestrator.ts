@@ -365,11 +365,15 @@ export class RedQueen {
       return;
     }
 
+    const delegator = typeof task.metadata.delegator === "string" ? task.metadata.delegator : null;
     const existingRecord = this.deps.pipelineState.get(issueId);
     if (existingRecord === null) {
-      this.deps.pipelineState.create(issueId, firstPhase.name);
+      this.deps.pipelineState.create(issueId, firstPhase.name, delegator);
     } else {
       this.deps.pipelineState.updatePhase(issueId, firstPhase.name);
+      if (delegator !== null) {
+        this.deps.pipelineState.updateDelegator(issueId, delegator);
+      }
     }
 
     if (this.deps.queue.hasOpenTask(issueId, firstPhase.name) === false) {
@@ -488,8 +492,11 @@ export class RedQueen {
       return;
     }
 
+    const delegatorFromTask =
+      typeof task.metadata.delegator === "string" ? task.metadata.delegator : null;
     const pipelineRecord =
-      this.deps.pipelineState.get(issueId) ?? this.deps.pipelineState.create(issueId, phase.name);
+      this.deps.pipelineState.get(issueId) ??
+      this.deps.pipelineState.create(issueId, phase.name, delegatorFromTask);
 
     let skillMarkdown: string;
     try {
@@ -679,7 +686,8 @@ export class RedQueen {
     try {
       await this.deps.issueTracker.setPhase(issueId, nextPhaseName);
       if (nextPhase.type === "human-gate") {
-        await this.deps.issueTracker.assignToHuman(issueId);
+        const record = this.deps.pipelineState.get(issueId);
+        await this.deps.issueTracker.assignToHuman(issueId, record?.delegatorAccountId ?? null);
       } else {
         await this.deps.issueTracker.assignToAi(issueId);
       }
@@ -792,7 +800,8 @@ export class RedQueen {
     try {
       await this.deps.issueTracker.setPhase(issueId, phaseName);
       if (nextPhase.type === "human-gate") {
-        await this.deps.issueTracker.assignToHuman(issueId);
+        const record = this.deps.pipelineState.get(issueId);
+        await this.deps.issueTracker.assignToHuman(issueId, record?.delegatorAccountId ?? null);
       } else {
         await this.deps.issueTracker.assignToAi(issueId);
       }

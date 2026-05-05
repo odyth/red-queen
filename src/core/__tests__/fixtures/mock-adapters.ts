@@ -49,8 +49,8 @@ export class MockIssueTracker implements IssueTracker {
     return Promise.resolve();
   }
 
-  assignToHuman(issueId: string): Promise<void> {
-    this.calls.push(`assignToHuman:${issueId}`);
+  assignToHuman(issueId: string, preferredAssignee?: string | null): Promise<void> {
+    this.calls.push(`assignToHuman:${issueId}:${preferredAssignee ?? "none"}`);
     this.assignments.set(issueId, "human");
     return Promise.resolve();
   }

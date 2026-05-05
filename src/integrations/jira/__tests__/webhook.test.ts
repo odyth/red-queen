@@ -63,6 +63,7 @@ describe("parseJiraWebhookEvent", () => {
     expect(result?.type).toBe("phase-change");
     expect(result?.issueId).toBe("RQ-1");
     expect(result?.payload.phase).toBe("coding");
+    expect(result?.payload.delegator).toBe("human-1");
   });
 
   it("emits assignment-change when assigned to bot", () => {
@@ -76,6 +77,7 @@ describe("parseJiraWebhookEvent", () => {
     });
     const result = parseJiraWebhookEvent(ctx, {}, body);
     expect(result?.type).toBe("assignment-change");
+    expect(result?.payload.delegator).toBe("human-1");
   });
 
   it("skips unmapped phase option IDs", () => {

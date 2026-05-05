@@ -39,6 +39,7 @@ function makeRecord(overrides: Partial<PipelineRecord> = {}): PipelineRecord {
     feedbackIterations: 0,
     specContent: null,
     priorContext: null,
+    delegatorAccountId: null,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     ...overrides,

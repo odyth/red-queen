@@ -192,6 +192,28 @@ describe("GitHubIssuesAdapter", () => {
     expect(stringArg(comment?.args.body)).toContain("@alice");
   });
 
+  it("assignToHuman prefers preferredAssignee over reporter", async () => {
+    fake.add("removeLabel", () => ({}));
+    fake.add("get", () => ({
+      number: 5,
+      title: "t",
+      state: "open",
+      labels: [],
+      assignee: null,
+      user: { login: "alice" },
+      created_at: "",
+      updated_at: "",
+    }));
+    fake.add("createComment", () => ({}));
+    fake.add("addAssignees", () => ({}));
+    await adapter.assignToHuman("#5", "justin");
+    const comment = fake.calls.find((c) => c.label === "createComment");
+    expect(stringArg(comment?.args.body)).toContain("@justin");
+    expect(stringArg(comment?.args.body)).not.toContain("@alice");
+    const assignees = fake.calls.find((c) => c.label === "addAssignees");
+    expect(assignees?.args.assignees).toEqual(["justin"]);
+  });
+
   it("setSpec creates marker comment when none exists", async () => {
     fake.setPaginate(() => []);
     fake.add("createComment", () => ({ id: 1 }));

@@ -40,6 +40,32 @@ describe("PipelineStateStore", () => {
     expect(record.currentPhase).toBe("spec-writing");
   });
 
+  it("creates with a delegator accountId", () => {
+    const record = store.create("PROJ-1", "spec-writing", "human-123");
+    expect(record.delegatorAccountId).toBe("human-123");
+  });
+
+  it("creates with null delegator when omitted", () => {
+    const record = store.create("PROJ-1", "spec-writing");
+    expect(record.delegatorAccountId).toBeNull();
+  });
+
+  it("updateDelegator sets and clears the account id", () => {
+    store.create("PROJ-1");
+    expect(store.updateDelegator("PROJ-1", "human-42")).toBe(true);
+    expect(store.get("PROJ-1")?.delegatorAccountId).toBe("human-42");
+
+    expect(store.updateDelegator("PROJ-1", "human-99")).toBe(true);
+    expect(store.get("PROJ-1")?.delegatorAccountId).toBe("human-99");
+
+    expect(store.updateDelegator("PROJ-1", null)).toBe(true);
+    expect(store.get("PROJ-1")?.delegatorAccountId).toBeNull();
+  });
+
+  it("updateDelegator returns false for nonexistent issue", () => {
+    expect(store.updateDelegator("nope", "x")).toBe(false);
+  });
+
   it("returns null for nonexistent issue", () => {
     expect(store.get("nonexistent")).toBeNull();
   });

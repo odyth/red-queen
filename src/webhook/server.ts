@@ -143,6 +143,7 @@ export class WebhookServer {
         if (phaseName === null) {
           return;
         }
+        const delegator = extractString(event.payload, "delegator");
         if (runtime.phaseGraph.isHumanGate(phaseName)) {
           audit.log({
             component,
@@ -174,6 +175,9 @@ export class WebhookServer {
             });
             break;
           }
+          if (delegator !== null) {
+            pipelineState.updateDelegator(event.issueId, delegator);
+          }
         }
         if (queue.hasOpenTask(event.issueId, phaseName)) {
           break;
@@ -183,6 +187,7 @@ export class WebhookServer {
           issueId: event.issueId,
           priority: phase.priority,
           description: `Phase change from webhook`,
+          metadata: delegator !== null ? { delegator } : undefined,
         });
         break;
       }
@@ -215,7 +220,11 @@ export class WebhookServer {
         break;
       }
       case "assignment-change": {
+        const delegator = extractString(event.payload, "delegator");
         const record = pipelineState.get(event.issueId);
+        if (record !== null && delegator !== null) {
+          pipelineState.updateDelegator(event.issueId, delegator);
+        }
         if (record !== null && record.currentPhase !== null) {
           break;
         }
@@ -242,6 +251,7 @@ export class WebhookServer {
           type: taskType,
           issueId: event.issueId,
           description: "Assigned to AI",
+          metadata: delegator !== null ? { delegator } : undefined,
         });
         break;
       }

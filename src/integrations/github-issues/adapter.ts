@@ -105,7 +105,7 @@ export class GitHubIssuesAdapter implements IssueTracker {
     await this.addLabels(number, [ACTIVE_LABEL]);
   }
 
-  async assignToHuman(issueId: string): Promise<void> {
+  async assignToHuman(issueId: string, preferredAssignee?: string | null): Promise<void> {
     const number = parseIssueId(issueId);
     try {
       await this.removeLabel(number, ACTIVE_LABEL);
@@ -115,11 +115,11 @@ export class GitHubIssuesAdapter implements IssueTracker {
       }
     }
     const issue = await this.getIssue(issueId);
-    const reporter = issue.reporter;
-    if (reporter !== null) {
+    const target = preferredAssignee ?? issue.reporter;
+    if (target !== null) {
       await this.addComment(
         issueId,
-        `@${reporter} needs your review (phase: ${issue.phase ?? "human-review"}).`,
+        `@${target} needs your review (phase: ${issue.phase ?? "human-review"}).`,
       );
       try {
         await this.client.call(
@@ -129,12 +129,12 @@ export class GitHubIssuesAdapter implements IssueTracker {
               owner: this.owner,
               repo: this.repo,
               issue_number: number,
-              assignees: [reporter],
+              assignees: [target],
             }),
         );
       } catch (err) {
         // 422 or 403 — not assignable. Swallow; the comment covers us.
-        this.audit(`assignToHuman: could not assign ${reporter}`, {
+        this.audit(`assignToHuman: could not assign ${target}`, {
           error: (err as Error).message,
         });
       }
