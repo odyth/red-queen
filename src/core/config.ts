@@ -129,8 +129,9 @@ const ConfigSchema = z
     skills: z
       .object({
         directory: z.string().default(".redqueen/skills"),
+        disabled: z.array(z.string()).default([]),
       })
-      .default({ directory: ".redqueen/skills" }),
+      .default({ directory: ".redqueen/skills", disabled: [] }),
     dashboard: z
       .object({
         enabled: z.boolean().default(true),
@@ -219,13 +220,28 @@ export function loadConfig(filePath: string): RedQueenConfig {
   const raw = readFileSync(filePath, "utf-8");
   const interpolated = interpolateEnv(raw);
   const parsed: unknown = parseYaml(interpolated);
-  return ConfigSchema.parse(parsed);
+  const config = ConfigSchema.parse(parsed);
+  checkDisabledSkills(config);
+  return config;
 }
 
 export function parseConfig(yamlContent: string): RedQueenConfig {
   const interpolated = interpolateEnv(yamlContent);
   const parsed: unknown = parseYaml(interpolated);
-  return ConfigSchema.parse(parsed);
+  const config = ConfigSchema.parse(parsed);
+  checkDisabledSkills(config);
+  return config;
+}
+
+function checkDisabledSkills(config: RedQueenConfig): void {
+  const disabled = new Set(config.skills.disabled);
+  for (const phase of config.phases) {
+    if (phase.skill !== undefined && disabled.has(phase.skill)) {
+      throw new ConfigError(
+        `Phase "${phase.name}" references skill "${phase.skill}" which is listed in skills.disabled. Remove from skills.disabled or change the phase.`,
+      );
+    }
+  }
 }
 
 // --- Phase graph validation ---

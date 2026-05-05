@@ -1,13 +1,13 @@
 import type { AuditLogger } from "./audit.js";
 import type { PipelineStateStore } from "./pipeline-state.js";
 import type { TaskQueue } from "./queue.js";
-import type { PhaseGraph } from "./types.js";
+import type { RuntimeState } from "./runtime-state.js";
 import type { IssueTracker } from "../integrations/issue-tracker.js";
 
 export interface ReconcilerDeps {
   issueTracker: IssueTracker;
   queue: TaskQueue;
-  phaseGraph: PhaseGraph;
+  runtime: RuntimeState;
   pipelineState: PipelineStateStore;
   audit: AuditLogger;
 }
@@ -19,14 +19,14 @@ export interface ReconcileResult {
 }
 
 export async function reconcile(deps: ReconcilerDeps): Promise<ReconcileResult> {
-  const { issueTracker, queue, phaseGraph, pipelineState, audit } = deps;
+  const { issueTracker, queue, runtime, pipelineState, audit } = deps;
   let issuesFound = 0;
   let tasksCreated = 0;
   let skipped = 0;
 
   const seenIssueIds = new Set<string>();
-  const automatedPhases = phaseGraph.getAutomatedPhases();
-  const entryPhaseNames = new Set(phaseGraph.getEntryPhases().map((p) => p.name));
+  const automatedPhases = runtime.phaseGraph.getAutomatedPhases();
+  const entryPhaseNames = new Set(runtime.phaseGraph.getEntryPhases().map((p) => p.name));
 
   for (const phase of automatedPhases) {
     let issues;

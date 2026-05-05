@@ -10,12 +10,14 @@ import { PipelineStateStore, OrchestratorStateStore } from "../../core/pipeline-
 import { DualWriteAuditLogger } from "../../core/audit.js";
 import { buildPhaseGraph } from "../../core/config.js";
 import { DEFAULT_PHASES } from "../../core/defaults.js";
+import { RuntimeState } from "../../core/runtime-state.js";
 import { DashboardServer } from "../../dashboard/server.js";
 import { WebhookServer } from "../server.js";
 import {
   MockIssueTracker,
   MockSourceControl,
 } from "../../core/__tests__/fixtures/mock-adapters.js";
+import { makeTestConfig } from "../../core/__tests__/fixtures/test-config.js";
 import type { PipelineEvent } from "../../core/types.js";
 
 let db: BetterSqlite3.Database;
@@ -67,13 +69,13 @@ describe("WebhookServer", () => {
       { host: "127.0.0.1", port, enableDashboardUi: true },
     );
     await dashboard.start();
-    const phaseGraph = buildPhaseGraph(DEFAULT_PHASES);
+    const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
     const webhook = new WebhookServer({
       issueTracker,
       sourceControl,
       queue,
       pipelineState,
-      phaseGraph,
+      runtime,
       audit,
     });
     webhook.register(dashboard);
@@ -301,13 +303,13 @@ describe("WebhookServer custom paths", () => {
       { host: "127.0.0.1", port: port2, enableDashboardUi: true },
     );
     await dashboard2.start();
-    const phaseGraph = buildPhaseGraph(DEFAULT_PHASES);
+    const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
     const webhook = new WebhookServer({
       issueTracker: issueTracker2,
       sourceControl: sourceControl2,
       queue: queue2,
       pipelineState: pipelineState2,
-      phaseGraph,
+      runtime,
       audit: audit2,
     });
     webhook.register(dashboard2, {

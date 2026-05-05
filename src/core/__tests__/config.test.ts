@@ -1,5 +1,14 @@
 import { describe, it, expect } from "vitest";
-import { parseConfig, validatePhaseGraph, buildPhaseGraph } from "../config.js";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  ConfigError,
+  loadConfig,
+  parseConfig,
+  validatePhaseGraph,
+  buildPhaseGraph,
+} from "../config.js";
 import { DEFAULT_PHASES } from "../defaults.js";
 import type { PhaseDefinition } from "../types.js";
 
@@ -284,6 +293,78 @@ phases:
     expect(config.phases).toHaveLength(2);
     expect(config.phases[0]?.name).toBe("writing");
     expect(config.phases[1]?.name).toBe("review");
+  });
+
+  it("defaults skills.disabled to an empty array", () => {
+    const yaml = `
+issueTracker:
+  type: jira
+sourceControl:
+  type: github
+project:
+  buildCommand: "npm run build"
+  testCommand: "npm test"
+`;
+    const config = parseConfig(yaml);
+    expect(config.skills.disabled).toEqual([]);
+  });
+
+  it("loads fine when skills.disabled references a skill no phase uses", () => {
+    const yaml = `
+issueTracker:
+  type: jira
+sourceControl:
+  type: github
+project:
+  buildCommand: "npm run build"
+  testCommand: "npm test"
+skills:
+  disabled:
+    - unused-skill
+`;
+    const config = parseConfig(yaml);
+    expect(config.skills.disabled).toEqual(["unused-skill"]);
+  });
+
+  it("parseConfig rejects configs where a phase references a disabled skill", () => {
+    const yaml = `
+issueTracker:
+  type: jira
+sourceControl:
+  type: github
+project:
+  buildCommand: "npm run build"
+  testCommand: "npm test"
+skills:
+  disabled:
+    - coder
+`;
+    expect(() => parseConfig(yaml)).toThrow(ConfigError);
+    expect(() => parseConfig(yaml)).toThrow(/skills\.disabled/);
+  });
+
+  it("loadConfig rejects configs where a phase references a disabled skill", () => {
+    const yaml = `
+issueTracker:
+  type: jira
+sourceControl:
+  type: github
+project:
+  buildCommand: "npm run build"
+  testCommand: "npm test"
+skills:
+  disabled:
+    - coder
+`;
+    const dir = mkdtempSync(join(tmpdir(), "rq-cfg-disabled-"));
+    const file = join(dir, "redqueen.yaml");
+    writeFileSync(file, yaml);
+    try {
+      expect(() => loadConfig(file)).toThrow(ConfigError);
+      expect(() => loadConfig(file)).toThrow(/skills\.disabled/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

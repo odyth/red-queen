@@ -1,8 +1,8 @@
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { stringify as stringifyYaml } from "yaml";
-import type { ProjectModule, RedQueenConfig } from "./config.js";
-import type { PhaseGraph } from "./types.js";
+import type { ProjectModule } from "./config.js";
+import type { RuntimeState } from "./runtime-state.js";
 import type { PipelineRecord, SkillContext, SkillModuleContext, Task } from "./types.js";
 
 export type ModuleResolver = (
@@ -12,8 +12,7 @@ export type ModuleResolver = (
 ) => SkillModuleContext | null;
 
 export interface SkillContextDeps {
-  config: RedQueenConfig;
-  phaseGraph: PhaseGraph;
+  runtime: RuntimeState;
   task: Task;
   pipelineRecord: PipelineRecord;
   phaseName: string;
@@ -23,8 +22,9 @@ export interface SkillContextDeps {
 }
 
 export function buildSkillContext(deps: SkillContextDeps): SkillContext {
-  const { config, phaseGraph, task, pipelineRecord, phaseName } = deps;
-  const phase = phaseGraph.getPhase(phaseName);
+  const { runtime, task, pipelineRecord, phaseName } = deps;
+  const config = runtime.config;
+  const phase = runtime.phaseGraph.getPhase(phaseName);
   if (phase === undefined) {
     throw new Error(`Phase "${phaseName}" not found in phase graph`);
   }
@@ -106,8 +106,12 @@ export function renderSkillPrompt(context: SkillContext, skillMarkdown: string):
 export function resolveSkillPath(
   userSkillsDir: string,
   skillName: string,
+  disabled: readonly string[],
   builtInSkillsDir?: string,
 ): string | null {
+  if (disabled.includes(skillName)) {
+    return null;
+  }
   const userCandidate = join(userSkillsDir, skillName, "SKILL.md");
   if (existsSync(userCandidate)) {
     return userCandidate;

@@ -10,6 +10,7 @@ import { DEFAULT_PHASES } from "../../core/defaults.js";
 import { RedQueen } from "../../core/orchestrator.js";
 import { OrchestratorStateStore, PipelineStateStore } from "../../core/pipeline-state.js";
 import { SqliteTaskQueue } from "../../core/queue.js";
+import { RuntimeState } from "../../core/runtime-state.js";
 import { createFakeWorkerRunner, phaseRule } from "../fakes/fake-worker-runner.js";
 import {
   InMemoryIssueTracker,
@@ -58,7 +59,7 @@ function buildConfig(overrides: Partial<RedQueenConfig> = {}): RedQueenConfig {
       claudeBin: "/bin/sh",
     },
     phases: DEFAULT_PHASES,
-    skills: { directory: skillsDir },
+    skills: { directory: skillsDir, disabled: [] },
     dashboard: { enabled: false, port: 0, host: "127.0.0.1" },
     audit: { logFile: auditPath, retentionDays: 30 },
   };
@@ -157,13 +158,14 @@ describe("E2E: orchestrator full pipeline loop", () => {
 
     const config = buildConfig();
 
+    const runtime = new RuntimeState(phaseGraph, config);
+
     const rq = new RedQueen({
-      config,
+      runtime,
       queue,
       pipelineState,
       orchestratorState,
       audit,
-      phaseGraph,
       issueTracker,
       sourceControl,
       workerRunner,

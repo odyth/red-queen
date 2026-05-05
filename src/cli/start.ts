@@ -8,6 +8,7 @@ import { loadDotEnv } from "../core/env.js";
 import { RedQueen } from "../core/orchestrator.js";
 import { OrchestratorStateStore, PipelineStateStore } from "../core/pipeline-state.js";
 import { SqliteTaskQueue } from "../core/queue.js";
+import { RuntimeState } from "../core/runtime-state.js";
 import { packageVersion } from "../core/version.js";
 import { buildAdapterPair } from "./adapters.js";
 import { findConfigUpward, projectRootFromConfigPath } from "./config-discovery.js";
@@ -161,14 +162,14 @@ export async function cmdStart(args: string[]): Promise<void> {
     project: { ...config.project, directory: projectDir },
     audit: { ...config.audit, logFile: auditPath },
   };
+  const runtime = new RuntimeState(phaseGraph, configForRuntime);
 
   const rq = new RedQueen({
-    config: configForRuntime,
+    runtime,
     queue,
     pipelineState,
     orchestratorState,
     audit,
-    phaseGraph,
     issueTracker,
     sourceControl,
     builtInSkillsDir: resolveSkillsDir(),

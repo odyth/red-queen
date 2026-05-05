@@ -2,13 +2,13 @@ import type { AuditLogger } from "./audit.js";
 import type { PipelineStateStore } from "./pipeline-state.js";
 import type { TaskQueue } from "./queue.js";
 import { reconcile } from "./reconciler.js";
-import type { PhaseGraph } from "./types.js";
+import type { RuntimeState } from "./runtime-state.js";
 import type { IssueTracker } from "../integrations/issue-tracker.js";
 
 export interface PollerDeps {
   issueTracker: IssueTracker;
   queue: TaskQueue;
-  phaseGraph: PhaseGraph;
+  runtime: RuntimeState;
   pipelineState: PipelineStateStore;
   audit: AuditLogger;
   onTick?: () => void;
@@ -50,7 +50,7 @@ export class Poller {
       await reconcile({
         issueTracker: this.deps.issueTracker,
         queue: this.deps.queue,
-        phaseGraph: this.deps.phaseGraph,
+        runtime: this.deps.runtime,
         pipelineState: this.deps.pipelineState,
         audit: this.deps.audit,
       });

@@ -10,6 +10,7 @@ import { buildPhaseGraph } from "../config.js";
 import { DEFAULT_PHASES } from "../defaults.js";
 import { RedQueen } from "../orchestrator.js";
 import type { RedQueenDeps } from "../orchestrator.js";
+import { RuntimeState } from "../runtime-state.js";
 import type { WorkerOptions, WorkerResult } from "../worker.js";
 import { MockIssueTracker, MockSourceControl, makeIssue } from "./fixtures/mock-adapters.js";
 import { makeTestConfig } from "./fixtures/test-config.js";
@@ -50,7 +51,7 @@ function setupHarness(
       testCommand: "npm test",
       directory: tempDir,
     },
-    skills: { directory: skillsDir },
+    skills: { directory: skillsDir, disabled: [] },
     dashboard: { enabled: false, port: 0, host: "127.0.0.1" },
     pipeline: {
       pollInterval: 0.01,
@@ -66,6 +67,7 @@ function setupHarness(
       claudeBin: "/bin/sh",
     },
   });
+  const runtime = new RuntimeState(phaseGraph, config);
 
   const runs: WorkerOptions[] = [];
   const wrappedWorker = async (opts: WorkerOptions): Promise<WorkerResult> => {
@@ -74,12 +76,11 @@ function setupHarness(
   };
 
   const rq = new RedQueen({
-    config,
+    runtime,
     queue,
     pipelineState,
     orchestratorState,
     audit,
-    phaseGraph,
     issueTracker,
     sourceControl,
     workerRunner: wrappedWorker,

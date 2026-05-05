@@ -11,7 +11,9 @@ import { DualWriteAuditLogger } from "../audit.js";
 import { buildPhaseGraph } from "../config.js";
 import { DEFAULT_PHASES } from "../defaults.js";
 import { Poller } from "../poller.js";
+import { RuntimeState } from "../runtime-state.js";
 import { MockIssueTracker, makeIssue } from "./fixtures/mock-adapters.js";
+import { makeTestConfig } from "./fixtures/test-config.js";
 
 let db: BetterSqlite3.Database;
 let queue: SqliteTaskQueue;
@@ -35,24 +37,24 @@ describe("Poller", () => {
   });
 
   it("tick() creates tasks for new work", async () => {
-    const phaseGraph = buildPhaseGraph(DEFAULT_PHASES);
+    const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
     const issueTracker = new MockIssueTracker();
     issueTracker.listByPhaseResults.set("spec-writing", [makeIssue("PROJ-1")]);
-    const poller = new Poller({ issueTracker, queue, phaseGraph, pipelineState, audit }, 1_000_000);
+    const poller = new Poller({ issueTracker, queue, runtime, pipelineState, audit }, 1_000_000);
     await poller.tick();
     expect(queue.hasOpenTask("PROJ-1", "spec-writing")).toBe(true);
   });
 
   it("start/stop schedule and cancel the interval", () => {
-    const phaseGraph = buildPhaseGraph(DEFAULT_PHASES);
+    const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
     const issueTracker = new MockIssueTracker();
-    const poller = new Poller({ issueTracker, queue, phaseGraph, pipelineState, audit }, 10_000);
+    const poller = new Poller({ issueTracker, queue, runtime, pipelineState, audit }, 10_000);
     poller.start();
     poller.stop();
   });
 
   it("skips overlapping ticks", async () => {
-    const phaseGraph = buildPhaseGraph(DEFAULT_PHASES);
+    const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
     const issueTracker = new MockIssueTracker();
     let ticks = 0;
     issueTracker.listIssuesByPhase = () => {
@@ -63,7 +65,7 @@ describe("Poller", () => {
         }, 20);
       });
     };
-    const poller = new Poller({ issueTracker, queue, phaseGraph, pipelineState, audit }, 1_000_000);
+    const poller = new Poller({ issueTracker, queue, runtime, pipelineState, audit }, 1_000_000);
     const a = poller.tick();
     const b = poller.tick();
     await Promise.all([a, b]);

@@ -2,15 +2,15 @@ import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AuditLogger } from "./audit.js";
-import type { RedQueenConfig } from "./config.js";
 import type { OrchestratorStateStore, PipelineStateStore } from "./pipeline-state.js";
 import { Poller } from "./poller.js";
 import type { TaskQueue } from "./queue.js";
 import { reconcile } from "./reconciler.js";
 import { createModuleResolver } from "./module-resolver.js";
+import type { RuntimeState } from "./runtime-state.js";
 import { buildSkillContext, renderSkillPrompt, resolveSkillPath } from "./skill-context.js";
 import type { ModuleResolver } from "./skill-context.js";
-import type { PhaseDefinition, PhaseGraph, Task } from "./types.js";
+import type { PhaseDefinition, Task } from "./types.js";
 import type { OrchestratorState } from "./types.js";
 import { resolveClaudeBin, runWorker as defaultRunWorker } from "./worker.js";
 import type { WorkerOptions, WorkerResult } from "./worker.js";
@@ -22,12 +22,11 @@ import { WebhookServer } from "../webhook/server.js";
 export type WorkerRunner = (options: WorkerOptions) => Promise<WorkerResult>;
 
 export interface RedQueenDeps {
-  config: RedQueenConfig;
+  runtime: RuntimeState;
   queue: TaskQueue;
   pipelineState: PipelineStateStore;
   orchestratorState: OrchestratorStateStore;
   audit: AuditLogger;
-  phaseGraph: PhaseGraph;
   issueTracker: IssueTracker;
   sourceControl: SourceControl;
   workerRunner?: WorkerRunner;
@@ -81,7 +80,7 @@ export class RedQueen {
   }
 
   async start(): Promise<void> {
-    this.claudeBin = resolveClaudeBin(this.deps.config.pipeline.claudeBin);
+    this.claudeBin = resolveClaudeBin(this.deps.runtime.config.pipeline.claudeBin);
     this.tempDir = mkdtempSync(join(tmpdir(), TEMP_PREFIX));
     this.performCrashRecovery();
 
@@ -92,7 +91,7 @@ export class RedQueen {
       await reconcile({
         issueTracker: this.deps.issueTracker,
         queue: this.deps.queue,
-        phaseGraph: this.deps.phaseGraph,
+        runtime: this.deps.runtime,
         pipelineState: this.deps.pipelineState,
         audit: this.deps.audit,
       });
@@ -160,7 +159,7 @@ export class RedQueen {
   }
 
   private async mainLoop(): Promise<void> {
-    const pollIntervalMs = this.deps.config.pipeline.pollInterval * 1000;
+    const pollIntervalMs = this.deps.runtime.config.pipeline.pollInterval * 1000;
     while (this.shuttingDown === false) {
       this.deps.orchestratorState.setLastPoll(new Date(this.now()).toISOString());
       let task: Task | null;
@@ -219,7 +218,7 @@ export class RedQueen {
     }
 
     const phaseName = task.type;
-    const phase = this.deps.phaseGraph.getPhase(phaseName);
+    const phase = this.deps.runtime.phaseGraph.getPhase(phaseName);
     if (phase === undefined) {
       this.deps.queue.markWorking(task.id);
       this.deps.queue.markFailed(task.id, `Unknown phase: ${phaseName}`);
@@ -268,7 +267,7 @@ export class RedQueen {
     this.deps.orchestratorState.setCurrentTaskId(task.id);
     this.deps.orchestratorState.setStatus("working");
 
-    const firstPhase = this.deps.phaseGraph.getAllPhases()[0];
+    const firstPhase = this.deps.runtime.phaseGraph.getAllPhases()[0];
     if (firstPhase === undefined) {
       this.deps.queue.markFailed(task.id, "No phases configured");
       this.deps.orchestratorState.setStatus("idle");
@@ -346,7 +345,7 @@ export class RedQueen {
       return "proceed";
     }
 
-    if (currentPhase !== null && this.deps.phaseGraph.isHumanGate(currentPhase)) {
+    if (currentPhase !== null && this.deps.runtime.phaseGraph.isHumanGate(currentPhase)) {
       this.deps.queue.markWorking(task.id);
       this.deps.queue.markComplete(task.id, `Stale — issue is in ${currentPhase} (human gate)`);
       this.deps.audit.log({
@@ -399,8 +398,9 @@ export class RedQueen {
     }
 
     const skillPath = resolveSkillPath(
-      this.deps.config.skills.directory,
+      this.deps.runtime.config.skills.directory,
       skillName,
+      this.deps.runtime.config.skills.disabled,
       this.deps.builtInSkillsDir,
     );
     if (skillPath === null) {
@@ -410,7 +410,7 @@ export class RedQueen {
         component: "orchestrator",
         issueId,
         message: `Skill file not found for ${skillName}`,
-        metadata: { taskId: task.id, skillsDir: this.deps.config.skills.directory },
+        metadata: { taskId: task.id, skillsDir: this.deps.runtime.config.skills.directory },
       });
       return;
     }
@@ -441,8 +441,7 @@ export class RedQueen {
     }
 
     const context = buildSkillContext({
-      config: this.deps.config,
-      phaseGraph: this.deps.phaseGraph,
+      runtime: this.deps.runtime,
       task,
       pipelineRecord,
       phaseName: phase.name,
@@ -482,11 +481,11 @@ export class RedQueen {
       result = await this.runWorker({
         claudeBin: this.claudeBin,
         prompt,
-        cwd: this.deps.config.project.directory,
-        timeoutMs: this.deps.config.pipeline.workerTimeout * 1000,
-        stallThresholdMs: this.deps.config.pipeline.stallThresholdMs,
-        model: this.deps.config.pipeline.model,
-        effort: this.deps.config.pipeline.effort,
+        cwd: this.deps.runtime.config.project.directory,
+        timeoutMs: this.deps.runtime.config.pipeline.workerTimeout * 1000,
+        stallThresholdMs: this.deps.runtime.config.pipeline.stallThresholdMs,
+        model: this.deps.runtime.config.pipeline.model,
+        effort: this.deps.runtime.config.pipeline.effort,
         onStart: (pid) => {
           this.currentWorkerPid = pid;
         },
@@ -559,7 +558,7 @@ export class RedQueen {
   }
 
   private respectAgentPhaseChange(issueId: string, task: Task, newPhase: string): void {
-    const phaseDef = this.deps.phaseGraph.getPhase(newPhase);
+    const phaseDef = this.deps.runtime.phaseGraph.getPhase(newPhase);
     this.deps.pipelineState.updatePhase(issueId, newPhase);
     this.deps.audit.log({
       component: "orchestrator",
@@ -593,7 +592,7 @@ export class RedQueen {
       return;
     }
 
-    const nextPhase = this.deps.phaseGraph.getPhase(nextPhaseName);
+    const nextPhase = this.deps.runtime.phaseGraph.getPhase(nextPhaseName);
     if (nextPhase === undefined) {
       this.deps.audit.log({
         component: "orchestrator",
@@ -657,7 +656,7 @@ export class RedQueen {
     const priorRetries = typeof metadata.retries === "number" ? metadata.retries : 0;
     const nextRetries = priorRetries + 1;
 
-    if (nextRetries <= this.deps.config.pipeline.maxRetries) {
+    if (nextRetries <= this.deps.runtime.config.pipeline.maxRetries) {
       this.deps.queue.enqueue({
         type: task.type,
         issueId,
@@ -668,7 +667,7 @@ export class RedQueen {
       this.deps.audit.log({
         component: "orchestrator",
         issueId,
-        message: `Retrying ${phase.name} (attempt ${String(nextRetries + 1)}/${String(this.deps.config.pipeline.maxRetries + 1)})`,
+        message: `Retrying ${phase.name} (attempt ${String(nextRetries + 1)}/${String(this.deps.runtime.config.pipeline.maxRetries + 1)})`,
         metadata: { taskId: task.id, retries: nextRetries },
       });
       return;
@@ -707,7 +706,7 @@ export class RedQueen {
   }
 
   private async transitionTo(issueId: string, phaseName: string, task: Task): Promise<void> {
-    const nextPhase = this.deps.phaseGraph.getPhase(phaseName);
+    const nextPhase = this.deps.runtime.phaseGraph.getPhase(phaseName);
     if (nextPhase === undefined) {
       this.deps.audit.log({
         component: "orchestrator",
@@ -788,7 +787,7 @@ export class RedQueen {
   }
 
   private async startDashboardIfEnabled(): Promise<void> {
-    const { dashboard: dashCfg, pipeline } = this.deps.config;
+    const { dashboard: dashCfg, pipeline } = this.deps.runtime.config;
     const dashboardEnabled = dashCfg.enabled;
     const webhooksEnabled = pipeline.webhooks.enabled;
     if (dashboardEnabled === false && webhooksEnabled === false) {
@@ -810,7 +809,7 @@ export class RedQueen {
   }
 
   private startWebhookIfEnabled(): void {
-    if (this.deps.config.pipeline.webhooks.enabled === false) {
+    if (this.deps.runtime.config.pipeline.webhooks.enabled === false) {
       return;
     }
     if (this.dashboard === null) {
@@ -821,17 +820,17 @@ export class RedQueen {
       sourceControl: this.deps.sourceControl,
       queue: this.deps.queue,
       pipelineState: this.deps.pipelineState,
-      phaseGraph: this.deps.phaseGraph,
+      runtime: this.deps.runtime,
       audit: this.deps.audit,
       onEvent: () => {
         this.emitQueueChanged();
       },
     });
-    this.webhook.register(this.dashboard, this.deps.config.pipeline.webhooks.paths);
+    this.webhook.register(this.dashboard, this.deps.runtime.config.pipeline.webhooks.paths);
   }
 
   private startPollerIfConfigured(): void {
-    const intervalMs = this.deps.config.pipeline.reconcileInterval * 1000;
+    const intervalMs = this.deps.runtime.config.pipeline.reconcileInterval * 1000;
     if (intervalMs <= 0) {
       return;
     }
@@ -839,7 +838,7 @@ export class RedQueen {
       {
         issueTracker: this.deps.issueTracker,
         queue: this.deps.queue,
-        phaseGraph: this.deps.phaseGraph,
+        runtime: this.deps.runtime,
         pipelineState: this.deps.pipelineState,
         audit: this.deps.audit,
         onTick: () => {

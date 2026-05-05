@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildSkillContext, renderSkillPrompt, resolveSkillPath } from "../skill-context.js";
 import { buildPhaseGraph } from "../config.js";
+import type { RedQueenConfig } from "../config.js";
 import { DEFAULT_PHASES } from "../defaults.js";
+import { RuntimeState } from "../runtime-state.js";
 import type { PipelineRecord, Task } from "../types.js";
 import { makeTestConfig } from "./fixtures/test-config.js";
 
@@ -43,13 +45,15 @@ function makeRecord(overrides: Partial<PipelineRecord> = {}): PipelineRecord {
   };
 }
 
+function makeRuntime(configOverrides: Partial<RedQueenConfig> = {}): RuntimeState {
+  return new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig(configOverrides));
+}
+
 describe("buildSkillContext", () => {
   it("populates fields from config + task + record", () => {
-    const phaseGraph = buildPhaseGraph(DEFAULT_PHASES);
-    const config = makeTestConfig();
+    const runtime = makeRuntime();
     const context = buildSkillContext({
-      config,
-      phaseGraph,
+      runtime,
       task: makeTask(),
       pipelineRecord: makeRecord({ branchName: "feature/PROJ-1", specContent: "spec body" }),
       phaseName: "coding",
@@ -71,11 +75,9 @@ describe("buildSkillContext", () => {
   });
 
   it("resolves branchPrefix from issueType with default fallback", () => {
-    const phaseGraph = buildPhaseGraph(DEFAULT_PHASES);
-    const config = makeTestConfig();
+    const runtime = makeRuntime();
     const bug = buildSkillContext({
-      config,
-      phaseGraph,
+      runtime,
       task: makeTask(),
       pipelineRecord: makeRecord(),
       phaseName: "coding",
@@ -84,8 +86,7 @@ describe("buildSkillContext", () => {
     expect(bug.branchPrefix).toBe("bugfix/");
 
     const unknown = buildSkillContext({
-      config,
-      phaseGraph,
+      runtime,
       task: makeTask(),
       pipelineRecord: makeRecord(),
       phaseName: "coding",
@@ -95,8 +96,7 @@ describe("buildSkillContext", () => {
   });
 
   it("calls the module resolver when project.modules is set", () => {
-    const phaseGraph = buildPhaseGraph(DEFAULT_PHASES);
-    const config = makeTestConfig({
+    const runtime = makeRuntime({
       project: {
         buildCommand: "npm run build",
         testCommand: "npm test",
@@ -113,8 +113,7 @@ describe("buildSkillContext", () => {
       },
     });
     const context = buildSkillContext({
-      config,
-      phaseGraph,
+      runtime,
       task: makeTask(),
       pipelineRecord: makeRecord({ worktreePath: "/tmp/worktree" }),
       phaseName: "coding",
@@ -132,11 +131,9 @@ describe("buildSkillContext", () => {
   });
 
   it("uses feedbackIterations for feedback phases", () => {
-    const phaseGraph = buildPhaseGraph(DEFAULT_PHASES);
-    const config = makeTestConfig();
+    const runtime = makeRuntime();
     const context = buildSkillContext({
-      config,
-      phaseGraph,
+      runtime,
       task: makeTask({ type: "code-feedback" }),
       pipelineRecord: makeRecord({ feedbackIterations: 2, reviewIterations: 5 }),
       phaseName: "code-feedback",
@@ -145,11 +142,9 @@ describe("buildSkillContext", () => {
   });
 
   it("uses reviewIterations for review phases", () => {
-    const phaseGraph = buildPhaseGraph(DEFAULT_PHASES);
-    const config = makeTestConfig();
+    const runtime = makeRuntime();
     const context = buildSkillContext({
-      config,
-      phaseGraph,
+      runtime,
       task: makeTask({ type: "code-review" }),
       pipelineRecord: makeRecord({ reviewIterations: 3 }),
       phaseName: "code-review",
@@ -158,12 +153,10 @@ describe("buildSkillContext", () => {
   });
 
   it("throws on unknown phase", () => {
-    const phaseGraph = buildPhaseGraph(DEFAULT_PHASES);
-    const config = makeTestConfig();
+    const runtime = makeRuntime();
     expect(() =>
       buildSkillContext({
-        config,
-        phaseGraph,
+        runtime,
         task: makeTask(),
         pipelineRecord: makeRecord(),
         phaseName: "unknown-phase",
@@ -174,11 +167,9 @@ describe("buildSkillContext", () => {
 
 describe("renderSkillPrompt", () => {
   it("prepends YAML block to skill markdown", () => {
-    const phaseGraph = buildPhaseGraph(DEFAULT_PHASES);
-    const config = makeTestConfig();
+    const runtime = makeRuntime();
     const context = buildSkillContext({
-      config,
-      phaseGraph,
+      runtime,
       task: makeTask(),
       pipelineRecord: makeRecord(),
       phaseName: "coding",
@@ -207,7 +198,7 @@ describe("resolveSkillPath", () => {
     mkdirSync(skillDir, { recursive: true });
     const filePath = join(skillDir, "SKILL.md");
     writeFileSync(filePath, "# Coder");
-    expect(resolveSkillPath(userDir, "coder")).toBe(filePath);
+    expect(resolveSkillPath(userDir, "coder", [])).toBe(filePath);
   });
 
   it("falls back to built-in when user skill missing", () => {
@@ -217,10 +208,27 @@ describe("resolveSkillPath", () => {
     mkdirSync(skillDir, { recursive: true });
     const filePath = join(skillDir, "SKILL.md");
     writeFileSync(filePath, "# Coder");
-    expect(resolveSkillPath(userDir, "coder", builtIn)).toBe(filePath);
+    expect(resolveSkillPath(userDir, "coder", [], builtIn)).toBe(filePath);
   });
 
   it("returns null when neither exists", () => {
-    expect(resolveSkillPath(join(tempDir, "user"), "coder")).toBeNull();
+    expect(resolveSkillPath(join(tempDir, "user"), "coder", [])).toBeNull();
+  });
+
+  it("returns null when the skill is in the disabled list, even if the file exists", () => {
+    const userDir = join(tempDir, "user");
+    const skillDir = join(userDir, "coder");
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(join(skillDir, "SKILL.md"), "# Coder");
+    expect(resolveSkillPath(userDir, "coder", ["coder"])).toBeNull();
+  });
+
+  it("does not disable unrelated skills when disabled list has entries", () => {
+    const userDir = join(tempDir, "user");
+    const skillDir = join(userDir, "coder");
+    mkdirSync(skillDir, { recursive: true });
+    const filePath = join(skillDir, "SKILL.md");
+    writeFileSync(filePath, "# Coder");
+    expect(resolveSkillPath(userDir, "coder", ["tester"])).toBe(filePath);
   });
 });

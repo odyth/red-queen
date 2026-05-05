@@ -30,7 +30,7 @@ export function makeTestConfig(overrides: Partial<RedQueenConfig> = {}): RedQuee
       reconcileInterval: 300,
     },
     phases: DEFAULT_PHASES,
-    skills: { directory: ".redqueen/skills" },
+    skills: { directory: ".redqueen/skills", disabled: [] },
     dashboard: { enabled: true, port: 4400, host: "127.0.0.1" },
     audit: { logFile: "audit.log", retentionDays: 30 },
   };

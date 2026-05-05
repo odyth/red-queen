@@ -11,7 +11,9 @@ import { DualWriteAuditLogger } from "../audit.js";
 import { buildPhaseGraph } from "../config.js";
 import { DEFAULT_PHASES } from "../defaults.js";
 import { reconcile } from "../reconciler.js";
+import { RuntimeState } from "../runtime-state.js";
 import { MockIssueTracker, makeIssue } from "./fixtures/mock-adapters.js";
+import { makeTestConfig } from "./fixtures/test-config.js";
 
 let db: BetterSqlite3.Database;
 let queue: SqliteTaskQueue;
@@ -35,12 +37,12 @@ describe("reconcile", () => {
   });
 
   it("creates tasks for untracked issues in automated phases when local state exists", async () => {
-    const phaseGraph = buildPhaseGraph(DEFAULT_PHASES);
+    const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
     const issueTracker = new MockIssueTracker();
     issueTracker.listByPhaseResults.set("coding", [makeIssue("PROJ-1", "coding")]);
     pipelineState.create("PROJ-1", "coding");
 
-    const result = await reconcile({ issueTracker, queue, phaseGraph, pipelineState, audit });
+    const result = await reconcile({ issueTracker, queue, runtime, pipelineState, audit });
 
     expect(result.issuesFound).toBe(1);
     expect(result.tasksCreated).toBe(1);
@@ -48,30 +50,30 @@ describe("reconcile", () => {
   });
 
   it("skips issues that already have open tasks", async () => {
-    const phaseGraph = buildPhaseGraph(DEFAULT_PHASES);
+    const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
     const issueTracker = new MockIssueTracker();
     queue.enqueue({ type: "coding", issueId: "PROJ-1" });
     issueTracker.listByPhaseResults.set("coding", [makeIssue("PROJ-1", "coding")]);
 
-    const result = await reconcile({ issueTracker, queue, phaseGraph, pipelineState, audit });
+    const result = await reconcile({ issueTracker, queue, runtime, pipelineState, audit });
 
     expect(result.tasksCreated).toBe(0);
     expect(result.skipped).toBe(1);
   });
 
   it("does not query human-gate phases", async () => {
-    const phaseGraph = buildPhaseGraph(DEFAULT_PHASES);
+    const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
     const issueTracker = new MockIssueTracker();
     issueTracker.listByPhaseResults.set("spec-review", [makeIssue("PROJ-9")]);
 
-    const result = await reconcile({ issueTracker, queue, phaseGraph, pipelineState, audit });
+    const result = await reconcile({ issueTracker, queue, runtime, pipelineState, audit });
 
     expect(result.issuesFound).toBe(0);
     expect(issueTracker.calls.some((c) => c.includes("spec-review"))).toBe(false);
   });
 
   it("continues when listIssuesByPhase throws", async () => {
-    const phaseGraph = buildPhaseGraph(DEFAULT_PHASES);
+    const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
     const issueTracker = new MockIssueTracker();
     // Throw on coding
     issueTracker.listIssuesByPhase = (phase: string) => {
@@ -81,29 +83,29 @@ describe("reconcile", () => {
       return Promise.resolve([]);
     };
 
-    const result = await reconcile({ issueTracker, queue, phaseGraph, pipelineState, audit });
+    const result = await reconcile({ issueTracker, queue, runtime, pipelineState, audit });
     expect(result.issuesFound).toBe(0);
   });
 
   it("dedups same issue appearing in multiple phases", async () => {
-    const phaseGraph = buildPhaseGraph(DEFAULT_PHASES);
+    const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
     const issueTracker = new MockIssueTracker();
     const issue = makeIssue("PROJ-1");
     issueTracker.listByPhaseResults.set("coding", [issue]);
     issueTracker.listByPhaseResults.set("code-review", [issue]);
     pipelineState.create("PROJ-1", "coding");
 
-    const result = await reconcile({ issueTracker, queue, phaseGraph, pipelineState, audit });
+    const result = await reconcile({ issueTracker, queue, runtime, pipelineState, audit });
     expect(result.issuesFound).toBe(1);
     expect(result.tasksCreated).toBe(1);
   });
 
   it("skips non-entry phase issue when no local pipeline state exists", async () => {
-    const phaseGraph = buildPhaseGraph(DEFAULT_PHASES);
+    const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
     const issueTracker = new MockIssueTracker();
     issueTracker.listByPhaseResults.set("coding", [makeIssue("PROJ-2", "coding")]);
 
-    const result = await reconcile({ issueTracker, queue, phaseGraph, pipelineState, audit });
+    const result = await reconcile({ issueTracker, queue, runtime, pipelineState, audit });
 
     expect(result.issuesFound).toBe(1);
     expect(result.tasksCreated).toBe(0);
@@ -112,11 +114,11 @@ describe("reconcile", () => {
   });
 
   it("enqueues entry-phase issue even without a local pipeline record", async () => {
-    const phaseGraph = buildPhaseGraph(DEFAULT_PHASES);
+    const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
     const issueTracker = new MockIssueTracker();
     issueTracker.listByPhaseResults.set("spec-writing", [makeIssue("PROJ-3", "spec-writing")]);
 
-    const result = await reconcile({ issueTracker, queue, phaseGraph, pipelineState, audit });
+    const result = await reconcile({ issueTracker, queue, runtime, pipelineState, audit });
 
     expect(result.issuesFound).toBe(1);
     expect(result.tasksCreated).toBe(1);

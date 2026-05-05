@@ -2,7 +2,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AuditLogger } from "../core/audit.js";
 import type { TaskQueue } from "../core/queue.js";
 import type { PipelineStateStore } from "../core/pipeline-state.js";
-import type { PhaseGraph, PipelineEvent } from "../core/types.js";
+import type { RuntimeState } from "../core/runtime-state.js";
+import type { PipelineEvent } from "../core/types.js";
 import type { IssueTracker } from "../integrations/issue-tracker.js";
 import type { SourceControl } from "../integrations/source-control.js";
 import type { DashboardServer, RouteHandler } from "../dashboard/server.js";
@@ -12,7 +13,7 @@ export interface WebhookServerDeps {
   sourceControl: SourceControl;
   queue: TaskQueue;
   pipelineState: PipelineStateStore;
-  phaseGraph: PhaseGraph;
+  runtime: RuntimeState;
   audit: AuditLogger;
   onEvent?: (event: PipelineEvent) => void;
 }
@@ -134,7 +135,7 @@ export class WebhookServer {
   }
 
   private async dispatchEvent(event: PipelineEvent, component: string): Promise<void> {
-    const { issueTracker, queue, phaseGraph, pipelineState, audit } = this.deps;
+    const { issueTracker, queue, runtime, pipelineState, audit } = this.deps;
 
     switch (event.type) {
       case "phase-change": {
@@ -142,7 +143,7 @@ export class WebhookServer {
         if (phaseName === null) {
           return;
         }
-        if (phaseGraph.isHumanGate(phaseName)) {
+        if (runtime.phaseGraph.isHumanGate(phaseName)) {
           audit.log({
             component,
             issueId: event.issueId,
@@ -151,7 +152,7 @@ export class WebhookServer {
           });
           break;
         }
-        const phase = phaseGraph.getPhase(phaseName);
+        const phase = runtime.phaseGraph.getPhase(phaseName);
         if (phase === undefined) {
           audit.log({
             component,
@@ -161,7 +162,7 @@ export class WebhookServer {
           });
           return;
         }
-        const entryPhaseNames = new Set(phaseGraph.getEntryPhases().map((p) => p.name));
+        const entryPhaseNames = new Set(runtime.phaseGraph.getEntryPhases().map((p) => p.name));
         if (entryPhaseNames.has(phaseName) === false) {
           const record = pipelineState.get(event.issueId);
           if (record === null) {
@@ -219,7 +220,7 @@ export class WebhookServer {
           break;
         }
         const currentJiraPhase = await issueTracker.getPhase(event.issueId);
-        const entryPhaseNames = new Set(phaseGraph.getEntryPhases().map((p) => p.name));
+        const entryPhaseNames = new Set(runtime.phaseGraph.getEntryPhases().map((p) => p.name));
         let taskType: string;
         if (currentJiraPhase === null) {
           taskType = "new-ticket";
