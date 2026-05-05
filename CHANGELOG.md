@@ -99,8 +99,6 @@ dashboard into a full control plane.
 
 ## [0.1.3] - 2026-05-04
 
-## [0.1.3] - 2026-05-04
-
 ### Fixed
 
 - `redqueen init` with webhooks enabled now produces a config that

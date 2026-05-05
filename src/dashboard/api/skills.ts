@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 import type { RuntimeState } from "../../core/runtime-state.js";
 
 export interface SkillsApiDeps {
@@ -201,7 +201,7 @@ export async function handleSkillPut(
   const targetDir = join(userSkillsDir(deps), name);
   const resolved = resolve(targetDir);
   const userRoot = resolve(userSkillsDir(deps));
-  if (resolved.startsWith(`${userRoot}/`) === false && resolved !== userRoot) {
+  if (resolved.startsWith(`${userRoot}${sep}`) === false && resolved !== userRoot) {
     sendJson(res, 400, { error: "path escapes user skills directory" });
     return;
   }

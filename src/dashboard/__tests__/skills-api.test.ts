@@ -125,7 +125,8 @@ describe("Dashboard skills API", () => {
     expect(existsSync(join(tempDir, "bundled-skills", "new-thing"))).toBe(false);
   });
 
-  it("PUT /api/skills/:name rejects invalid names", async () => {
+  it("PUT /api/skills/:name rejects invalid names (uppercase, traversal, percent-encoded)", async () => {
+    // Uppercase fails SKILL_NAME_RE at the routing layer.
     const uppercaseRes = await fetch(`http://127.0.0.1:${String(port)}/api/skills/BadName`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -133,12 +134,34 @@ describe("Dashboard skills API", () => {
     });
     expect(uppercaseRes.status).toBe(404);
 
+    // Single `..` — no slashes, but fails SKILL_NAME_RE (starts with `.`).
     const traversalRes = await fetch(`http://127.0.0.1:${String(port)}/api/skills/..`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ content: "x" }),
     });
     expect(traversalRes.status).toBe(404);
+
+    // `../../secret` — contains `/`, rejected by skillMatchesRoute before
+    // reaching the handler. fetch normalizes this, but raw paths fail too.
+    const dotDotSlashRes = await fetch(
+      `http://127.0.0.1:${String(port)}/api/skills/..%2F..%2Fsecret`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: "x" }),
+      },
+    );
+    expect(dotDotSlashRes.status).toBe(404);
+
+    // Absolute path — `/api/skills//etc/passwd` has an empty segment that
+    // fails SKILL_NAME_RE.
+    const absoluteRes = await fetch(`http://127.0.0.1:${String(port)}/api/skills/%2Fetc%2Fpasswd`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "x" }),
+    });
+    expect(absoluteRes.status).toBe(404);
   });
 
   it("DELETE /api/skills/reviewer (bundled only) returns 409 with guidance", async () => {

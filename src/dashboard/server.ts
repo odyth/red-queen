@@ -139,6 +139,14 @@ export class DashboardServer {
       server.on("error", rejectStart);
       server.listen(this.options.port, this.options.host, () => {
         this.server = server;
+        if (this.deps.editor !== undefined && isNonLoopbackHost(this.options.host)) {
+          // Editor endpoints can mutate config, skills, and workflow. There is
+          // no auth layer — binding to a non-loopback interface exposes an
+          // unauthenticated control plane to anything that can reach the port.
+          process.stderr.write(
+            `warning (dashboard): binding editor endpoints to ${this.options.host} — there is no auth; only use a loopback address unless you've put a reverse proxy with auth in front.\n`,
+          );
+        }
         resolveStart();
       });
     });
@@ -489,6 +497,13 @@ export class DashboardServer {
     res.writeHead(status, { "Content-Type": "text/plain" });
     res.end(body);
   }
+}
+
+function isNonLoopbackHost(host: string): boolean {
+  if (host === "127.0.0.1" || host === "::1" || host === "localhost") {
+    return false;
+  }
+  return true;
 }
 
 function summarizeTask(task: Task): Record<string, unknown> {

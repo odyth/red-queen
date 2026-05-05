@@ -1,6 +1,6 @@
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { parseConfig } from "../../core/config.js";
+import { parseConfig, validatePhaseGraph } from "../../core/config.js";
 import type { RedQueenConfig } from "../../core/config.js";
 import type { RuntimeState } from "../../core/runtime-state.js";
 
@@ -112,13 +112,27 @@ interface ValidationOutcome {
 }
 
 function validateSubmittedYaml(yamlText: string): ValidationOutcome {
+  let config: RedQueenConfig;
   try {
-    const config = parseConfig(yamlText);
-    return { ok: true, errors: [], warnings: [], config };
+    config = parseConfig(yamlText);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return { ok: false, errors: [message], warnings: [], config: null };
   }
+  // Run the same phase-graph cross-reference check that buildPhaseGraph runs
+  // during reload, so a bad graph fails validation BEFORE writeAtomic instead
+  // of after — otherwise the file persists but the runtime rejects the reload
+  // and the two drift.
+  const graphResult = validatePhaseGraph(config.phases);
+  if (graphResult.errors.length > 0) {
+    return {
+      ok: false,
+      errors: graphResult.errors,
+      warnings: graphResult.warnings,
+      config: null,
+    };
+  }
+  return { ok: true, errors: [], warnings: graphResult.warnings, config };
 }
 
 export async function handleConfigValidate(
