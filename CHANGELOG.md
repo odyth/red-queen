@@ -7,15 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-05
+
+UX polish release from AlignSmart dogfood feedback. Five install-time
+traps the 0.2.0 rollout hit, all fixed here; plus a new
+`redqueen jira discover` command that auto-fills the custom field IDs
+and phase option mappings that `redqueen init` leaves as placeholders.
+No schema changes, no breaking changes — `stop → npm install -g
+redqueen@latest → service install → start` is the upgrade path.
+
 ### Added
 
-- README overhaul: plain-English TL;DR, customization section, FAQ,
-  troubleshooting, named competitor comparison, For-AI-agents block.
-- `llms.txt` at repo root for AI crawler discoverability.
-- Inline SVG logo + tagline in dashboard header.
-- Expanded `package.json` keywords for discoverability.
-- Brand assets (logo, social card) under `assets/brand/` and tagline
-  wired into README and dashboard header.
+- `redqueen jira discover` queries Jira's `/rest/api/3/field` endpoint,
+  selects single-select Phase and textarea Spec custom fields, fetches
+  the phase options, and patches `redqueen.yaml` with the resolved
+  IDs. Levenshtein-fuzzy match for phase-option pairing. `--yes` for
+  non-interactive CI, `--dry-run` to inspect the diff.
+- `redqueen service install` auto-detects the `claude` binary via
+  `which` and writes the absolute path to `pipeline.claudeBin`. launchd
+  and systemd user services ship with a minimal PATH that doesn't
+  include nvm / asdf / homebrew by default, so the service could find
+  Red Queen but not Claude without this.
+- `redqueen init` now prints
+  `Next: run \`redqueen jira discover\`` in the post-install banner
+  for Jira projects.
+
+### Fixed
+
+- `redqueen service start` after `redqueen service stop` on macOS no
+  longer fails with `Could not find service`. `stop` calls
+  `launchctl bootout`, which fully unloads the job; `kickstart` can't
+  recover an unloaded job. `start` and `restart` now detect the
+  unloaded state via `launchctl print` and re-bootstrap before
+  kickstarting.
+- `.env` is now loaded by every CLI command that reads config — not
+  just `redqueen start`. Commands like `redqueen status` and
+  `redqueen service` no longer fail with `Config references
+  $JIRA_TOKEN but the environment variable is not set` unless the user
+  first ran `source .env`. Centralized in
+  `loadConfigFromProject(startDir)` so future commands can't reintroduce
+  the bug.
+- Dashboard **Stop** button no longer renders an optimistic Start
+  button that would POST to a now-dead server. After Stop the partial
+  shows an instruction block:
+  `Run \`redqueen service start\` in a terminal to bring it back.`
+
+### Changed
+
+- README rewritten around the Jira + service + dashboard product
+  surface. Structured as: install → Jira quickstart → alternative
+  GitHub Issues path → dashboard tabs → service management → config →
+  verification checklist → troubleshooting. Removed preview-era
+  version claims in prose; version lives in `package.json` and
+  `CHANGELOG.md`.
+- `levenshtein()` promoted to `src/core/strings.ts` so both config
+  validation and `jira discover` share the implementation.
 
 ## [0.2.0] - 2026-05-04
 

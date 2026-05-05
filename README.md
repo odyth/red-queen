@@ -6,329 +6,176 @@
 
 [![CI](https://github.com/odyth/red-queen/actions/workflows/ci.yml/badge.svg)](https://github.com/odyth/red-queen/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Preview](https://img.shields.io/badge/release-preview-orange.svg)](#preview-release)
 
 **The Red Queen doesn't think. It commands.**
 
-Deterministic **AI agent orchestrator** for **autonomous coding** — zero tokens on routing, full SDLC pipeline, first-class **human-in-the-loop AI** gates.
+Red Queen is a deterministic, zero-token orchestrator that turns Jira or
+GitHub tickets into reviewed pull requests via Claude Code. You file a
+ticket; Red Queen writes a spec, implements the code, runs automated
+review, and hands the final PR back for human approval — all without
+spending tokens on orchestration itself.
 
 ## TL;DR
 
-You file a ticket. Red Queen has Claude write a spec for it. You approve. Claude
-writes the code and opens a PR. Another Claude reviews it. Another tests it.
-You review the final PR and merge. You can jump in at any gate with feedback,
-or rip the gates out entirely.
+You assign a ticket. Red Queen has Claude write a spec. You approve at a
+human gate. Claude writes the code and opens a PR. Another Claude
+reviews it. Another tests it. You review the final PR and merge. You
+can step in at any gate, or remove the gates entirely.
 
-It's a tiny AI dev team. You're the tech lead. The orchestrator is deterministic
-— no LLM deciding what to do next, no wasted tokens on routing.
+The orchestrator is a state machine, not an LLM. No AI tokens are spent
+deciding what to do next. Skills are user-overridable markdown prompts;
+phases are dynamic config in `redqueen.yaml`.
 
-<!-- TODO-MEDIA: dashboard screenshot | path: ./assets/dashboard.png | size: 1400px wide -->
-
-## Preview release
-
-> **v0.1.0 is a preview release.** The API surface is stable enough to build
-> on, but expect rough edges. Please file bugs at
-> [github.com/odyth/red-queen/issues](https://github.com/odyth/red-queen/issues).
-
-## What Is Red Queen?
-
-Red Queen is a state machine that orchestrates AI coding agents through a complete software development lifecycle. It dispatches isolated AI workers to write specs, implement code, review PRs, run tests, and address feedback — all without spending a single AI token on orchestration.
-
-The orchestrator is ~600 lines of deterministic logic. No black box. No AI deciding what to do next. Just a state machine that commands workers and enforces human checkpoints. This is **SDLC automation** with a **deterministic AI orchestrator** at its heart, not another agentic black box.
-
-## Key Features
-
-- **Zero-token orchestration** — The state machine is pure logic. Cheaper, faster, and fully debuggable compared to AI-driven orchestrators.
-- **Isolated skill workers** — Each phase (spec writing, coding, review, testing, feedback) runs a purpose-built prompt in isolation. Focused prompts outperform kitchen-sink mega-agents.
-- **Human-in-the-loop gates** — Human review checkpoints are first-class workflow, not an afterthought. You stay in control.
-- **Issue tracker integration** — Bidirectional sync with Jira and GitHub Issues. Work flows from your issue tracker through the pipeline and back.
-- **Retry with escalation** — Failed phases retry up to 3 times, then escalate to a human. No infinite loops.
-- **Webhook + polling** — Optional webhook server for instant response, with polling fallback that works out of the box.
-
-## For AI agents
-
-Working from this repo in Cursor / Claude Code / Copilot / Windsurf? Start with
-[AGENTS.md](AGENTS.md) — it has the build commands, code style, architecture
-principles, and the interface contracts for adding integrations.
-
-Installing this into a user's project? One-liner to hand to your agent:
-
-> "Install redqueen, run `redqueen init -y` with github-issues + github,
-> add my GITHUB_PAT to .env, start it."
-
-LLM crawler index: [llms.txt](llms.txt).
-
-## Your pipeline, your rules
-
-Phases are dynamic — defined in `redqueen.yaml`, not baked into the code.
-Skills are user-overridable markdown prompts. Human gates can be added,
-removed, or reordered to match how your team actually ships. This is an
-**agentic workflow** you configure, not a black-box **multi-agent coding**
-pipeline you have to accept.
-
-### Minimal — ship fast, minimum ceremony
-
-```mermaid
-stateDiagram-v2
-  [*] --> Coding
-  Coding --> HumanReview
-  HumanReview --> [*]
-```
-
-<details><summary>YAML</summary>
-
-```yaml
-pipeline:
-  baseBranch: origin/main
-  phases:
-    - name: coding
-      type: automated
-      skill: coder
-      next: human-review
-      assignTo: ai
-    - name: human-review
-      type: human-gate
-      next: done
-      assignTo: human
-```
-
-</details>
-
-### Default — full pipeline, maximum safety
-
-```mermaid
-stateDiagram-v2
-  [*] --> SpecWriting: new-ticket
-  SpecWriting --> SpecReview: automated
-  SpecReview --> Coding: human approves
-  SpecReview --> SpecFeedback: human requests changes
-  SpecFeedback --> SpecReview
-  SpecFeedback --> Blocked: max iterations
-  Coding --> CodeReview
-  CodeReview --> Testing: approve
-  CodeReview --> Coding: request changes
-  Testing --> HumanReview: pass
-  Testing --> Coding: fail
-  HumanReview --> [*]: approve + merge
-  HumanReview --> CodeFeedback: human comments on PR
-  CodeFeedback --> CodeReview
-  CodeFeedback --> HumanReview: max iterations
-  Blocked --> Coding: human unblocks
-```
-
-<details><summary>YAML</summary>
-
-```yaml
-pipeline:
-  baseBranch: origin/main
-  # phases omitted — defaults from src/core/defaults.ts apply:
-  # spec-writing → spec-review → coding → code-review → testing → human-review
-  # + spec-feedback, code-feedback, blocked rework / escalation loops
-```
-
-</details>
-
-### Custom — add your own gates
-
-```mermaid
-stateDiagram-v2
-  [*] --> SpecWriting
-  SpecWriting --> SpecReview
-  SpecReview --> Coding
-  Coding --> CodeReview
-  CodeReview --> Testing
-  Testing --> SecurityReview
-  SecurityReview --> HumanReview: approve
-  SecurityReview --> Coding: changes needed
-  HumanReview --> [*]
-```
-
-<details><summary>YAML</summary>
-
-```yaml
-pipeline:
-  baseBranch: origin/main
-  phases:
-    # ...default phases up through testing...
-    - name: testing
-      type: automated
-      skill: tester
-      next: security-review
-      onFail: coding
-      assignTo: ai
-    - name: security-review
-      type: human-gate
-      next: human-review
-      rework: coding
-      assignTo: human
-    - name: human-review
-      type: human-gate
-      next: done
-      assignTo: human
-```
-
-</details>
-
-### Skills you can override
-
-| Skill | Purpose |
-|---|---|
-| `prompt-writer` | Writes specs (fresh + revision flows) |
-| `coder` | Implements the spec, opens a PR |
-| `reviewer` | Reviews the PR against the spec and coding standards |
-| `tester` | Verifies build + tests locally and in CI |
-| `comment-handler` | Addresses PR review feedback iteratively |
-
-Drop `SKILL.md` into `.redqueen/skills/<name>/` and it wins over the built-in.
-Full context contract in [src/skills/README.md](src/skills/README.md).
-
-## Quickstart
-
-Get Red Queen running on your own GitHub repo in ~15 minutes using a
-Personal Access Token. This path has no Jira dependency and no App
-registration.
-
-### 0. Install and authenticate Claude Code
-
-Red Queen is a **Claude Code orchestrator** — it dispatches Claude Code
-workers, so the CLI must be installed and logged in first. Follow
-[Anthropic's Claude Code install docs](https://docs.anthropic.com/en/docs/claude-code/overview)
-and confirm `claude --version` works in your shell.
-
-### 1. Install
+## Install
 
 ```bash
 npm install -g redqueen
-# or run each command with `npx redqueen ...`
 ```
 
-### 2. Generate a GitHub PAT
+**Requirements:**
 
-Go to <https://github.com/settings/personal-access-tokens/new>. Create a
-fine-grained token scoped to your target repo with:
+- Node.js >= 24
+- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code/overview) installed and authenticated (`claude --version` must work in your shell)
+- An issue tracker: Jira Cloud or GitHub Issues
+- A git repo with a remote on GitHub
 
-- **Repository access**: only the target repo
-- **Permissions**: Contents (read/write), Issues (read/write), Pull
-  requests (read/write), Workflows (read/write), Metadata (read)
+## Quickstart (Jira)
 
-Copy the token.
+This is the primary path — Red Queen was built for teams already running
+Jira-driven SDLC.
 
-### 3. Initialize
+### 1. Scaffold
 
-Inside your git repo:
+In the root of your git repo:
 
 ```bash
-redqueen init -y
-# Answer prompts for issue tracker type (github-issues) and source control (github).
-# `-y` accepts everything else; edit redqueen.yaml afterward if needed.
+redqueen init
 ```
 
-### 4. Add your token
+Answer the prompts. Pick `jira` for issue tracker and `github` for
+source control. `init` writes `redqueen.yaml`, a gitignored `.env`, a
+codebase map, and reference templates under `.redqueen/references/`.
 
-Edit `.env` (created by init, already gitignored):
+### 2. Fill in secrets
+
+Open `.env` and set:
 
 ```
-GITHUB_PAT=ghp_xxxxxxxxxxxxxxxxxxxx
+JIRA_TOKEN=...      # Atlassian API token (id.atlassian.com → Security)
+GITHUB_PAT=...      # fine-grained PAT scoped to your repo
 ```
 
-### 5. Start
+### 3. Discover Jira schema
+
+Custom field IDs and phase option IDs are tenant-specific. Let Red
+Queen fetch them:
 
 ```bash
-redqueen start
+redqueen jira discover
 ```
 
-Open <http://127.0.0.1:4400> — the dashboard.
+This queries your Jira project, picks the phase and spec custom fields,
+matches each Red Queen phase against Jira option values, and patches
+`redqueen.yaml` with the resolved IDs. Unmatched phases stay as
+`<CHANGE ME>` — fix them manually. Use `--dry-run` to preview, `--yes`
+to skip the confirmation prompt.
 
-<!-- TODO-MEDIA: dashboard after 'redqueen start' | path: ./assets/dashboard-running.png | size: 1400px wide -->
-
-### 6. Create a test issue
-
-In your GitHub repo, open a new issue describing a small change. Add the
-`rq:phase:spec-writing` label — this is what the polling reconciler
-looks for (it iterates automated phases and enqueues work for any issue
-carrying the matching `rq:phase:*` label). Red Queen creates the label
-automatically on first use if it doesn't exist yet, but you need to add
-it to the issue yourself.
-
-The orchestrator polls every 30 seconds; you'll see the label move
-through `rq:phase:spec-writing` → `rq:phase:spec-review` →
-`rq:phase:coding` etc. as phases complete. Red Queen adds `rq:active`
-on its own while it's working — don't add that one manually.
-
-<!-- TODO-MEDIA: asciinema cast or GIF of a ticket moving through phases | path: ./assets/demo.gif -->
-<!-- TODO-MEDIA asciinema script: rec --title="redqueen first run" --command="bash scripts/demo.sh" -->
-
-### 7. Learn more
-
-That's the loop. See the [GitHub Issues adapter
-README](https://github.com/odyth/red-queen/blob/master/src/integrations/github-issues/README.md)
-for full label conventions, webhook setup (which enables the
-`new-ticket` on-assign flow), and troubleshooting.
-
-## Upgrading
-
-When a new `redqueen` version ships and you're running as a daemon:
+### 4. Install the service
 
 ```bash
-npm install -g redqueen@latest
-redqueen service restart
+redqueen service install
+redqueen service start
 ```
 
-The installed launchd/systemd service just execs an absolute path into
-the global npm install, so `npm install -g` overwrites the on-disk code
-and `service restart` re-execs it. No uninstall needed.
+On macOS this generates a LaunchAgent under `~/Library/LaunchAgents/`;
+on Linux, a `--user` systemd unit under `~/.config/systemd/user/`. The
+installer auto-detects `claude` on your PATH and writes the absolute
+path into `pipeline.claudeBin` so the service's restricted PATH can't
+strand it.
 
-Run `redqueen service install` *before* the restart if:
+### 5. Dashboard
 
-- the release notes call out changes to the wrapper script, plist, or
-  systemd unit;
-- you've switched Node versions since the original install (the wrapper
-  has the node binary path baked in);
-- a new release adds auto-detection you want to adopt (e.g.
-  `claudeBin`).
+Open <http://127.0.0.1:4400>. Five tabs:
 
-`service install` is idempotent — it rewrites the wrapper and reloads
-the service definition, then a `service restart` picks it up.
+- **Status** — live phase, queue depth, last poll, SSE event stream.
+- **Service** — start / stop / restart the daemon, log paths.
+- **Config** — edit `redqueen.yaml` in-browser; save triggers a hot
+  reload and shows which sections applied vs. require restart.
+- **Skills** — list bundled and user-overridden prompts; disable any
+  skill via `skills.disabled`.
+- **Workflow** — add, remove, reorder phases with live validation;
+  refuses to save while tasks are in flight.
 
-If you're running `redqueen start` in the foreground instead, just
-`Ctrl+C` and relaunch after `npm install -g`.
+### 6. Assign a ticket
+
+In Jira, set the **AI Phase** field on a ticket to `Spec Writing` and
+assign it to the AI bot account. The orchestrator polls every 30
+seconds (or reacts to a webhook if configured). You'll see it move:
+`Spec Writing` → `Spec Review` (human gate) → `Coding` → `Code Review`
+→ `Testing` → `Human Review` → merged.
+
+## Alternative: GitHub Issues
+
+If you'd rather drive the pipeline from GitHub Issues, pick
+`github-issues` at `redqueen init`. Labels (`rq:phase:spec-writing`,
+etc.) take the place of Jira custom fields. See the
+[GitHub Issues adapter README](./src/integrations/github-issues/README.md)
+for the full label convention and webhook setup.
+
+## Service management
+
+```bash
+redqueen service install     # write plist/unit + wrapper, enable, start
+redqueen service status      # show install/run state + log paths
+redqueen service start       # start (bootstrap if unloaded)
+redqueen service stop        # stop + fully unload
+redqueen service restart     # stop + start
+redqueen service uninstall   # stop, disable, remove plist/unit
+```
+
+The wrapper script (`.redqueen/run-redqueen.sh`) sources `.env` before
+execing `node redqueen start`, so your plist/unit never contains secret
+values. Log paths default to `.redqueen/redqueen.{out,err}.log` under
+the project directory.
+
+## Configuration
+
+All runtime config lives in `redqueen.yaml`. `redqueen init` writes a
+sensible default; the schema is documented inline in
+[`src/core/config.ts`](./src/core/config.ts), and two full reference
+configs live under [`examples/`](./examples/) — one GitHub Issues, one
+Jira.
+
+`${ENV_VAR}` references in the YAML are interpolated at load time from
+`process.env` (and from the adjacent `.env` file). Use `${JIRA_TOKEN}`
+and `${GITHUB_PAT}` for secrets — never paste literal values, the
+dashboard validator will reject them.
+
+## Verification checklist
+
+After `redqueen service start`:
+
+- `redqueen status` prints `Red Queen — running` with a PID.
+- The dashboard at <http://127.0.0.1:4400> loads and the **Service**
+  tab shows the state pill as `running`.
+- An assigned ticket moves from the entry phase into the first
+  automated phase within one poll interval.
+- `.redqueen/audit.log` shows phase transitions as they happen.
+- `redqueen service stop` followed by `redqueen service start` leaves
+  the service running.
 
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `command not found: redqueen` | Global install failed or not on PATH | Re-run `npm install -g redqueen`, verify `which redqueen` |
-| `command not found: claude` | Claude Code CLI not installed | Install from [Anthropic's docs](https://docs.anthropic.com/en/docs/claude-code/overview); `claude` must be on PATH |
-| Polling finds nothing / label doesn't move | Label `rq:phase:spec-writing` not added to issue | Add the label manually on the issue; Red Queen creates the label but doesn't tag existing issues |
-| `401 Unauthorized` from GitHub | PAT missing a scope (Contents / Issues / Pull requests / Workflows / Metadata) | Regenerate fine-grained PAT with full scope list from Quickstart step 2 |
-| `403` / secondary rate limit | PAT hitting GitHub rate limits on polling repo | Enable webhooks (adapter README) or increase poll interval |
-| Webhook signatures failing | `GITHUB_WEBHOOK_SECRET` mismatch between GitHub and `.env` | Set the same secret in both locations, restart `redqueen start` |
-| Worker stalls mid-phase | Claude Code prompt hit an unexpected state | Check `.redqueen/audit/` logs; phase retries up to 3 then escalates to `blocked` |
-| Jira phase not moving | `phaseMapping` option IDs don't match Jira dropdown | Pull fresh option IDs from Jira, update `redqueen.yaml` |
+| Service starts but workers fail with `claude: command not found` | `claude` not on the service's runtime PATH | Re-run `redqueen service install` to re-detect, or set `pipeline.claudeBin` explicitly |
+| Clicking Dashboard **Stop** leaves no way to restart from the UI | Expected — the dashboard is served by the service it just killed | Run `redqueen service start` from a terminal |
+| Jira issues aren't being picked up | Webhook not delivering or `customFields` wrong | Check `.redqueen/audit.log`, run `redqueen jira discover --dry-run`, confirm the Jira webhook is reaching your `publicBaseUrl` |
+| `401 Unauthorized` from GitHub | PAT missing a scope | Regenerate fine-grained PAT with Contents / Issues / PRs / Workflows / Metadata |
+| Worker stalls mid-phase | Claude Code prompt hit an unexpected state | Check `.redqueen/audit.log`; phase retries up to 3, then escalates to `blocked` |
 
-Per-adapter issues live in each adapter's README.
-
-## Full Setup
-
-- **Jira + GitHub source control** — see
-  [Jira adapter README](https://github.com/odyth/red-queen/blob/master/src/integrations/jira/README.md)
-  and
-  [GitHub source control README](https://github.com/odyth/red-queen/blob/master/src/integrations/github/README.md).
-- **GitHub Issues + GitHub source control** (easiest) — see the
-  [GitHub Issues adapter README](https://github.com/odyth/red-queen/blob/master/src/integrations/github-issues/README.md).
-- **Webhooks** — see each adapter's README for setup. Polling works
-  out of the box; webhooks are a latency optimization.
-
-## Example Configs
-
-Two complete, copy-pasteable configurations live in
-[`examples/`](https://github.com/odyth/red-queen/tree/master/examples):
-
-- [`examples/github-issues/`](https://github.com/odyth/red-queen/tree/master/examples/github-issues) —
-  GitHub Issues + GitHub source control with a PAT. The simplest possible setup.
-- [`examples/jira-github/`](https://github.com/odyth/red-queen/tree/master/examples/jira-github) —
-  Jira issue tracker + GitHub source control with a BYO GitHub App.
-  Mirrors the prototype this project was extracted from.
+Per-adapter troubleshooting lives in each adapter's README.
 
 ## Architecture
 
@@ -336,9 +183,8 @@ Two complete, copy-pasteable configurations live in
 flowchart LR
   subgraph cli["CLI (src/cli/)"]
     init[init]
-    start[start]
-    stop[stop]
-    status[status]
+    service[service]
+    jira[jira discover]
     helpers["issue / spec / pr / pipeline helpers"]
   end
 
@@ -348,17 +194,16 @@ flowchart LR
     stateStore[Pipeline & orchestrator state]
     audit[Audit logger]
     worker[Worker manager]
-    phaseGraph[Phase graph]
   end
 
   subgraph integrations["Integrations (src/integrations/)"]
-    jira[Jira adapter]
+    jiraAdapter[Jira adapter]
     ghIssues[GitHub Issues adapter]
     ghSC[GitHub source control]
   end
 
   subgraph edges["HTTP surfaces"]
-    dashboard[Dashboard SSE]
+    dashboard[Dashboard / SSE]
     webhook[Webhook server]
   end
 
@@ -368,127 +213,45 @@ flowchart LR
     ghApi[GitHub API]
   end
 
-  start --> orchestrator
   orchestrator --> queue
   orchestrator --> stateStore
   orchestrator --> audit
   orchestrator --> worker
-  orchestrator --> phaseGraph
-  orchestrator --> jira
+  orchestrator --> jiraAdapter
   orchestrator --> ghIssues
   orchestrator --> ghSC
   worker --> claude
-  jira --> jiraApi
+  jiraAdapter --> jiraApi
   ghIssues --> ghApi
   ghSC --> ghApi
   dashboard --> stateStore
   webhook --> orchestrator
-  helpers --> jira
+  helpers --> jiraAdapter
   helpers --> ghIssues
   helpers --> ghSC
 ```
 
-```
-src/
-├── cli/               # CLI commands (init, start, stop, status, helpers)
-├── core/              # State machine, queue, config, orchestrator
-├── dashboard/         # Embedded dashboard + SSE events
-├── integrations/      # Issue tracker & source control adapters
-│   ├── jira/          # Jira adapter
-│   ├── github/        # GitHub source control
-│   └── github-issues/ # GitHub Issues as an issue tracker
-├── skills/            # Default skill templates (user-overridable)
-├── templates/         # Scaffolding templates used by `redqueen init`
-└── webhook/           # Optional webhook server (shares dashboard port)
-```
+Adapter pattern — all issue trackers implement `IssueTracker`, all
+source control implements `SourceControl`. Adding Linear or Bitbucket
+is a new adapter, not a core change.
 
-Red Queen uses an adapter pattern for integrations. All issue trackers implement a common `IssueTracker` interface, making it straightforward to add support for Linear, Shortcut, or any other tracker.
+## For AI agents
 
-## How Is This Different?
+Working inside this repo? Start with [AGENTS.md](AGENTS.md) — build
+commands, code style, interfaces. Installing Red Queen into a user's
+project? Hand this to your agent:
 
-Most AI coding tools use AI to orchestrate AI — spending tokens to decide what to do next. Red Queen takes the opposite approach: a **deterministic AI orchestrator** that keeps humans in the loop and doesn't gamble on an LLM to route work.
+> "Install redqueen, run `redqueen init` for jira + github, fill the
+> tokens in `.env`, then `redqueen jira discover`, then
+> `redqueen service install && redqueen service start`."
 
-| | Red Queen | Claude Code (solo) | Aider | Cline / Roo | Devin / OpenHands |
-|---|---|---|---|---|---|
-| Form factor | Background orchestrator | Interactive CLI | Interactive pair | IDE agent | Autonomous agent |
-| Orchestration | Deterministic state machine | You are the orchestrator | You are the orchestrator | IDE-driven loop | LLM-driven loop |
-| Human gates | First-class, configurable | Ad-hoc | Ad-hoc | Ad-hoc | Minimal |
-| Token cost for routing | Zero | N/A (you route) | N/A (you route) | Per decision | Per decision |
-| Works while you sleep | Yes | No | No | No | Yes |
-| Debuggable flow | Read the state machine | N/A | N/A | Hope the LLM explains | Hope the LLM explains |
-
-Red Queen isn't a replacement for the tools in the other columns — it's the
-manager that delegates to them. It runs Claude Code workers today; the adapter
-pattern means swapping in other coding agents is a config change, not a
-rewrite.
-
-## Integrations
-
-| Integration | Status |
-|---|---|
-| Jira | Supported |
-| GitHub Issues | Supported |
-| GitHub (source control) | Supported |
-| Linear | Planned |
-
-## FAQ
-
-**Do I need Claude Code?** Yes today. Other CLIs are planned; the adapter
-pattern makes adding them straightforward.
-
-**Does it work with Cursor / Copilot / Windsurf?** Red Queen dispatches
-Claude Code workers headlessly; it's orthogonal to whatever IDE assistant
-you use while coding yourself.
-
-**How much does it cost to run?** The orchestration itself is free and
-spends zero tokens. Tokens are what your Claude subscription or API
-already charges for the actual code work.
-
-**Can I self-host?** Yes. It runs on your laptop or any Node 24+ box.
-No hosted service is required.
-
-**Does it work with monorepos?** Yes — `project.buildCommand` and
-`testCommand` scope per-run; per-module commands are configurable.
-
-**Is my code sent anywhere?** Only to the AI CLI you configure. Red Queen
-itself is a local process talking to GitHub / Jira over HTTPS.
-
-**What happens if Claude gets stuck?** Phases retry up to 3 times and
-then escalate to a human gate. No infinite loops.
-
-**Can I remove the human gates?** Yes — edit `redqueen.yaml`. Gates are
-config, not hardcoded.
-
-**Can I add my own skills?** Yes — drop `SKILL.md` at
-`.redqueen/skills/<name>/`. See the [skills README](src/skills/README.md).
-
-**Will it work with Linear / Bitbucket?** Not yet. Jira and GitHub ship
-today; the adapter pattern makes new trackers straightforward. Linear is
-on the roadmap.
-
-**Does it work on Windows?** Polling works; worker stall detection is
-Unix-only (falls back to a hard timeout on Windows).
-
-**Is this production-ready?** It's a v0.1 preview. Use it, file bugs;
-expect edges.
-
-## Contributing
-
-See [CONTRIBUTING.md](https://github.com/odyth/red-queen/blob/master/CONTRIBUTING.md)
-for the dev loop, code style, and how to add a new adapter.
-
-## Requirements
-
-- Node.js >= 24
-- An AI coding agent CLI (e.g., Claude Code)
-- An issue tracker (Jira or GitHub Issues)
-
-## License
-
-MIT — see [LICENSE](LICENSE).
+LLM crawler index: [llms.txt](llms.txt).
 
 ## Links
 
-- **Website:** [redqueen.sh](https://redqueen.sh)
-- **Issues:** [GitHub Issues](https://github.com/odyth/red-queen/issues)
-- **Changelog:** [CHANGELOG.md](CHANGELOG.md)
+- [CHANGELOG.md](CHANGELOG.md) — release notes
+- [CONTRIBUTING.md](CONTRIBUTING.md) — dev loop, code style, adding adapters
+- [LICENSE](LICENSE) — MIT
+- [Examples](./examples/) — copy-pasteable reference configs
+- [Website](https://redqueen.sh)
+- [Issue tracker](https://github.com/odyth/red-queen/issues)
