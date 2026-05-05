@@ -1,17 +1,13 @@
 import type { ServerResponse } from "node:http";
+import type { DashboardEventMap, DashboardEventName } from "./shared/api-types.js";
 
-export type DashboardEventType =
-  | "worker:started"
-  | "worker:heartbeat"
-  | "worker:completed"
-  | "queue:changed"
-  | "orchestrator:status"
-  | "config:reloaded";
+export type DashboardEventType = DashboardEventName;
 
-export interface DashboardEvent {
-  type: DashboardEventType;
-  data: unknown;
-}
+// Discriminated union over event name so broadcasters get type-checked
+// against the wire shape declared in shared/api-types.
+export type DashboardEvent = {
+  [K in DashboardEventName]: { type: K; data: DashboardEventMap[K] };
+}[DashboardEventName];
 
 export class SSEManager {
   private readonly clients = new Set<ServerResponse>();

@@ -27,18 +27,18 @@ describe("renderShell", () => {
     expect(serviceActive).toMatch(/<button class="active"[^>]*>Service</);
   });
 
-  it("embeds the controller script and data-tab hooks for client-side switching", () => {
+  it("references the controller bundle and data-tab hooks for client-side switching", () => {
     const html = renderShell({ active: "status", content: "" });
-    // Controller lives in the shell so htmx's allowScriptTags:false does
-    // not drop it when partials get swapped in.
-    expect(html).toContain("__rqShellInit");
+    // Controller ships as a static asset (src/dashboard/client → esbuild
+    // → /assets/controller.js). The shell points at it with a <script src>
+    // so it bypasses htmx's allowScriptTags:false policy and so browsers
+    // can cache it independently of the HTML doc.
+    expect(html).toContain(`src="/assets/controller.js"`);
     expect(html).toContain('data-tab="status"');
     expect(html).toContain('data-tab="service"');
     expect(html).toContain('data-tab="config"');
     expect(html).toContain('data-tab="skills"');
     expect(html).toContain('data-tab="workflow"');
-    // Header uptime is driven by the shell controller (d h m s format).
-    expect(html).toContain("fmtDuration");
   });
 
   it("places the provided content inside #main", () => {
@@ -46,23 +46,18 @@ describe("renderShell", () => {
     expect(html).toMatch(/<main id="main">[\s\S]*<p id=needle><\/p>[\s\S]*<\/main>/);
   });
 
-  // tsc cannot see inside the CONTROLLER_JS template literal, so a
-  // malformed escape sequence in that string only surfaces as a browser
-  // SyntaxError at runtime — which killed every tab init in the first
-  // cut of this commit. Parsing the emitted script here catches that
-  // class of bug at test time.
-  it("emits a controller script that parses as valid JavaScript", () => {
+  it("ships no inline <script> bodies (everything should be src= references)", () => {
     const html = renderShell({ active: "status", content: "" });
-    const scripts = Array.from(html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g))
-      .map((m) => m[1])
-      .filter((body) => body.trim().length > 0);
-    expect(scripts.length).toBeGreaterThan(0);
-    const controller = scripts[scripts.length - 1];
-    expect(controller).toContain("__rqShellInit");
-    // new Function() here only compiles the source — the body is never
-    // invoked — so this is a parse check, not an eval.
-    // eslint-disable-next-line @typescript-eslint/no-implied-eval
-    expect(() => new Function(controller)).not.toThrow();
+    // Regression guard: prior to the client-bundle migration the shell
+    // embedded ~600 lines of JS inline. Any inline <script>…</script> body
+    // sneaking back in would lose type-checking and cache benefits.
+    // Strip HTML comments first so commentary mentioning "<script>" doesn't
+    // trip the regex.
+    const stripped = html.replace(/<!--[\s\S]*?-->/g, "");
+    const inlineBodies = Array.from(stripped.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g))
+      .map((m) => m[1]?.trim() ?? "")
+      .filter((body) => body.length > 0);
+    expect(inlineBodies).toEqual([]);
   });
 });
 

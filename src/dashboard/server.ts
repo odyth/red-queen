@@ -32,6 +32,7 @@ import {
 import { handleWorkflowGet, handleWorkflowPut, handleWorkflowValidate } from "./api/workflow.js";
 import { SSEManager } from "./events.js";
 import type { DashboardEvent } from "./events.js";
+import type { StatusPayload, TaskSummary } from "./shared/api-types.js";
 import { renderShell } from "./html/shell.js";
 import { renderConfigPartial } from "./html/partials/config.js";
 import { renderServicePartial } from "./html/partials/service.js";
@@ -41,6 +42,8 @@ import { renderWorkflowPartial } from "./html/partials/workflow.js";
 
 const LOGO_ASSET_PATH = "/assets/brand/logo.png";
 const HTMX_ASSET_PATH = "/assets/htmx.min.js";
+const CONTROLLER_ASSET_PATH = "/assets/controller.js";
+const CONTROLLER_MAP_ASSET_PATH = "/assets/controller.js.map";
 
 function resolveAssetsDir(): string {
   const here = dirname(fileURLToPath(import.meta.url));
@@ -58,6 +61,8 @@ function resolveLogoFile(): string {
 
 let cachedLogoBytes: Buffer | null = null;
 let cachedHtmxBytes: Buffer | null = null;
+let cachedControllerBytes: Buffer | null = null;
+let cachedControllerMapBytes: Buffer | null = null;
 
 function loadLogoBytes(): Buffer {
   cachedLogoBytes ??= readFileSync(resolveLogoFile());
@@ -67,6 +72,16 @@ function loadLogoBytes(): Buffer {
 function loadHtmxBytes(): Buffer {
   cachedHtmxBytes ??= readFileSync(resolve(resolveAssetsDir(), "htmx.min.js"));
   return cachedHtmxBytes;
+}
+
+function loadControllerBytes(): Buffer {
+  cachedControllerBytes ??= readFileSync(resolve(resolveAssetsDir(), "controller.js"));
+  return cachedControllerBytes;
+}
+
+function loadControllerMapBytes(): Buffer {
+  cachedControllerMapBytes ??= readFileSync(resolve(resolveAssetsDir(), "controller.js.map"));
+  return cachedControllerMapBytes;
 }
 
 export type RouteHandler = (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
@@ -278,6 +293,41 @@ export class DashboardServer {
     });
     routes.push({
       method: "GET",
+      path: CONTROLLER_ASSET_PATH,
+      handler: (_req, res) => {
+        try {
+          const bytes = loadControllerBytes();
+          // Shorter TTL than htmx — controller.js ships with every
+          // release, so we want browsers to pick up updates on the next
+          // restart rather than clinging to a year-old bundle.
+          res.writeHead(200, {
+            "Content-Type": "application/javascript; charset=utf-8",
+            "Cache-Control": "public, max-age=300, must-revalidate",
+          });
+          res.end(bytes);
+        } catch {
+          this.sendText(res, 404, "Not Found");
+        }
+      },
+    });
+    routes.push({
+      method: "GET",
+      path: CONTROLLER_MAP_ASSET_PATH,
+      handler: (_req, res) => {
+        try {
+          const bytes = loadControllerMapBytes();
+          res.writeHead(200, {
+            "Content-Type": "application/json",
+            "Cache-Control": "public, max-age=300, must-revalidate",
+          });
+          res.end(bytes);
+        } catch {
+          this.sendText(res, 404, "Not Found");
+        }
+      },
+    });
+    routes.push({
+      method: "GET",
       path: "/api/status",
       handler: (_req, res) => {
         this.sendJson(res, 200, this.buildStatusPayload());
@@ -465,7 +515,7 @@ export class DashboardServer {
     return routes;
   }
 
-  private buildStatusPayload(): Record<string, unknown> {
+  private buildStatusPayload(): StatusPayload {
     const state = this.deps.orchestratorState.get();
     const ready = this.deps.queue.listByStatus("ready");
     const working = this.deps.queue.listByStatus("working");
@@ -483,7 +533,7 @@ export class DashboardServer {
     };
   }
 
-  private buildQueuePayload(): Record<string, unknown>[] {
+  private buildQueuePayload(): TaskSummary[] {
     const ready = this.deps.queue.listByStatus("ready");
     return ready.map(summarizeTask);
   }
@@ -506,7 +556,7 @@ function isNonLoopbackHost(host: string): boolean {
   return true;
 }
 
-function summarizeTask(task: Task): Record<string, unknown> {
+function summarizeTask(task: Task): TaskSummary {
   return {
     id: task.id,
     type: task.type,
