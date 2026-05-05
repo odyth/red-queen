@@ -140,13 +140,41 @@ describe("DashboardServer — service API", () => {
     expect(fake.start).toHaveBeenCalledWith(ctx);
   });
 
-  it("POST /api/service/stop and /api/service/restart dispatch correctly", async () => {
+  it("POST /api/service/stop and /api/service/restart dispatch correctly (deferred)", async () => {
     await boot(true);
-    fake.statusValue = makeStatus({ installed: true, running: false });
+    fake.statusValue = makeStatus({ installed: true, running: true, pid: 1 });
     await fetch(`http://127.0.0.1:${String(port)}/api/service/stop`, { method: "POST" });
-    expect(fake.stop).toHaveBeenCalledTimes(1);
     await fetch(`http://127.0.0.1:${String(port)}/api/service/restart`, { method: "POST" });
+    // Actions run via setImmediate so the HTTP response lands before the
+    // process can be terminated. Flush the event loop a few ticks before
+    // asserting dispatch happened.
+    for (let i = 0; i < 5; i++) {
+      await new Promise<void>((r) => setImmediate(r));
+    }
+    expect(fake.stop).toHaveBeenCalledTimes(1);
     expect(fake.restart).toHaveBeenCalledTimes(1);
+  });
+
+  it("POST /api/service/stop returns the optimistic 'stopped' partial", async () => {
+    await boot(true);
+    fake.statusValue = makeStatus({ installed: true, running: true, pid: 42 });
+    const res = await fetch(`http://127.0.0.1:${String(port)}/api/service/stop`, {
+      method: "POST",
+    });
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).toContain("status-pill stopped");
+  });
+
+  it("POST /api/service/restart returns the optimistic 'running' partial", async () => {
+    await boot(true);
+    fake.statusValue = makeStatus({ installed: true, running: false, pid: null });
+    const res = await fetch(`http://127.0.0.1:${String(port)}/api/service/restart`, {
+      method: "POST",
+    });
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).toContain("status-pill running");
   });
 
   it("GET /assets/htmx.min.js serves the vendored script with application/javascript", async () => {

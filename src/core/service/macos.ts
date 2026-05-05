@@ -3,7 +3,12 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { homedir, userInfo } from "node:os";
 import { dirname, resolve } from "node:path";
 import { promisify } from "node:util";
-import { ServiceManager, type ServiceInstallContext, type ServiceStatus } from "./manager.js";
+import {
+  ServiceManager,
+  extractStdout,
+  type ServiceInstallContext,
+  type ServiceStatus,
+} from "./manager.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -165,20 +170,6 @@ async function safeBootout(name: string): Promise<void> {
   } catch {
     // Already unloaded — bootout returns non-zero in that case.
   }
-}
-
-function extractStdout(err: unknown): string {
-  if (err === null || typeof err !== "object") {
-    return "";
-  }
-  const raw = (err as { stdout?: unknown }).stdout;
-  if (typeof raw === "string") {
-    return raw;
-  }
-  if (raw instanceof Buffer) {
-    return raw.toString("utf8");
-  }
-  return "";
 }
 
 export function readInstalledPlist(name: string): string | null {

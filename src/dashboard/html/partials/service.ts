@@ -9,6 +9,9 @@ function escapeHtml(value: string): string {
 }
 
 function pillFor(status: ServiceStatus): { cls: string; label: string } {
+  if (status.platform === "unsupported") {
+    return { cls: "missing", label: "unsupported" };
+  }
   if (status.installed === false) {
     return { cls: "missing", label: "not installed" };
   }
@@ -19,6 +22,13 @@ function pillFor(status: ServiceStatus): { cls: string; label: string } {
 }
 
 export function renderServicePartial(status: ServiceStatus): string {
+  if (status.platform === "unsupported") {
+    return `<section id="service-panel" class="span2">
+    <h2>Service</h2>
+    <p class="muted">Service installer is only supported on macOS (launchd) and Linux (systemd --user). Run <code>redqueen start</code> as a foreground process or use your platform's scheduler directly.</p>
+  </section>`;
+  }
+
   const pill = pillFor(status);
   const pidLine =
     status.pid !== null

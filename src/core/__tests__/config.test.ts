@@ -351,6 +351,57 @@ service:
     expect(config.service.restart).toBe("always");
   });
 
+  it("rejects service.name path-traversal payloads", () => {
+    const evilNames = [
+      "../../../etc/passwd",
+      "../.ssh/authorized_keys",
+      "foo/bar",
+      "foo\\bar",
+      ".leading-dot",
+      "has space",
+      "", // empty string is not a valid override either
+    ];
+    for (const name of evilNames) {
+      const yaml = `
+issueTracker:
+  type: jira
+sourceControl:
+  type: github
+project:
+  buildCommand: "npm run build"
+  testCommand: "npm test"
+service:
+  name: "${name.replace(/"/g, '\\"')}"
+`;
+      expect(() => parseConfig(yaml), `expected rejection for name="${name}"`).toThrow();
+    }
+  });
+
+  it("accepts safe service.name overrides", () => {
+    const safeNames = [
+      "redqueen",
+      "com.example.redqueen",
+      "sh.redqueen.ab12",
+      "my_service",
+      "a-b.c_d.e-f",
+    ];
+    for (const name of safeNames) {
+      const yaml = `
+issueTracker:
+  type: jira
+sourceControl:
+  type: github
+project:
+  buildCommand: "npm run build"
+  testCommand: "npm test"
+service:
+  name: ${name}
+`;
+      const config = parseConfig(yaml);
+      expect(config.service.name).toBe(name);
+    }
+  });
+
   it("defaults skills.disabled to an empty array", () => {
     const yaml = `
 issueTracker:

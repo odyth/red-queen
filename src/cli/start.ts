@@ -174,17 +174,19 @@ export async function cmdStart(args: string[]): Promise<void> {
 
   let serviceManager: ServiceManager | undefined;
   let serviceContext: ServiceInstallContext | undefined;
-  try {
-    serviceManager = createServiceManager();
-    serviceContext = buildInstallContext(
-      resolveServicePaths(config, projectDir),
-      resolveRedqueenBinPath(),
-    );
-  } catch (err) {
-    if (err instanceof UnsupportedPlatformError === false) {
-      throw err;
+  if (config.service.enabled) {
+    try {
+      serviceManager = createServiceManager();
+      serviceContext = buildInstallContext(
+        resolveServicePaths(config, projectDir),
+        resolveRedqueenBinPath(),
+      );
+    } catch (err) {
+      if (err instanceof UnsupportedPlatformError === false) {
+        throw err;
+      }
+      // Unsupported platform — dashboard simply won't expose service controls.
     }
-    // Unsupported platform — dashboard simply won't expose service controls.
   }
 
   const rq = new RedQueen({

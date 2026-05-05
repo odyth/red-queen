@@ -25,6 +25,14 @@ async function readStatus(deps: ServiceApiDeps): Promise<ServiceStatus> {
   return deps.manager.status(deps.context);
 }
 
+function projectStatus(current: ServiceStatus, target: "running" | "stopped"): ServiceStatus {
+  return {
+    ...current,
+    running: target === "running",
+    pid: target === "running" ? current.pid : null,
+  };
+}
+
 export async function handleServiceStatus(
   _req: IncomingMessage,
   res: ServerResponse,
@@ -43,51 +51,40 @@ export async function handleServicePartial(
   sendHtml(res, 200, renderServicePartial(status));
 }
 
-async function runAction(
-  action: "start" | "stop" | "restart",
-  deps: ServiceApiDeps,
+export async function handleServiceStart(
+  _req: IncomingMessage,
   res: ServerResponse,
+  deps: ServiceApiDeps,
 ): Promise<void> {
   try {
-    if (action === "start") {
-      await deps.manager.start(deps.context);
-    } else if (action === "stop") {
-      await deps.manager.stop(deps.context);
-    } else {
-      await deps.manager.restart(deps.context);
-    }
+    await deps.manager.start(deps.context);
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    // Stop/restart may kill the dashboard itself before we finish rendering —
-    // but that's benign: the caller gets the response before the process exits,
-    // or the HTMX retry kicks in on reconnect. Surface other failures as 500.
-    sendHtml(
-      res,
-      500,
-      `<section id="service-panel" class="span2"><h2>Service</h2><p class="err">${escapeHtml(
-        `${action} failed: ${message}`,
-      )}</p></section>`,
-    );
+    sendError(res, "start", err);
     return;
   }
   const status = await readStatus(deps);
   sendHtml(res, 200, renderServicePartial(status));
 }
 
-export async function handleServiceStart(
-  _req: IncomingMessage,
-  res: ServerResponse,
-  deps: ServiceApiDeps,
-): Promise<void> {
-  await runAction("start", deps, res);
-}
-
+/**
+ * Stop/restart may terminate the current process (when the dashboard is
+ * running inside the service it's tearing down). Reply with a predicted
+ * partial BEFORE invoking the manager, so the HTTP response reaches the
+ * client even if SIGTERM arrives mid-flight. The real state reconciles
+ * on the next poll / HTMX interaction.
+ */
 export async function handleServiceStop(
   _req: IncomingMessage,
   res: ServerResponse,
   deps: ServiceApiDeps,
 ): Promise<void> {
-  await runAction("stop", deps, res);
+  const current = await readStatus(deps);
+  sendHtml(res, 200, renderServicePartial(projectStatus(current, "stopped")));
+  setImmediate(() => {
+    void deps.manager.stop(deps.context).catch(() => {
+      // Silent: response already sent. Logs will surface the failure.
+    });
+  });
 }
 
 export async function handleServiceRestart(
@@ -95,7 +92,24 @@ export async function handleServiceRestart(
   res: ServerResponse,
   deps: ServiceApiDeps,
 ): Promise<void> {
-  await runAction("restart", deps, res);
+  const current = await readStatus(deps);
+  sendHtml(res, 200, renderServicePartial(projectStatus(current, "running")));
+  setImmediate(() => {
+    void deps.manager.restart(deps.context).catch(() => {
+      // Silent: response already sent. Logs will surface the failure.
+    });
+  });
+}
+
+function sendError(res: ServerResponse, action: string, err: unknown): void {
+  const message = err instanceof Error ? err.message : String(err);
+  sendHtml(
+    res,
+    500,
+    `<section id="service-panel" class="span2"><h2>Service</h2><p class="err">${escapeHtml(
+      `${action} failed: ${message}`,
+    )}</p></section>`,
+  );
 }
 
 function escapeHtml(value: string): string {

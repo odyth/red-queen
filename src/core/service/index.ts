@@ -10,6 +10,8 @@ import type { RedQueenConfig } from "../config.js";
 
 export {
   ServiceManager,
+  ServicePathError,
+  extractStdout,
   resolveServicePaths,
   computeServiceName,
   type ResolvedServicePaths,

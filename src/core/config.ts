@@ -8,6 +8,10 @@ import { DEFAULT_PHASES } from "./defaults.js";
 // --- Zod schemas ---
 
 const SKILL_NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
+// Service unit / plist filenames are derived from this value without
+// sanitization downstream, so lock it down to a safe character set. No path
+// separators, no '..' traversal — just a POSIX-ish identifier with dots.
+const SERVICE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/;
 
 const PhaseDefinitionSchema = z.object({
   name: z.string().min(1),
@@ -148,7 +152,13 @@ const ConfigSchema = z
     service: z
       .object({
         enabled: z.boolean().default(false),
-        name: z.string().optional(),
+        name: z
+          .string()
+          .regex(
+            SERVICE_NAME_RE,
+            "service.name must start with [A-Za-z0-9] and contain only letters, digits, '.', '_' or '-' (no path separators or '..')",
+          )
+          .optional(),
         workingDirectory: z.string().optional(),
         envFile: z.string().default(".env"),
         stdoutLog: z.string().default(".redqueen/redqueen.out.log"),

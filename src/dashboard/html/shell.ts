@@ -204,6 +204,10 @@ export function renderShell(options: ShellOptions): string {
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>Red Queen — Pipeline</title>
+<!-- Defense in depth: disable htmx's eval / inline-script execution. The
+     dashboard only renders its own backend HTML, so hx-vars expressions
+     and server-provided <script> tags are never intentional. -->
+<meta name="htmx-config" content='{"allowEval":false,"allowScriptTags":false,"includeIndicatorStyles":true}' />
 <style>${STYLES}</style>
 <script src="/assets/htmx.min.js" defer></script>
 </head>

@@ -8,10 +8,14 @@ import { renderPlist } from "../macos.js";
 import { renderUnit } from "../linux.js";
 import {
   computeServiceName,
+  extractStdout,
   renderWrapperScript,
+  resolveServicePaths,
+  ServicePathError,
   shellSingleQuote,
   writeWrapperScript,
 } from "../index.js";
+import { parseConfig } from "../../config.js";
 import type { ServiceInstallContext } from "../manager.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -131,6 +135,65 @@ describe("renderPlist", () => {
     } finally {
       process.env = original;
     }
+  });
+});
+
+describe("resolveServicePaths", () => {
+  const baseYaml = `
+issueTracker:
+  type: jira
+sourceControl:
+  type: github
+project:
+  buildCommand: "npm run build"
+  testCommand: "npm test"
+`;
+
+  it("returns absolute paths for a default config", () => {
+    const config = parseConfig(baseYaml);
+    const paths = resolveServicePaths(config, "/tmp/proj");
+    expect(paths.envFilePath).toBe("/tmp/proj/.env");
+    expect(paths.stdoutLogPath).toBe("/tmp/proj/.redqueen/redqueen.out.log");
+    expect(paths.wrapperScriptPath).toBe("/tmp/proj/.redqueen/run-redqueen.sh");
+    expect(paths.name).toMatch(/^sh\.redqueen\.[0-9a-f]{8}$/);
+  });
+
+  it("rejects paths with embedded newlines", () => {
+    const config = parseConfig(`${baseYaml}service:
+  envFile: "foo\\nUser=root"
+`);
+    expect(() => resolveServicePaths(config, "/tmp/proj")).toThrow(ServicePathError);
+  });
+
+  it("rejects paths with embedded carriage returns", () => {
+    const config = parseConfig(`${baseYaml}service:
+  stdoutLog: "logs\\rfoo"
+`);
+    expect(() => resolveServicePaths(config, "/tmp/proj")).toThrow(ServicePathError);
+  });
+
+  it("rejects paths with NUL bytes", () => {
+    const config = parseConfig(`${baseYaml}service:
+  stderrLog: "logs\\u0000evil"
+`);
+    expect(() => resolveServicePaths(config, "/tmp/proj")).toThrow(ServicePathError);
+  });
+});
+
+describe("extractStdout", () => {
+  it("returns the string stdout property", () => {
+    expect(extractStdout({ stdout: "hello" })).toBe("hello");
+  });
+
+  it("decodes Buffer stdout", () => {
+    expect(extractStdout({ stdout: Buffer.from("bytes", "utf8") })).toBe("bytes");
+  });
+
+  it("returns empty string for non-object errors or missing stdout", () => {
+    expect(extractStdout(null)).toBe("");
+    expect(extractStdout("oops")).toBe("");
+    expect(extractStdout({})).toBe("");
+    expect(extractStdout({ stdout: 42 })).toBe("");
   });
 });
 

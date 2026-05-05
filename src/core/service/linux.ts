@@ -3,11 +3,20 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { promisify } from "node:util";
-import { ServiceManager, type ServiceInstallContext, type ServiceStatus } from "./manager.js";
+import {
+  ServiceManager,
+  extractStdout,
+  type ServiceInstallContext,
+  type ServiceStatus,
+} from "./manager.js";
 
 const execFileAsync = promisify(execFile);
 
-const SYSTEMCTL = "systemctl";
+// Hardcode the absolute path so systemd-user services launched from
+// restricted shells (cron/launchd-like envs) don't depend on $PATH.
+// Fall back to the PATH-resolved binary for distros that install it
+// elsewhere (e.g. NixOS).
+const SYSTEMCTL = existsSync("/usr/bin/systemctl") ? "/usr/bin/systemctl" : "systemctl";
 
 export function systemdUserDir(): string {
   return resolve(homedir(), ".config", "systemd", "user");
@@ -65,6 +74,10 @@ export class LinuxServiceManager extends ServiceManager {
     writeFileSync(unitPath, renderUnit(context), "utf8");
     await runSystemctl(["daemon-reload"]);
     await runSystemctl(["enable", context.name]);
+    // Match macOS: `bootstrap` loads and starts the plist (RunAtLoad=true), so
+    // `install` returns with the service running. Do the same via `start` here
+    // so the printed banner's "service status" step tells the truth.
+    await runSystemctl(["start", context.name]);
   }
 
   async uninstall(context: ServiceInstallContext): Promise<void> {
@@ -133,20 +146,6 @@ async function safeSystemctl(args: string[]): Promise<void> {
   } catch {
     // Unit already stopped/disabled/missing.
   }
-}
-
-function extractStdout(err: unknown): string {
-  if (err === null || typeof err !== "object") {
-    return "";
-  }
-  const raw = (err as { stdout?: unknown }).stdout;
-  if (typeof raw === "string") {
-    return raw;
-  }
-  if (raw instanceof Buffer) {
-    return raw.toString("utf8");
-  }
-  return "";
 }
 
 export function readInstalledUnit(name: string): string | null {

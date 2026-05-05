@@ -131,9 +131,12 @@ function printInstallBanner(context: ServiceInstallContext, config: RedQueenConf
   lines.push(`  ${context.stdoutLogPath}`);
   lines.push(`  ${context.stderrLogPath}`);
   lines.push("");
+  lines.push("Wrapper script:");
+  lines.push(`  ${context.wrapperScriptPath}`);
+  lines.push("");
   lines.push("Next:");
   lines.push(`  1. Set env vars in ${context.envFilePath}`);
-  lines.push(`  2. redqueen service start`);
+  lines.push(`  2. redqueen service status   # confirm it's running`);
   lines.push("");
   process.stdout.write(lines.join("\n"));
 }

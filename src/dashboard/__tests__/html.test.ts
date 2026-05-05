@@ -70,4 +70,25 @@ describe("renderServicePartial", () => {
     expect(html).toContain(`redqueen service install`);
     expect(html).not.toContain(`hx-post=`);
   });
+
+  it("renders a friendly unsupported-platform message without controls", () => {
+    const html = renderServicePartial({
+      ...base,
+      installed: false,
+      running: false,
+      pid: null,
+      platform: "unsupported",
+    });
+    expect(html).toContain("only supported on macOS");
+    expect(html).not.toContain("hx-post=");
+  });
+});
+
+describe("renderShell (htmx defense)", () => {
+  it("disables htmx eval via the htmx-config meta tag", () => {
+    const html = renderShell({ active: "status", content: "" });
+    expect(html).toContain(`name="htmx-config"`);
+    expect(html).toContain(`"allowEval":false`);
+    expect(html).toContain(`"allowScriptTags":false`);
+  });
 });

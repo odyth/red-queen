@@ -6,7 +6,11 @@ import { fileURLToPath } from "node:url";
 import type { AuditLogger } from "../core/audit.js";
 import type { TaskQueue } from "../core/queue.js";
 import type { OrchestratorStateStore } from "../core/pipeline-state.js";
-import type { ServiceInstallContext, ServiceManager } from "../core/service/index.js";
+import type {
+  ServiceInstallContext,
+  ServiceManager,
+  ServicePlatform,
+} from "../core/service/index.js";
 import type { Task } from "../core/types.js";
 import {
   handleServicePartial,
@@ -262,6 +266,12 @@ export class DashboardServer {
       handler: async (req, res) => {
         const service = this.deps.service;
         if (service === undefined) {
+          const platform: ServicePlatform =
+            process.platform === "darwin"
+              ? "darwin"
+              : process.platform === "linux"
+                ? "linux"
+                : "unsupported";
           res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
           res.end(
             renderServicePartial({
@@ -269,7 +279,7 @@ export class DashboardServer {
               running: false,
               name: "redqueen",
               pid: null,
-              platform: process.platform === "linux" ? "linux" : "darwin",
+              platform,
               stdoutLog: "",
               stderrLog: "",
             }),
