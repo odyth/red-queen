@@ -265,6 +265,34 @@ README](https://github.com/odyth/red-queen/blob/master/src/integrations/github-i
 for full label conventions, webhook setup (which enables the
 `new-ticket` on-assign flow), and troubleshooting.
 
+## Upgrading
+
+When a new `redqueen` version ships and you're running as a daemon:
+
+```bash
+npm install -g redqueen@latest
+redqueen service restart
+```
+
+The installed launchd/systemd service just execs an absolute path into
+the global npm install, so `npm install -g` overwrites the on-disk code
+and `service restart` re-execs it. No uninstall needed.
+
+Run `redqueen service install` *before* the restart if:
+
+- the release notes call out changes to the wrapper script, plist, or
+  systemd unit;
+- you've switched Node versions since the original install (the wrapper
+  has the node binary path baked in);
+- a new release adds auto-detection you want to adopt (e.g.
+  `claudeBin`).
+
+`service install` is idempotent — it rewrites the wrapper and reloads
+the service definition, then a `service restart` picks it up.
+
+If you're running `redqueen start` in the foreground instead, just
+`Ctrl+C` and relaunch after `npm install -g`.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |

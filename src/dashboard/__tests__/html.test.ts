@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { renderShell } from "../html/shell.js";
+import { renderConfigPartial } from "../html/partials/config.js";
+import { renderSkillsPartial } from "../html/partials/skills.js";
 import { renderStatusPartial } from "../html/partials/status.js";
 import { renderServicePartial } from "../html/partials/service.js";
+import { renderWorkflowPartial } from "../html/partials/workflow.js";
 import type { ServiceStatus } from "../../core/service/index.js";
 
 describe("renderShell", () => {
@@ -24,9 +27,42 @@ describe("renderShell", () => {
     expect(serviceActive).toMatch(/<button class="active"[^>]*>Service</);
   });
 
+  it("embeds the controller script and data-tab hooks for client-side switching", () => {
+    const html = renderShell({ active: "status", content: "" });
+    // Controller lives in the shell so htmx's allowScriptTags:false does
+    // not drop it when partials get swapped in.
+    expect(html).toContain("__rqShellInit");
+    expect(html).toContain('data-tab="status"');
+    expect(html).toContain('data-tab="service"');
+    expect(html).toContain('data-tab="config"');
+    expect(html).toContain('data-tab="skills"');
+    expect(html).toContain('data-tab="workflow"');
+    // Header uptime is driven by the shell controller (d h m s format).
+    expect(html).toContain("fmtDuration");
+  });
+
   it("places the provided content inside #main", () => {
     const html = renderShell({ active: "status", content: "<p id=needle></p>" });
     expect(html).toMatch(/<main id="main">[\s\S]*<p id=needle><\/p>[\s\S]*<\/main>/);
+  });
+
+  // tsc cannot see inside the CONTROLLER_JS template literal, so a
+  // malformed escape sequence in that string only surfaces as a browser
+  // SyntaxError at runtime — which killed every tab init in the first
+  // cut of this commit. Parsing the emitted script here catches that
+  // class of bug at test time.
+  it("emits a controller script that parses as valid JavaScript", () => {
+    const html = renderShell({ active: "status", content: "" });
+    const scripts = Array.from(html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g))
+      .map((m) => m[1])
+      .filter((body) => body.trim().length > 0);
+    expect(scripts.length).toBeGreaterThan(0);
+    const controller = scripts[scripts.length - 1];
+    expect(controller).toContain("__rqShellInit");
+    // new Function() here only compiles the source — the body is never
+    // invoked — so this is a parse check, not an eval.
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+    expect(() => new Function(controller)).not.toThrow();
   });
 });
 
@@ -36,6 +72,21 @@ describe("renderStatusPartial", () => {
     expect(html).toContain(`id="worker"`);
     expect(html).toContain(`id="queue"`);
     expect(html).toContain(`id="log"`);
+  });
+});
+
+describe("partials are script-free", () => {
+  // htmx swaps these into #main with allowScriptTags:false, which silently
+  // drops inline <script> tags. Partial logic must live in the shell —
+  // asserting no <script> tag here prevents a regression where a partial
+  // ships its own inline handler and then never runs on tab switch.
+  it.each([
+    ["status", renderStatusPartial()],
+    ["config", renderConfigPartial()],
+    ["skills", renderSkillsPartial()],
+    ["workflow", renderWorkflowPartial()],
+  ])("%s partial has no <script> tags", (_name, html) => {
+    expect(html).not.toMatch(/<script\b/i);
   });
 });
 
