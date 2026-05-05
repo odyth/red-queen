@@ -2,6 +2,8 @@ import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AuditLogger } from "./audit.js";
+import { buildPhaseGraph } from "./config.js";
+import type { RedQueenConfig } from "./config.js";
 import type { OrchestratorStateStore, PipelineStateStore } from "./pipeline-state.js";
 import { Poller } from "./poller.js";
 import type { TaskQueue } from "./queue.js";
@@ -22,6 +24,11 @@ import { WebhookServer } from "../webhook/server.js";
 
 export type WorkerRunner = (options: WorkerOptions) => Promise<WorkerResult>;
 
+export interface ReloadResult {
+  applied: string[];
+  restartRequired: string[];
+}
+
 export interface RedQueenDeps {
   runtime: RuntimeState;
   queue: TaskQueue;
@@ -38,6 +45,8 @@ export interface RedQueenDeps {
   installSignalHandlers?: boolean;
   serviceManager?: ServiceManager;
   serviceContext?: ServiceInstallContext;
+  configPath?: string;
+  projectRoot?: string;
 }
 
 const TEMP_PREFIX = "rq-";
@@ -159,6 +168,67 @@ export class RedQueen {
 
   getStatus(): OrchestratorState {
     return this.deps.orchestratorState.get();
+  }
+
+  reload(newConfig: RedQueenConfig): ReloadResult {
+    // Build the new graph first so a bad config throws before any state mutates.
+    const newGraph = buildPhaseGraph(newConfig.phases);
+    const oldConfig = this.deps.runtime.config;
+    const applied: string[] = [];
+    const restartRequired: string[] = [];
+
+    if (JSON.stringify(oldConfig.phases) !== JSON.stringify(newConfig.phases)) {
+      applied.push("phases");
+    }
+    if (oldConfig.skills.directory !== newConfig.skills.directory) {
+      applied.push("skills.directory");
+    }
+    if (JSON.stringify(oldConfig.skills.disabled) !== JSON.stringify(newConfig.skills.disabled)) {
+      applied.push("skills.disabled");
+    }
+    if (oldConfig.audit.retentionDays !== newConfig.audit.retentionDays) {
+      applied.push("audit.retentionDays");
+    }
+
+    if (JSON.stringify(oldConfig.issueTracker) !== JSON.stringify(newConfig.issueTracker)) {
+      restartRequired.push("issueTracker");
+    }
+    if (JSON.stringify(oldConfig.sourceControl) !== JSON.stringify(newConfig.sourceControl)) {
+      restartRequired.push("sourceControl");
+    }
+    if (JSON.stringify(oldConfig.pipeline) !== JSON.stringify(newConfig.pipeline)) {
+      restartRequired.push("pipeline");
+    }
+    if (JSON.stringify(oldConfig.service) !== JSON.stringify(newConfig.service)) {
+      restartRequired.push("service");
+    }
+    if (
+      oldConfig.dashboard.port !== newConfig.dashboard.port ||
+      oldConfig.dashboard.host !== newConfig.dashboard.host
+    ) {
+      restartRequired.push("dashboard.listener");
+    }
+
+    // Order matters — mutate the graph first so any observer reading both
+    // fields sees a consistent (graph, config) pair.
+    this.deps.runtime.phaseGraph = newGraph;
+    this.deps.runtime.config = newConfig;
+
+    this.deps.audit.log({
+      component: "orchestrator",
+      issueId: null,
+      message: `Config reloaded: applied=[${applied.join(",")}] restartRequired=[${restartRequired.join(",")}]`,
+      metadata: { applied, restartRequired },
+    });
+
+    if (this.dashboard !== null) {
+      this.dashboard.emit({
+        type: "config:reloaded",
+        data: { applied, restartRequired },
+      });
+    }
+
+    return { applied, restartRequired };
   }
 
   private async mainLoop(): Promise<void> {
@@ -800,12 +870,25 @@ export class RedQueen {
       this.deps.serviceManager !== undefined && this.deps.serviceContext !== undefined
         ? { manager: this.deps.serviceManager, context: this.deps.serviceContext }
         : undefined;
+    const editorDeps =
+      this.deps.configPath !== undefined &&
+      this.deps.projectRoot !== undefined &&
+      this.deps.builtInSkillsDir !== undefined
+        ? {
+            runtime: this.deps.runtime,
+            configPath: this.deps.configPath,
+            projectRoot: this.deps.projectRoot,
+            builtInSkillsDir: this.deps.builtInSkillsDir,
+            reload: (newConfig: RedQueenConfig) => this.reload(newConfig),
+          }
+        : undefined;
     this.dashboard = new DashboardServer(
       {
         queue: this.deps.queue,
         orchestratorState: this.deps.orchestratorState,
         audit: this.deps.audit,
         service: serviceDeps,
+        editor: editorDeps,
       },
       {
         host: dashCfg.host,

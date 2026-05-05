@@ -14,6 +14,7 @@ export interface TaskQueue {
   hasOpenTask(issueId: string, taskType: string): boolean;
   listByStatus(status: TaskStatus): Task[];
   getTask(taskId: string): Task | null;
+  getOpenCount(): { ready: number; working: number };
   purgeOld(olderThanDays: number): number;
 }
 
@@ -172,6 +173,15 @@ export class SqliteTaskQueue implements TaskQueue {
       return null;
     }
     return toTask(row);
+  }
+
+  getOpenCount(): { ready: number; working: number } {
+    const row = this.db
+      .prepare(
+        "SELECT SUM(CASE WHEN status = 'ready' THEN 1 ELSE 0 END) as ready, SUM(CASE WHEN status = 'working' THEN 1 ELSE 0 END) as working FROM tasks WHERE status IN ('ready', 'working')",
+      )
+      .get() as { ready: number | null; working: number | null };
+    return { ready: row.ready ?? 0, working: row.working ?? 0 };
   }
 
   purgeOld(olderThanDays: number): number {

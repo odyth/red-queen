@@ -4,14 +4,17 @@ import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AuditLogger } from "../core/audit.js";
+import type { RedQueenConfig } from "../core/config.js";
 import type { TaskQueue } from "../core/queue.js";
 import type { OrchestratorStateStore } from "../core/pipeline-state.js";
+import type { RuntimeState } from "../core/runtime-state.js";
 import type {
   ServiceInstallContext,
   ServiceManager,
   ServicePlatform,
 } from "../core/service/index.js";
 import type { Task } from "../core/types.js";
+import { handleConfigGet, handleConfigPut, handleConfigValidate } from "./api/config.js";
 import {
   handleServicePartial,
   handleServiceRestart,
@@ -19,11 +22,22 @@ import {
   handleServiceStatus,
   handleServiceStop,
 } from "./api/service.js";
+import {
+  handleSkillDelete,
+  handleSkillGet,
+  handleSkillPut,
+  handleSkillsList,
+  skillMatchesRoute,
+} from "./api/skills.js";
+import { handleWorkflowGet, handleWorkflowPut, handleWorkflowValidate } from "./api/workflow.js";
 import { SSEManager } from "./events.js";
 import type { DashboardEvent } from "./events.js";
 import { renderShell } from "./html/shell.js";
-import { renderStatusPartial } from "./html/partials/status.js";
+import { renderConfigPartial } from "./html/partials/config.js";
 import { renderServicePartial } from "./html/partials/service.js";
+import { renderSkillsPartial } from "./html/partials/skills.js";
+import { renderStatusPartial } from "./html/partials/status.js";
+import { renderWorkflowPartial } from "./html/partials/workflow.js";
 
 const LOGO_ASSET_PATH = "/assets/brand/logo.png";
 const HTMX_ASSET_PATH = "/assets/htmx.min.js";
@@ -68,11 +82,20 @@ export interface DashboardServiceDeps {
   context: ServiceInstallContext;
 }
 
+export interface DashboardEditorDeps {
+  runtime: RuntimeState;
+  configPath: string;
+  projectRoot: string;
+  builtInSkillsDir: string;
+  reload: (newConfig: RedQueenConfig) => { applied: string[]; restartRequired: string[] };
+}
+
 export interface DashboardDeps {
   queue: TaskQueue;
   orchestratorState: OrchestratorStateStore;
   audit: AuditLogger;
   service?: DashboardServiceDeps;
+  editor?: DashboardEditorDeps;
 }
 
 export interface DashboardServerOptions {
@@ -162,6 +185,27 @@ export class DashboardServer {
       }
       await route.handler(req, res);
       return;
+    }
+
+    if (this.deps.editor !== undefined && skillMatchesRoute(pathOnly)) {
+      const editor = this.deps.editor;
+      const skillsDeps = {
+        runtime: editor.runtime,
+        projectRoot: editor.projectRoot,
+        builtInSkillsDir: editor.builtInSkillsDir,
+      };
+      if (lookupMethod === "GET") {
+        handleSkillGet(req, res, skillsDeps);
+        return;
+      }
+      if (lookupMethod === "PUT") {
+        await handleSkillPut(req, res, skillsDeps);
+        return;
+      }
+      if (lookupMethod === "DELETE") {
+        handleSkillDelete(req, res, skillsDeps);
+        return;
+      }
     }
 
     this.sendText(res, 404, "Not Found");
@@ -311,6 +355,102 @@ export class DashboardServer {
         method: "POST",
         path: "/api/service/restart",
         handler: (req, res) => handleServiceRestart(req, res, service),
+      });
+    }
+
+    if (this.deps.editor !== undefined) {
+      const editor = this.deps.editor;
+      const configDeps = {
+        configPath: editor.configPath,
+        runtime: editor.runtime,
+        reload: editor.reload,
+      };
+      const workflowDeps = {
+        configPath: editor.configPath,
+        runtime: editor.runtime,
+        queue: this.deps.queue,
+        reload: editor.reload,
+      };
+
+      routes.push({
+        method: "GET",
+        path: "/api/config-partial",
+        handler: (_req, res) => {
+          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+          res.end(renderConfigPartial());
+        },
+      });
+      routes.push({
+        method: "GET",
+        path: "/api/skills-partial",
+        handler: (_req, res) => {
+          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+          res.end(renderSkillsPartial());
+        },
+      });
+      routes.push({
+        method: "GET",
+        path: "/api/workflow-partial",
+        handler: (_req, res) => {
+          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+          res.end(renderWorkflowPartial());
+        },
+      });
+
+      routes.push({
+        method: "GET",
+        path: "/api/config",
+        handler: (req, res) => {
+          handleConfigGet(req, res, configDeps);
+        },
+      });
+      routes.push({
+        method: "POST",
+        path: "/api/config/validate",
+        handler: async (req, res) => {
+          await handleConfigValidate(req, res);
+        },
+      });
+      routes.push({
+        method: "PUT",
+        path: "/api/config",
+        handler: async (req, res) => {
+          await handleConfigPut(req, res, configDeps);
+        },
+      });
+
+      routes.push({
+        method: "GET",
+        path: "/api/skills",
+        handler: (req, res) => {
+          handleSkillsList(req, res, {
+            runtime: editor.runtime,
+            projectRoot: editor.projectRoot,
+            builtInSkillsDir: editor.builtInSkillsDir,
+          });
+        },
+      });
+
+      routes.push({
+        method: "GET",
+        path: "/api/workflow",
+        handler: (req, res) => {
+          handleWorkflowGet(req, res, workflowDeps);
+        },
+      });
+      routes.push({
+        method: "POST",
+        path: "/api/workflow/validate",
+        handler: async (req, res) => {
+          await handleWorkflowValidate(req, res);
+        },
+      });
+      routes.push({
+        method: "PUT",
+        path: "/api/workflow",
+        handler: async (req, res) => {
+          await handleWorkflowPut(req, res, workflowDeps);
+        },
       });
     }
 

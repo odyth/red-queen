@@ -17,6 +17,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Brand assets (logo, social card) under `assets/brand/` and tagline
   wired into README and dashboard header.
 
+## [0.2.0] - 2026-05-04
+
+Dogfood feedback release. AlignSmart's hand-patched 0.1.3 install
+revealed four Jira polling bugs, four product gaps, and a need to
+self-service pipeline config without shelling into the host. 0.2.0
+fixes the bugs, adds a first-class service installer, and grows the
+dashboard into a full control plane.
+
+### Fixed
+
+- Jira adapter migrated from `POST /rest/api/3/search` to
+  `GET /rest/api/3/search/jql` — the old endpoint was deprecated and
+  AlignSmart's tenant refused it.
+- Jira `Issue.id` now uses the human-readable key (`AS-42`) instead of
+  the numeric id. All downstream queue + audit references are
+  key-based, so task logs are finally readable.
+- Reconciler excludes Done/Closed issues via `statusCategory != Done`
+  in the JQL. Closed tickets with stale AI Phase values no longer get
+  re-queued.
+- Reconciler skips mid-pipeline phases when there's no local pipeline
+  record — prevents a fresh install from blindly enqueuing an issue
+  already past `new-ticket`.
+- Webhook `assignment-change` and `phase-change` handlers now honor the
+  same bootstrap guard: non-entry Jira phases on a fresh DB are
+  skipped with an audit entry rather than dispatched as `spec-writing`.
+
+### Added
+
+- `redqueen service install | start | stop | restart | status | uninstall`
+  CLI commands generate and drive a macOS LaunchAgent or Linux systemd
+  `--user` unit. A wrapper script (`.redqueen/run-redqueen.sh`)
+  sources `.env` at runtime so the generated unit/plist never contains
+  secret values.
+- `service` config block: `enabled`, `name` (default
+  `sh.redqueen.<projectDirHash8>`), `workingDirectory`, `envFile`,
+  `stdoutLog`, `stderrLog`, `restart`.
+- Dashboard refactor to HTMX + server-rendered partials. Vendored
+  `htmx.min.js`, no build step. Tabs: Status, Service, Config, Skills,
+  Workflow. SSE stream unchanged.
+- Dashboard service controls: start / stop / restart buttons wired to
+  the platform service manager. UI greys out controls when the service
+  isn't installed.
+- Dashboard config editor: raw YAML textarea with validate / save /
+  env-ref panel. Save triggers `Orchestrator.reload(newConfig)` and
+  surfaces `applied` / `restartRequired` banners.
+- Dashboard skills manager: lists bundled + user skills with origin
+  tags and referenced-by cross-check. User overrides live at
+  `.redqueen/skills/<name>/SKILL.md`; the bundled tree is never
+  written. Disable toggle via `skills.disabled`.
+- Dashboard workflow editor: phase list with add / remove / reorder,
+  skill dropdown populated from the skills API, validate + save.
+  Rejects with HTTP 409 when any ready or working tasks are queued;
+  UI surfaces live queue count via SSE.
+- `Orchestrator.reload(newConfig)` validates, rebuilds the phase
+  graph, mutates shared `RuntimeState` in place so every subsystem
+  (poller, reconciler, webhook, dashboard) observes the swap without
+  being torn down. Sections split into `applied` vs `restartRequired`.
+- `skills.disabled: string[]` config key. Load-time check in
+  `parseConfig` throws if any phase references a disabled skill;
+  `resolveSkillPath` returns `null` for disabled skills as a
+  second line of defense.
+- `PhaseGraph.getEntryPhases()` derives entry phases from graph
+  structure (phases not referenced as `next`/`onFail`/`rework`/
+  `escalateTo` of any other phase). No schema flag.
+- Secret-leak guard on config save: blocks literal values of
+  `JIRA_TOKEN`, `GITHUB_PAT`, `GITHUB_APP_PRIVATE_KEY`, and any env
+  key ending in `_TOKEN` / `_SECRET` / `_PASSWORD` / `_PAT` /
+  `_PRIVATE_KEY` whose value is ≥ 8 chars. `${VAR}` placeholders pass
+  through. Rejection message: `literal value of ${<VAR>} detected;
+  use ${<VAR>} instead`.
+
+### Changed
+
+- Every subsystem now holds a shared mutable `RuntimeState` instead of
+  a direct `PhaseGraph` reference. Enables live config reload without
+  teardown. Audit list: `orchestrator`, `poller`, `reconciler`,
+  `webhook`, `dashboard`.
+- `TaskQueue.getOpenCount()` returns `{ ready, working }` so the
+  workflow editor can pre-check before accepting a save.
+
+## [0.1.3] - 2026-05-04
+
 ## [0.1.3] - 2026-05-04
 
 ### Fixed

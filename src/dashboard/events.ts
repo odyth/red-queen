@@ -5,7 +5,8 @@ export type DashboardEventType =
   | "worker:heartbeat"
   | "worker:completed"
   | "queue:changed"
-  | "orchestrator:status";
+  | "orchestrator:status"
+  | "config:reloaded";
 
 export interface DashboardEvent {
   type: DashboardEventType;

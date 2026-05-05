@@ -201,6 +201,8 @@ export async function cmdStart(args: string[]): Promise<void> {
     installSignalHandlers: true,
     serviceManager,
     serviceContext,
+    configPath,
+    projectRoot,
   });
 
   try {
