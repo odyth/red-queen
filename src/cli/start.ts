@@ -9,11 +9,19 @@ import { RedQueen } from "../core/orchestrator.js";
 import { OrchestratorStateStore, PipelineStateStore } from "../core/pipeline-state.js";
 import { SqliteTaskQueue } from "../core/queue.js";
 import { RuntimeState } from "../core/runtime-state.js";
+import {
+  buildInstallContext,
+  createServiceManager,
+  resolveServicePaths,
+  UnsupportedPlatformError,
+} from "../core/service/index.js";
+import type { ServiceInstallContext, ServiceManager } from "../core/service/index.js";
 import { packageVersion } from "../core/version.js";
 import { buildAdapterPair } from "./adapters.js";
 import { findConfigUpward, projectRootFromConfigPath } from "./config-discovery.js";
 import { CliError } from "./errors.js";
 import { removePidFile, resolvePidPath, tryClaimPidFile } from "./pid.js";
+import { resolveRedqueenBinPath } from "./service.js";
 import { resolveSkillsDir } from "./templates.js";
 
 export async function cmdStart(args: string[]): Promise<void> {
@@ -164,6 +172,21 @@ export async function cmdStart(args: string[]): Promise<void> {
   };
   const runtime = new RuntimeState(phaseGraph, configForRuntime);
 
+  let serviceManager: ServiceManager | undefined;
+  let serviceContext: ServiceInstallContext | undefined;
+  try {
+    serviceManager = createServiceManager();
+    serviceContext = buildInstallContext(
+      resolveServicePaths(config, projectDir),
+      resolveRedqueenBinPath(),
+    );
+  } catch (err) {
+    if (err instanceof UnsupportedPlatformError === false) {
+      throw err;
+    }
+    // Unsupported platform — dashboard simply won't expose service controls.
+  }
+
   const rq = new RedQueen({
     runtime,
     queue,
@@ -174,6 +197,8 @@ export async function cmdStart(args: string[]): Promise<void> {
     sourceControl,
     builtInSkillsDir: resolveSkillsDir(),
     installSignalHandlers: true,
+    serviceManager,
+    serviceContext,
   });
 
   try {

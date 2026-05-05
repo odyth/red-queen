@@ -145,6 +145,23 @@ const ConfigSchema = z
         retentionDays: z.number().default(30),
       })
       .default({ logFile: "audit.log", retentionDays: 30 }),
+    service: z
+      .object({
+        enabled: z.boolean().default(false),
+        name: z.string().optional(),
+        workingDirectory: z.string().optional(),
+        envFile: z.string().default(".env"),
+        stdoutLog: z.string().default(".redqueen/redqueen.out.log"),
+        stderrLog: z.string().default(".redqueen/redqueen.err.log"),
+        restart: z.enum(["on-failure", "always", "never"]).default("on-failure"),
+      })
+      .default({
+        enabled: false,
+        envFile: ".env",
+        stdoutLog: ".redqueen/redqueen.out.log",
+        stderrLog: ".redqueen/redqueen.err.log",
+        restart: "on-failure",
+      }),
   })
   .superRefine((config, ctx) => {
     if (config.pipeline.webhooks.enabled === false) {

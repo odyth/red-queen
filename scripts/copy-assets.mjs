@@ -20,6 +20,7 @@ const repoRoot = resolve(here, "..");
 const pairs = [
   { from: resolve(repoRoot, "src/skills"), to: resolve(repoRoot, "dist/skills") },
   { from: resolve(repoRoot, "src/templates"), to: resolve(repoRoot, "dist/templates") },
+  { from: resolve(repoRoot, "src/dashboard/assets"), to: resolve(repoRoot, "dist/dashboard/assets") },
 ];
 
 for (const { from, to } of pairs) {

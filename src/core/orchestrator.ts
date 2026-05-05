@@ -8,6 +8,7 @@ import type { TaskQueue } from "./queue.js";
 import { reconcile } from "./reconciler.js";
 import { createModuleResolver } from "./module-resolver.js";
 import type { RuntimeState } from "./runtime-state.js";
+import type { ServiceInstallContext, ServiceManager } from "./service/index.js";
 import { buildSkillContext, renderSkillPrompt, resolveSkillPath } from "./skill-context.js";
 import type { ModuleResolver } from "./skill-context.js";
 import type { PhaseDefinition, Task } from "./types.js";
@@ -35,6 +36,8 @@ export interface RedQueenDeps {
   now?: () => number;
   sleepFn?: (ms: number) => Promise<void>;
   installSignalHandlers?: boolean;
+  serviceManager?: ServiceManager;
+  serviceContext?: ServiceInstallContext;
 }
 
 const TEMP_PREFIX = "rq-";
@@ -793,11 +796,16 @@ export class RedQueen {
     if (dashboardEnabled === false && webhooksEnabled === false) {
       return;
     }
+    const serviceDeps =
+      this.deps.serviceManager !== undefined && this.deps.serviceContext !== undefined
+        ? { manager: this.deps.serviceManager, context: this.deps.serviceContext }
+        : undefined;
     this.dashboard = new DashboardServer(
       {
         queue: this.deps.queue,
         orchestratorState: this.deps.orchestratorState,
         audit: this.deps.audit,
+        service: serviceDeps,
       },
       {
         host: dashCfg.host,

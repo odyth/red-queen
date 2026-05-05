@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>sh.redqueen.fixture1</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/home/user/app/.redqueen/run-redqueen.sh</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/home/user/app</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/home/user/app/.redqueen/redqueen.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/home/user/app/.redqueen/redqueen.err.log</string>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+</dict>
+</plist>

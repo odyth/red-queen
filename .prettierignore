@@ -1,0 +1,3 @@
+dist/
+node_modules/
+src/dashboard/assets/htmx.min.js

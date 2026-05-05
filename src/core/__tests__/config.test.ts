@@ -295,6 +295,62 @@ phases:
     expect(config.phases[1]?.name).toBe("review");
   });
 
+  it("defaults the service block with expected values", () => {
+    const yaml = `
+issueTracker:
+  type: jira
+sourceControl:
+  type: github
+project:
+  buildCommand: "npm run build"
+  testCommand: "npm test"
+`;
+    const config = parseConfig(yaml);
+    expect(config.service.enabled).toBe(false);
+    expect(config.service.envFile).toBe(".env");
+    expect(config.service.stdoutLog).toBe(".redqueen/redqueen.out.log");
+    expect(config.service.stderrLog).toBe(".redqueen/redqueen.err.log");
+    expect(config.service.restart).toBe("on-failure");
+    expect(config.service.name).toBeUndefined();
+  });
+
+  it("rejects unknown service.restart values", () => {
+    const yaml = `
+issueTracker:
+  type: jira
+sourceControl:
+  type: github
+project:
+  buildCommand: "npm run build"
+  testCommand: "npm test"
+service:
+  restart: whenever
+`;
+    expect(() => parseConfig(yaml)).toThrow();
+  });
+
+  it("accepts custom service overrides", () => {
+    const yaml = `
+issueTracker:
+  type: jira
+sourceControl:
+  type: github
+project:
+  buildCommand: "npm run build"
+  testCommand: "npm test"
+service:
+  enabled: true
+  name: custom.redqueen
+  envFile: secrets/.env
+  restart: always
+`;
+    const config = parseConfig(yaml);
+    expect(config.service.enabled).toBe(true);
+    expect(config.service.name).toBe("custom.redqueen");
+    expect(config.service.envFile).toBe("secrets/.env");
+    expect(config.service.restart).toBe("always");
+  });
+
   it("defaults skills.disabled to an empty array", () => {
     const yaml = `
 issueTracker:

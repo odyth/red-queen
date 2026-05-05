@@ -9,6 +9,7 @@ import { cmdIssue } from "./issue.js";
 import { cmdSpec } from "./spec.js";
 import { cmdPr } from "./pr.js";
 import { cmdPipeline } from "./pipeline.js";
+import { cmdService } from "./service.js";
 
 async function main(argv: string[]): Promise<void> {
   const [command, ...rest] = argv;
@@ -46,6 +47,9 @@ async function main(argv: string[]): Promise<void> {
       return;
     case "pipeline":
       await cmdPipeline(rest);
+      return;
+    case "service":
+      await cmdService(rest);
       return;
     default:
       throw new CliError(`Unknown command: ${command}. Run 'redqueen --help' for usage.`);

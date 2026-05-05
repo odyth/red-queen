@@ -1,0 +1,16 @@
+[Unit]
+Description=Red Queen orchestrator
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/user/app
+EnvironmentFile=/home/user/app/.env
+ExecStart=/home/user/app/.redqueen/run-redqueen.sh
+StandardOutput=append:/home/user/app/.redqueen/redqueen.out.log
+StandardError=append:/home/user/app/.redqueen/redqueen.err.log
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

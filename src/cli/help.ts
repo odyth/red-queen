@@ -10,6 +10,7 @@ Top-level commands:
   start                       Start the orchestrator (foreground)
   stop                        Stop a running orchestrator
   status                      Show orchestrator status
+  service <sub>               Manage the background daemon (install/start/stop/restart/status/uninstall)
 
 Helper commands (called by skills):
   issue get <id>              Fetch an issue as JSON
@@ -52,6 +53,15 @@ Sends SIGTERM, waits for graceful shutdown, escalates to SIGKILL on timeout.
   status: `redqueen status — Show orchestrator status
 Options:
   --json           Emit single-line JSON
+`,
+  service: `redqueen service — Manage the background daemon
+Subcommands:
+  install          Install and enable the service (writes plist/unit + wrapper)
+  start            Start the service
+  stop             Stop the service
+  restart          Restart the service
+  status           Show install/run state and log paths
+  uninstall        Stop, disable, and remove the service
 `,
 };
 
