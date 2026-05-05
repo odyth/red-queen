@@ -1,12 +1,32 @@
-import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
-import { renderPlist } from "../macos.js";
-import { renderUnit } from "../linux.js";
-import {
+
+interface ExecFileMockResult {
+  stdout: string;
+  stderr: string;
+}
+const execFileMock =
+  vi.fn<(file: string, args: readonly string[]) => Promise<ExecFileMockResult>>();
+
+vi.mock("node:child_process", () => {
+  const customSymbol = Symbol.for("nodejs.util.promisify.custom");
+  const fn = function execFile(): never {
+    throw new Error("callback-form execFile invoked; tests expect promisified usage");
+  };
+  (fn as unknown as Record<symbol, unknown>)[customSymbol] = (
+    file: string,
+    args: readonly string[],
+  ) => execFileMock(file, args);
+  return { execFile: fn };
+});
+
+const { renderPlist, MacServiceManager, plistPathFor } = await import("../macos.js");
+const { renderUnit } = await import("../linux.js");
+const {
   computeServiceName,
   extractStdout,
   renderWrapperScript,
@@ -14,9 +34,10 @@ import {
   ServicePathError,
   shellSingleQuote,
   writeWrapperScript,
-} from "../index.js";
-import { parseConfig } from "../../config.js";
-import type { ServiceInstallContext } from "../manager.js";
+} = await import("../index.js");
+const { parseConfig } = await import("../../config.js");
+const { detectClaudeBin } = await import("../claude-detect.js");
+type ServiceInstallContext = import("../manager.js").ServiceInstallContext;
 
 const here = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_DIR = resolve(here, "fixtures");
@@ -226,5 +247,84 @@ describe("renderUnit", () => {
     } finally {
       process.env = original;
     }
+  });
+});
+
+describe("MacServiceManager lifecycle", () => {
+  beforeEach(() => {
+    execFileMock.mockReset();
+  });
+
+  it("start: bootstraps before kickstart when the job isn't loaded", async () => {
+    execFileMock.mockImplementation((_file, args) => {
+      if (args[0] === "print") {
+        return Promise.reject(Object.assign(new Error("not loaded"), { stdout: "" }));
+      }
+      return Promise.resolve({ stdout: "", stderr: "" });
+    });
+
+    const manager = new MacServiceManager();
+    await manager.start(FIXTURE_CONTEXT);
+
+    const calls = execFileMock.mock.calls.map((c) => c[1]);
+    expect(calls[0]?.[0]).toBe("print");
+    expect(calls[1]?.[0]).toBe("bootstrap");
+    expect(calls[1]?.[2]).toBe(plistPathFor(FIXTURE_CONTEXT.name));
+    expect(calls[2]?.[0]).toBe("kickstart");
+  });
+
+  it("start: uses kickstart only when the job is already loaded", async () => {
+    execFileMock.mockResolvedValue({ stdout: "state = running", stderr: "" });
+
+    const manager = new MacServiceManager();
+    await manager.start(FIXTURE_CONTEXT);
+
+    const verbs = execFileMock.mock.calls.map((c) => c[1][0]);
+    expect(verbs).toEqual(["print", "kickstart"]);
+    expect(verbs.includes("bootstrap")).toBe(false);
+  });
+
+  it("restart: bootstraps before kickstart -k when the job isn't loaded", async () => {
+    execFileMock.mockImplementation((_file, args) => {
+      if (args[0] === "print") {
+        return Promise.reject(Object.assign(new Error("not loaded"), { stdout: "" }));
+      }
+      return Promise.resolve({ stdout: "", stderr: "" });
+    });
+
+    const manager = new MacServiceManager();
+    await manager.restart(FIXTURE_CONTEXT);
+
+    const calls = execFileMock.mock.calls.map((c) => c[1]);
+    expect(calls.map((c) => c[0])).toEqual(["print", "bootstrap", "kickstart"]);
+    expect(calls[2]).toContain("-k");
+  });
+});
+
+describe("detectClaudeBin", () => {
+  beforeEach(() => {
+    execFileMock.mockReset();
+  });
+
+  it("returns the trimmed absolute path from `which claude`", async () => {
+    execFileMock.mockImplementation((file, args) => {
+      expect(file).toBe("which");
+      expect(args).toEqual(["claude"]);
+      return Promise.resolve({ stdout: "/Users/alice/.local/bin/claude\n", stderr: "" });
+    });
+    const resolved = await detectClaudeBin();
+    expect(resolved).toBe("/Users/alice/.local/bin/claude");
+  });
+
+  it("returns null when `which` exits non-zero", async () => {
+    execFileMock.mockRejectedValue(Object.assign(new Error("not found"), { code: 1 }));
+    const resolved = await detectClaudeBin();
+    expect(resolved).toBeNull();
+  });
+
+  it("returns null when stdout is empty or whitespace", async () => {
+    execFileMock.mockResolvedValue({ stdout: "   \n", stderr: "" });
+    const resolved = await detectClaudeBin();
+    expect(resolved).toBeNull();
   });
 });

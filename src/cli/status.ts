@@ -2,9 +2,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import Database from "better-sqlite3";
-import { loadConfig } from "../core/config.js";
-import { findConfigUpward, projectRootFromConfigPath } from "./config-discovery.js";
-import { CliError } from "./errors.js";
+import { loadConfigFromProject } from "./config-discovery.js";
 import { isProcessAlive, readPidFile, resolvePidPath } from "./pid.js";
 
 interface StatusPayload {
@@ -39,13 +37,7 @@ export async function cmdStatus(args: string[]): Promise<void> {
     return;
   }
 
-  const configPath = findConfigUpward(process.cwd());
-  if (configPath === null) {
-    throw new CliError(`redqueen.yaml not found (searched from ${process.cwd()} upward)`);
-  }
-
-  const config = loadConfig(configPath);
-  const projectRoot = projectRootFromConfigPath(configPath);
+  const { config, projectRoot } = loadConfigFromProject(process.cwd());
   const projectDir = resolve(projectRoot, config.project.directory);
   const pidPath = resolvePidPath(projectDir);
   const pid = readPidFile(pidPath);

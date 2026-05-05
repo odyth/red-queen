@@ -2,9 +2,8 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { DualWriteAuditLogger } from "../core/audit.js";
-import { buildPhaseGraph, loadConfig, validatePhaseGraph } from "../core/config.js";
+import { buildPhaseGraph, validatePhaseGraph } from "../core/config.js";
 import { RedQueenDatabase } from "../core/database.js";
-import { loadDotEnv } from "../core/env.js";
 import { RedQueen } from "../core/orchestrator.js";
 import { OrchestratorStateStore, PipelineStateStore } from "../core/pipeline-state.js";
 import { SqliteTaskQueue } from "../core/queue.js";
@@ -18,7 +17,7 @@ import {
 import type { ServiceInstallContext, ServiceManager } from "../core/service/index.js";
 import { packageVersion } from "../core/version.js";
 import { buildAdapterPair } from "./adapters.js";
-import { findConfigUpward, projectRootFromConfigPath } from "./config-discovery.js";
+import { loadConfigFromProject } from "./config-discovery.js";
 import { CliError } from "./errors.js";
 import { removePidFile, resolvePidPath, tryClaimPidFile } from "./pid.js";
 import { resolveRedqueenBinPath } from "./service.js";
@@ -42,16 +41,10 @@ export async function cmdStart(args: string[]): Promise<void> {
     return;
   }
 
-  const configPath = findConfigUpward(process.cwd());
-  if (configPath === null) {
-    throw new CliError(`redqueen.yaml not found (searched from ${process.cwd()} upward)`);
-  }
-  const projectRoot = projectRootFromConfigPath(configPath);
-  const envResult = loadDotEnv(dirname(configPath));
-  for (const warning of envResult.warnings) {
+  const { config, configPath, projectRoot, envWarnings } = loadConfigFromProject(process.cwd());
+  for (const warning of envWarnings) {
     process.stderr.write(`warning (.env): ${warning}\n`);
   }
-  const config = loadConfig(configPath);
   const projectDir = resolve(projectRoot, config.project.directory);
 
   const phaseValidation = validatePhaseGraph(config.phases);

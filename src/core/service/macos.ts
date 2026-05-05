@@ -114,6 +114,14 @@ export class MacServiceManager extends ServiceManager {
   }
 
   async start(context: ServiceInstallContext): Promise<void> {
+    // `launchctl kickstart` only works against a loaded job. A prior
+    // `redqueen service stop` runs `bootout`, which fully unloads the job —
+    // so kickstart would fail with "Could not find service". Re-bootstrap
+    // first when the job isn't registered in the domain.
+    if ((await isLoaded(context.name)) === false) {
+      const plistPath = plistPathFor(context.name);
+      await runLaunchctl(["bootstrap", domainTarget(), plistPath]);
+    }
     await runLaunchctl(["kickstart", serviceTarget(context.name)]);
   }
 
@@ -122,6 +130,10 @@ export class MacServiceManager extends ServiceManager {
   }
 
   async restart(context: ServiceInstallContext): Promise<void> {
+    if ((await isLoaded(context.name)) === false) {
+      const plistPath = plistPathFor(context.name);
+      await runLaunchctl(["bootstrap", domainTarget(), plistPath]);
+    }
     await runLaunchctl(["kickstart", "-k", serviceTarget(context.name)]);
   }
 
@@ -169,6 +181,15 @@ async function safeBootout(name: string): Promise<void> {
     await runLaunchctl(["bootout", serviceTarget(name)]);
   } catch {
     // Already unloaded — bootout returns non-zero in that case.
+  }
+}
+
+async function isLoaded(name: string): Promise<boolean> {
+  try {
+    await runLaunchctl(["print", serviceTarget(name)]);
+    return true;
+  } catch {
+    return false;
   }
 }
 

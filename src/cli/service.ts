@@ -1,7 +1,9 @@
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadConfig, type RedQueenConfig } from "../core/config.js";
+import { parseDocument } from "yaml";
+import { type RedQueenConfig } from "../core/config.js";
+import { detectClaudeBin } from "../core/service/claude-detect.js";
 import {
   buildInstallContext,
   createServiceManager,
@@ -12,7 +14,7 @@ import {
   type ServiceManager,
   type ServiceStatus,
 } from "../core/service/index.js";
-import { findConfigUpward, projectRootFromConfigPath } from "./config-discovery.js";
+import { loadConfigFromProject } from "./config-discovery.js";
 import { CliError } from "./errors.js";
 
 const SUBCOMMANDS = ["install", "start", "stop", "restart", "status", "uninstall"] as const;
@@ -37,12 +39,7 @@ export async function cmdService(args: string[]): Promise<void> {
     throw new CliError(`'redqueen service ${sub}' takes no arguments.`);
   }
 
-  const configPath = findConfigUpward(process.cwd());
-  if (configPath === null) {
-    throw new CliError(`redqueen.yaml not found (searched from ${process.cwd()} upward)`);
-  }
-  const projectRoot = projectRootFromConfigPath(configPath);
-  const config = loadConfig(configPath);
+  const { config, configPath, projectRoot } = loadConfigFromProject(process.cwd());
   const projectDir = resolve(projectRoot, config.project.directory);
 
   let manager: ServiceManager;
@@ -60,7 +57,7 @@ export async function cmdService(args: string[]): Promise<void> {
 
   switch (sub) {
     case "install":
-      await doInstall(manager, context, config, projectDir);
+      await doInstall(manager, context, config, projectDir, configPath);
       return;
     case "uninstall":
       await manager.uninstall(context);
@@ -91,6 +88,7 @@ async function doInstall(
   context: ServiceInstallContext,
   config: RedQueenConfig,
   projectDir: string,
+  configPath: string,
 ): Promise<void> {
   mkdirSync(resolve(projectDir, ".redqueen"), { recursive: true });
   writeWrapperScript(context.wrapperScriptPath, {
@@ -98,15 +96,68 @@ async function doInstall(
     redqueenBinPath: context.redqueenBinPath,
     nodeBinPath: process.execPath,
   });
+  const claudeNote = await ensureClaudeBinConfigured(config, configPath);
   await manager.install(context);
-  printInstallBanner(context, config);
+  printInstallBanner(context, config, claudeNote);
 }
 
-function printInstallBanner(context: ServiceInstallContext, config: RedQueenConfig): void {
+export type ClaudeBinNote =
+  | { kind: "already-set" }
+  | { kind: "auto-detected"; path: string }
+  | { kind: "unresolved" };
+
+export async function ensureClaudeBinConfigured(
+  config: RedQueenConfig,
+  configPath: string,
+  opts: { detect?: () => Promise<string | null>; write?: (p: string, v: string) => void } = {},
+): Promise<ClaudeBinNote> {
+  const existing = config.pipeline.claudeBin;
+  if (existing !== undefined && existing.length > 0) {
+    return { kind: "already-set" };
+  }
+  const detect = opts.detect ?? detectClaudeBin;
+  const write = opts.write ?? writeClaudeBinToConfig;
+  const detected = await detect();
+  if (detected === null) {
+    return { kind: "unresolved" };
+  }
+  write(configPath, detected);
+  // Mutate the in-memory config so the post-install banner and downstream
+  // callers see the new value without a second disk read.
+  config.pipeline.claudeBin = detected;
+  return { kind: "auto-detected", path: detected };
+}
+
+export function writeClaudeBinToConfig(configPath: string, claudeBinPath: string): void {
+  const existingYaml = readFileSync(configPath, "utf8");
+  const doc = parseDocument(existingYaml);
+  doc.setIn(["pipeline", "claudeBin"], claudeBinPath);
+  const newYaml = doc.toString();
+  const tmp = `${configPath}.tmp`;
+  writeFileSync(tmp, newYaml, { encoding: "utf8" });
+  renameSync(tmp, configPath);
+}
+
+function printInstallBanner(
+  context: ServiceInstallContext,
+  config: RedQueenConfig,
+  claudeNote: ClaudeBinNote,
+): void {
   const { dashboard, pipeline } = config;
   const lines: string[] = [];
   lines.push(`Installed service: ${context.name}`);
   lines.push("");
+  if (claudeNote.kind === "auto-detected") {
+    lines.push(`Auto-detected Claude at ${claudeNote.path} and wrote pipeline.claudeBin.`);
+    lines.push("");
+  } else if (claudeNote.kind === "unresolved") {
+    lines.push("Warning: 'claude' not found on PATH. If `redqueen service start` fails with");
+    lines.push(
+      `  "claude: command not found", set pipeline.claudeBin in ${context.workingDirectory}/redqueen.yaml`,
+    );
+    lines.push("  to the absolute path of your Claude binary.");
+    lines.push("");
+  }
   lines.push("Dashboard:");
   if (dashboard.enabled) {
     lines.push(`  http://${dashboard.host}:${String(dashboard.port)}`);

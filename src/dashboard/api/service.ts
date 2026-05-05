@@ -79,7 +79,7 @@ export async function handleServiceStop(
   deps: ServiceApiDeps,
 ): Promise<void> {
   const current = await readStatus(deps);
-  sendHtml(res, 200, renderServicePartial(projectStatus(current, "stopped")));
+  sendHtml(res, 200, renderServicePartial(projectStatus(current, "stopped"), { terminal: true }));
   setImmediate(() => {
     void deps.manager.stop(deps.context).catch(() => {
       // Silent: response already sent. Logs will surface the failure.

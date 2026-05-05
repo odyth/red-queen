@@ -1,16 +1,13 @@
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 import { DualWriteAuditLogger } from "../core/audit.js";
 import type { AuditLogger } from "../core/audit.js";
 import type { RedQueenConfig } from "../core/config.js";
-import { loadConfig } from "../core/config.js";
 import { RedQueenDatabase } from "../core/database.js";
-import { loadDotEnv } from "../core/env.js";
 import { PipelineStateStore } from "../core/pipeline-state.js";
 import type { IssueTracker } from "../integrations/issue-tracker.js";
 import type { SourceControl } from "../integrations/source-control.js";
 import { buildAdapterPair } from "./adapters.js";
-import { findConfigUpward, projectRootFromConfigPath } from "./config-discovery.js";
-import { CliError } from "./errors.js";
+import { loadConfigFromProject } from "./config-discovery.js";
 
 export interface CliContext {
   config: RedQueenConfig;
@@ -24,13 +21,7 @@ export interface CliContext {
 }
 
 export function loadCliContext(): CliContext {
-  const configPath = findConfigUpward(process.cwd());
-  if (configPath === null) {
-    throw new CliError(`redqueen.yaml not found (searched from ${process.cwd()} upward)`);
-  }
-  const projectRoot = projectRootFromConfigPath(configPath);
-  loadDotEnv(dirname(configPath));
-  const config = loadConfig(configPath);
+  const { config, configPath, configDir, projectRoot } = loadConfigFromProject(process.cwd());
 
   // Resolve project.directory relative to the config file.
   const projectDir = resolve(projectRoot, config.project.directory);
@@ -48,7 +39,7 @@ export function loadCliContext(): CliContext {
       sourceControlType: config.sourceControl.type,
       sourceControlConfig: config.sourceControl.config,
     },
-    { configDir: dirname(configPath) },
+    { configDir },
   );
 
   return {

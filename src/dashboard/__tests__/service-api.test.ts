@@ -166,6 +166,21 @@ describe("DashboardServer — service API", () => {
     expect(text).toContain("status-pill stopped");
   });
 
+  it("POST /api/service/stop renders the terminal instruction, not a broken Start button", async () => {
+    await boot(true);
+    fake.statusValue = makeStatus({ installed: true, running: true, pid: 42 });
+    const res = await fetch(`http://127.0.0.1:${String(port)}/api/service/stop`, {
+      method: "POST",
+    });
+    const text = await res.text();
+    // No Start button that would POST to a now-dead server.
+    expect(text.includes(`hx-post="/api/service/start"`)).toBe(false);
+    expect(text.includes(`hx-post="/api/service/stop"`)).toBe(false);
+    expect(text.includes(`hx-post="/api/service/restart"`)).toBe(false);
+    // Copy-friendly instruction for the user to restart from a terminal.
+    expect(text).toContain("redqueen service start");
+  });
+
   it("POST /api/service/restart returns the optimistic 'running' partial", async () => {
     await boot(true);
     fake.statusValue = makeStatus({ installed: true, running: false, pid: null });

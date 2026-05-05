@@ -21,7 +21,21 @@ function pillFor(status: ServiceStatus): { cls: string; label: string } {
   return { cls: "stopped", label: "stopped" };
 }
 
-export function renderServicePartial(status: ServiceStatus): string {
+export interface RenderServicePartialOptions {
+  /**
+   * True when the partial is the optimistic response to a Stop click — the
+   * dashboard is about to die with the service. Render a copy-friendly
+   * instruction block instead of a Start button that would post to a dead
+   * server. When the service is restarted externally and the user reloads
+   * the dashboard, the normal partial path renders the Start button again.
+   */
+  terminal?: boolean;
+}
+
+export function renderServicePartial(
+  status: ServiceStatus,
+  options: RenderServicePartialOptions = {},
+): string {
   if (status.platform === "unsupported") {
     return `<section id="service-panel" class="span2">
     <h2>Service</h2>
@@ -35,15 +49,23 @@ export function renderServicePartial(status: ServiceStatus): string {
       ? `<dt>PID</dt><dd>${String(status.pid)}</dd>`
       : `<dt>PID</dt><dd class="muted">—</dd>`;
 
-  const controls = status.installed
-    ? `
+  let controls: string;
+  if (options.terminal === true) {
+    controls = `
+    <p class="muted">Service stopped. This dashboard is served by the service and is no longer reachable once shutdown completes.</p>
+    <p>Run <code>redqueen service start</code> in a terminal to bring it back.</p>
+  `;
+  } else if (status.installed) {
+    controls = `
     <div class="btn-row">
       <button hx-post="/api/service/start" hx-target="#service-panel" hx-swap="outerHTML">Start</button>
       <button hx-post="/api/service/stop" hx-target="#service-panel" hx-swap="outerHTML">Stop</button>
       <button hx-post="/api/service/restart" hx-target="#service-panel" hx-swap="outerHTML">Restart</button>
     </div>
-  `
-    : `<p>Run <code>redqueen service install</code> to enable service control.</p>`;
+  `;
+  } else {
+    controls = `<p>Run <code>redqueen service install</code> to enable service control.</p>`;
+  }
 
   return `<section id="service-panel" class="span2">
     <h2>Service</h2>

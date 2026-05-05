@@ -1,7 +1,6 @@
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { loadConfig } from "../core/config.js";
-import { findConfigUpward, projectRootFromConfigPath } from "./config-discovery.js";
+import { loadConfigFromProject } from "./config-discovery.js";
 import { CliError } from "./errors.js";
 import { isProcessAlive, readPidFile, removePidFile, resolvePidPath } from "./pid.js";
 
@@ -18,12 +17,7 @@ export async function cmdStop(args: string[]): Promise<void> {
     return;
   }
 
-  const configPath = findConfigUpward(process.cwd());
-  if (configPath === null) {
-    throw new CliError(`redqueen.yaml not found (searched from ${process.cwd()} upward)`);
-  }
-  const config = loadConfig(configPath);
-  const projectRoot = projectRootFromConfigPath(configPath);
+  const { config, projectRoot } = loadConfigFromProject(process.cwd());
   const projectDir = resolve(projectRoot, config.project.directory);
   const pidPath = resolvePidPath(projectDir);
 
