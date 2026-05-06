@@ -10,12 +10,6 @@ interface ShellWindow extends Window {
   __rqShellInit?: boolean;
 }
 
-const w = window as ShellWindow;
-if (w.__rqShellInit !== true) {
-  w.__rqShellInit = true;
-  main();
-}
-
 type InitFn = () => void;
 
 const INIT: Record<string, InitFn> = {
@@ -80,4 +74,10 @@ function main(): void {
   } else {
     runInitial();
   }
+}
+
+const w = window as ShellWindow;
+if (w.__rqShellInit !== true) {
+  w.__rqShellInit = true;
+  main();
 }

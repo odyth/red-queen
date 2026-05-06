@@ -9,26 +9,31 @@ import type { ServiceStatus } from "../../core/service/index.js";
 
 describe("renderShell", () => {
   it("includes the vendored htmx script tag", () => {
-    const html = renderShell({ active: "status", content: "<p>hi</p>" });
+    const html = renderShell({ active: "status", content: "<p>hi</p>", version: "9.9.9" });
     expect(html).toContain(`src="/assets/htmx.min.js"`);
   });
 
   it("renders nav tabs for status and service with hx-get", () => {
-    const html = renderShell({ active: "status", content: "" });
+    const html = renderShell({ active: "status", content: "", version: "9.9.9" });
     expect(html).toContain(`hx-get="/api/status-partial"`);
     expect(html).toContain(`hx-get="/api/service-partial"`);
     expect(html).toContain(`hx-target="#main"`);
   });
 
   it("marks the active tab with .active", () => {
-    const statusActive = renderShell({ active: "status", content: "" });
+    const statusActive = renderShell({ active: "status", content: "", version: "9.9.9" });
     expect(statusActive).toMatch(/<button class="active"[^>]*>Status</);
-    const serviceActive = renderShell({ active: "service", content: "" });
+    const serviceActive = renderShell({ active: "service", content: "", version: "9.9.9" });
     expect(serviceActive).toMatch(/<button class="active"[^>]*>Service</);
   });
 
+  it("renders the package version in the header", () => {
+    const html = renderShell({ active: "status", content: "", version: "1.2.3" });
+    expect(html).toMatch(/<span class="version">v1\.2\.3<\/span>/);
+  });
+
   it("references the controller bundle and data-tab hooks for client-side switching", () => {
-    const html = renderShell({ active: "status", content: "" });
+    const html = renderShell({ active: "status", content: "", version: "9.9.9" });
     // Controller ships as a static asset (src/dashboard/client → esbuild
     // → /assets/controller.js). The shell points at it with a <script src>
     // so it bypasses htmx's allowScriptTags:false policy and so browsers
@@ -42,12 +47,12 @@ describe("renderShell", () => {
   });
 
   it("places the provided content inside #main", () => {
-    const html = renderShell({ active: "status", content: "<p id=needle></p>" });
+    const html = renderShell({ active: "status", content: "<p id=needle></p>", version: "9.9.9" });
     expect(html).toMatch(/<main id="main">[\s\S]*<p id=needle><\/p>[\s\S]*<\/main>/);
   });
 
   it("ships no inline <script> bodies (everything should be src= references)", () => {
-    const html = renderShell({ active: "status", content: "" });
+    const html = renderShell({ active: "status", content: "", version: "9.9.9" });
     // Regression guard: prior to the client-bundle migration the shell
     // embedded ~600 lines of JS inline. Any inline <script>…</script> body
     // sneaking back in would lose type-checking and cache benefits.
@@ -132,7 +137,7 @@ describe("renderServicePartial", () => {
 
 describe("renderShell (htmx defense)", () => {
   it("disables htmx eval via the htmx-config meta tag", () => {
-    const html = renderShell({ active: "status", content: "" });
+    const html = renderShell({ active: "status", content: "", version: "9.9.9" });
     expect(html).toContain(`name="htmx-config"`);
     expect(html).toContain(`"allowEval":false`);
     expect(html).toContain(`"allowScriptTags":false`);

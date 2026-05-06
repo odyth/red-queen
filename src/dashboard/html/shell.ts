@@ -17,6 +17,7 @@ export const NAV_TABS: readonly NavTab[] = [
 export interface ShellOptions {
   active: NavKey;
   content: string;
+  version: string;
 }
 
 const STYLES = `
@@ -68,6 +69,11 @@ const STYLES = `
   header .status {
     margin-left: auto;
     color: var(--muted);
+  }
+  header .version {
+    color: var(--muted);
+    font-size: 11px;
+    letter-spacing: 0.06em;
   }
   nav.tabs {
     display: flex;
@@ -225,6 +231,7 @@ export function renderShell(options: ShellOptions): string {
   <span class="tagline">Named for the AI that ran The Hive. Yours runs your SDLC.</span>
   <span id="status-line" class="muted">connecting...</span>
   <span class="status" id="uptime"></span>
+  <span class="version">v${escapeHtml(options.version)}</span>
 </header>
 <nav class="tabs">${renderNav(options.active)}</nav>
 <main id="main">${options.content}</main>

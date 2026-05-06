@@ -8,6 +8,7 @@ import type { RedQueenConfig } from "../core/config.js";
 import type { TaskQueue } from "../core/queue.js";
 import type { OrchestratorStateStore } from "../core/pipeline-state.js";
 import type { RuntimeState } from "../core/runtime-state.js";
+import { packageVersion } from "../core/version.js";
 import type {
   ServiceInstallContext,
   ServiceManager,
@@ -256,7 +257,13 @@ export class DashboardServer {
       path: "/",
       handler: (_req, res) => {
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        res.end(renderShell({ active: "status", content: renderStatusPartial() }));
+        res.end(
+          renderShell({
+            active: "status",
+            content: renderStatusPartial(),
+            version: packageVersion(),
+          }),
+        );
       },
     });
     routes.push({

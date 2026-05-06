@@ -1,8 +1,13 @@
+import { packageVersion } from "../core/version.js";
 import { renderStatusPartial } from "./html/partials/status.js";
 import { renderShell } from "./html/shell.js";
 
 export function renderDashboardHtml(): string {
-  return renderShell({ active: "status", content: renderStatusPartial() });
+  return renderShell({
+    active: "status",
+    content: renderStatusPartial(),
+    version: packageVersion(),
+  });
 }
 
 export { renderShell, NAV_TABS } from "./html/shell.js";
