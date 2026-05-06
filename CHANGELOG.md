@@ -29,7 +29,7 @@ redqueen@latest → service install → start` is the upgrade path.
   include nvm / asdf / homebrew by default, so the service could find
   Red Queen but not Claude without this.
 - `redqueen init` now prints
-  `Next: run \`redqueen jira discover\`` in the post-install banner
+  ``Next: run `redqueen jira discover` `` in the post-install banner
   for Jira projects.
 
 ### Fixed
@@ -50,7 +50,7 @@ redqueen@latest → service install → start` is the upgrade path.
 - Dashboard **Stop** button no longer renders an optimistic Start
   button that would POST to a now-dead server. After Stop the partial
   shows an instruction block:
-  `Run \`redqueen service start\` in a terminal to bring it back.`
+  ``Run `redqueen service start` in a terminal to bring it back.``
 
 ### Changed
 

@@ -210,9 +210,15 @@ async function pickCandidate(
     // Caller already guards against empty candidates — this is defensive.
     throw new CliError(`No ${label.toLowerCase()} candidates available.`);
   }
-  if (candidates.length === 1 || opts.yes) {
+  if (candidates.length === 1) {
     process.stdout.write(`  Picked [1] ${first.id}\n\n`);
     return first;
+  }
+  if (opts.yes === true) {
+    throw new CliError(
+      `--yes cannot disambiguate ${String(candidates.length)} ${label.toLowerCase()} candidates. ` +
+        `Re-run interactively (without --yes) to pick one, or delete the unwanted ${label.toLowerCase()} in Jira so only one candidate remains.`,
+    );
   }
   const answer = (await rl.question(`Pick [1-${String(candidates.length)}] (default 1): `)).trim();
   const index = answer.length === 0 ? 1 : Number.parseInt(answer, 10);

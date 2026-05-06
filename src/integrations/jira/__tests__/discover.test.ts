@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { JiraClient } from "../client.js";
-import { discoverJiraSchema, matchPhases } from "../discover.js";
+import { discoverJiraSchema, fetchPhaseOptions, matchPhases } from "../discover.js";
 
 type FetchFn = typeof fetch;
 
@@ -175,5 +175,33 @@ describe("matchPhases", () => {
     const m = matchPhases([{ name: "coding" }], options);
     expect(m[0]?.matched?.reason).toBe("name");
     expect(m[0]?.matched?.optionId).toBe("10003");
+  });
+});
+
+describe("fetchPhaseOptions", () => {
+  it("prefers the global context when multiple contexts are returned", async () => {
+    const { fetchImpl, calls } = routedFetch([
+      {
+        match: /\/context\/ctx-global\/option$/,
+        body: { values: [{ id: "10001", value: "Global Option" }] },
+      },
+      {
+        match: /\/context\/ctx-project\/option$/,
+        body: { values: [{ id: "20001", value: "Project Option" }] },
+      },
+      {
+        match: /\/field\/customfield_10234\/context$/,
+        body: {
+          values: [
+            { id: "ctx-project", name: "Project X", isGlobalContext: false },
+            { id: "ctx-global", name: "default", isGlobalContext: true },
+          ],
+        },
+      },
+    ]);
+    const client = buildClient(fetchImpl);
+    const opts = await fetchPhaseOptions(client, "customfield_10234");
+    expect(opts).toEqual([{ id: "10001", value: "Global Option" }]);
+    expect(calls.some((c) => c.includes("/context/ctx-global/option"))).toBe(true);
   });
 });

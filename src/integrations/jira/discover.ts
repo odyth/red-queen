@@ -141,7 +141,10 @@ export async function fetchPhaseOptions(
     "GET",
     `/rest/api/3/field/${encodeURIComponent(fieldId)}/context`,
   );
-  const primary = contexts.values[0];
+  // Jira doesn't guarantee ordering; a project-scoped context would expose a
+  // different option set than the default. Prefer the global context so the
+  // proposed mapping matches what most tickets will actually see.
+  const primary = contexts.values.find((c) => c.isGlobalContext === true) ?? contexts.values[0];
   if (primary === undefined) {
     return [];
   }
