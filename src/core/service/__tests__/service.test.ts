@@ -266,10 +266,17 @@ describe("MacServiceManager lifecycle", () => {
     execFileMock.mockReset();
   });
 
-  it("start: bootstraps (and does not kickstart) when the job isn't loaded", async () => {
+  it("start: bootstraps, verifies, then kickstarts when the job isn't loaded", async () => {
+    // First isLoaded call (before bootstrap) fails; after bootstrap the
+    // verification print succeeds; then the kickstart runs.
+    let printCalls = 0;
     execFileMock.mockImplementation((_file, args) => {
       if (args[0] === "print") {
-        return Promise.reject(Object.assign(new Error("not loaded"), { stdout: "" }));
+        printCalls += 1;
+        if (printCalls === 1) {
+          return Promise.reject(Object.assign(new Error("not loaded"), { stdout: "" }));
+        }
+        return Promise.resolve({ stdout: "state = running", stderr: "" });
       }
       return Promise.resolve({ stdout: "", stderr: "" });
     });
@@ -279,11 +286,12 @@ describe("MacServiceManager lifecycle", () => {
     await manager.start(FIXTURE_CONTEXT);
 
     const verbs = execFileMock.mock.calls.map((c) => c[1][0]);
-    // print (isLoaded) → bootstrap. No kickstart — RunAtLoad=true starts it.
-    expect(verbs).toEqual(["print", "bootstrap"]);
-    expect(verbs.includes("kickstart")).toBe(false);
+    // print (isLoaded=false) → bootstrap → print (verify) → kickstart.
+    expect(verbs).toEqual(["print", "bootstrap", "print", "kickstart"]);
     const bootstrapArgs = execFileMock.mock.calls[1]?.[1];
     expect(bootstrapArgs?.[2]).toBe(plistPathFor(FIXTURE_CONTEXT.name));
+    const kickstartArgs = execFileMock.mock.calls[3]?.[1];
+    expect(kickstartArgs?.includes("-k")).toBe(false);
   });
 
   it("start: kickstarts (and does not bootstrap) when the job is already loaded", async () => {
@@ -298,9 +306,10 @@ describe("MacServiceManager lifecycle", () => {
     expect(verbs.includes("bootstrap")).toBe(false);
   });
 
-  it("start: throws when bootstrap silently fails to load the plist", async () => {
-    // launchctl bootstrap exits 0 but the plist never loads — status never
-    // reaches running. Manager must throw instead of reporting success.
+  it("start: throws loudly when bootstrap silently fails to register the plist", async () => {
+    // launchctl bootstrap exits 0 but the job never registers — every
+    // `print` returns failure. Manager must throw immediately with a
+    // descriptive error instead of hiding behind the 5s status poll.
     execFileMock.mockImplementation((_file, args) => {
       if (args[0] === "print") {
         return Promise.reject(Object.assign(new Error("not loaded"), { stdout: "" }));
@@ -311,20 +320,47 @@ describe("MacServiceManager lifecycle", () => {
     const manager = new MacServiceManager();
     vi.spyOn(manager, "status").mockResolvedValue(stoppedStatus);
 
-    vi.useFakeTimers();
-    const promise = manager.start(FIXTURE_CONTEXT);
-    promise.catch(() => {
-      /* swallow — assertion below checks rejection */
-    });
-    await vi.advanceTimersByTimeAsync(6000);
-    await expect(promise).rejects.toThrow(/did not reach running state/);
-    vi.useRealTimers();
+    await expect(manager.start(FIXTURE_CONTEXT)).rejects.toThrow(
+      /bootstrap exited 0 but .* is not registered/,
+    );
+    const verbs = execFileMock.mock.calls.map((c) => c[1][0]);
+    // Must abort before kickstart — kickstart on an unregistered job is
+    // what surfaces the cryptic "Could not find service" in the field.
+    expect(verbs.includes("kickstart")).toBe(false);
   });
 
-  it("restart: bootstraps (not kickstart -k) when the job isn't loaded", async () => {
+  it("start: throws when bootstrap itself errors, including launchctl stderr", async () => {
     execFileMock.mockImplementation((_file, args) => {
       if (args[0] === "print") {
         return Promise.reject(Object.assign(new Error("not loaded"), { stdout: "" }));
+      }
+      if (args[0] === "bootstrap") {
+        return Promise.reject(
+          Object.assign(new Error("Bootstrap failed: 5: Input/output error"), {
+            stderr: "Load failed: 5: Input/output error",
+          }),
+        );
+      }
+      return Promise.resolve({ stdout: "", stderr: "" });
+    });
+
+    const manager = new MacServiceManager();
+    vi.spyOn(manager, "status").mockResolvedValue(stoppedStatus);
+
+    await expect(manager.start(FIXTURE_CONTEXT)).rejects.toThrow(
+      /launchctl bootstrap failed .*Input\/output error/,
+    );
+  });
+
+  it("restart: bootstraps, verifies, then kickstarts (no -k) when the job isn't loaded", async () => {
+    let printCalls = 0;
+    execFileMock.mockImplementation((_file, args) => {
+      if (args[0] === "print") {
+        printCalls += 1;
+        if (printCalls === 1) {
+          return Promise.reject(Object.assign(new Error("not loaded"), { stdout: "" }));
+        }
+        return Promise.resolve({ stdout: "state = running", stderr: "" });
       }
       return Promise.resolve({ stdout: "", stderr: "" });
     });
@@ -334,8 +370,10 @@ describe("MacServiceManager lifecycle", () => {
     await manager.restart(FIXTURE_CONTEXT);
 
     const verbs = execFileMock.mock.calls.map((c) => c[1][0]);
-    expect(verbs).toEqual(["print", "bootstrap"]);
-    expect(verbs.includes("kickstart")).toBe(false);
+    expect(verbs).toEqual(["print", "bootstrap", "print", "kickstart"]);
+    const kickstartArgs = execFileMock.mock.calls[3]?.[1];
+    // Freshly bootstrapped — no running instance to kill, so no -k.
+    expect(kickstartArgs?.includes("-k")).toBe(false);
   });
 
   it("restart: uses kickstart -k when the job is already loaded", async () => {

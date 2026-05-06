@@ -102,9 +102,8 @@ export class MacServiceManager extends ServiceManager {
 
     // bootout first if a prior plist is loaded — bootstrap fails otherwise.
     await safeBootout(context.name);
-    await runLaunchctl(["bootstrap", domainTarget(), plistPath]);
-    // launchctl exits 0 on bootstrap even when the plist failed to load.
-    // Poll status as the source of truth.
+    await bootstrapAndVerify(context);
+    await runLaunchctl(["kickstart", serviceTarget(context.name)]);
     await this.waitUntilRunning(context);
   }
 
@@ -117,18 +116,16 @@ export class MacServiceManager extends ServiceManager {
   }
 
   async start(context: ServiceInstallContext): Promise<void> {
-    // `launchctl kickstart` only works against a loaded job. After
-    // `redqueen service stop` runs `bootout`, the job is fully unloaded —
-    // bootstrap re-registers it, and with RunAtLoad=true in the plist the
-    // job starts as part of bootstrap. A follow-up kickstart would race
-    // against that and can leave the job in a confused state, so only
-    // kickstart when the job was already loaded (no-op start case).
+    // After `redqueen service stop` (bootout), the job is fully unloaded —
+    // re-bootstrap from the existing plist. launchctl bootstrap exits 0
+    // even when it silently no-ops (the plist never registers), so
+    // bootstrapAndVerify re-checks `isLoaded` and throws loudly if the
+    // domain still doesn't see the job. kickstart then forces the start
+    // regardless of whether RunAtLoad fired.
     if ((await isLoaded(context.name)) === false) {
-      const plistPath = plistPathFor(context.name);
-      await runLaunchctl(["bootstrap", domainTarget(), plistPath]);
-    } else {
-      await runLaunchctl(["kickstart", serviceTarget(context.name)]);
+      await bootstrapAndVerify(context);
     }
+    await runLaunchctl(["kickstart", serviceTarget(context.name)]);
     await this.waitUntilRunning(context);
   }
 
@@ -138,8 +135,10 @@ export class MacServiceManager extends ServiceManager {
 
   async restart(context: ServiceInstallContext): Promise<void> {
     if ((await isLoaded(context.name)) === false) {
-      const plistPath = plistPathFor(context.name);
-      await runLaunchctl(["bootstrap", domainTarget(), plistPath]);
+      await bootstrapAndVerify(context);
+      // Freshly bootstrapped — no running instance to stop, so kickstart
+      // without -k. Using -k here would race with RunAtLoad.
+      await runLaunchctl(["kickstart", serviceTarget(context.name)]);
     } else {
       await runLaunchctl(["kickstart", "-k", serviceTarget(context.name)]);
     }
@@ -207,6 +206,43 @@ async function safeBootout(name: string): Promise<void> {
   } catch {
     // Already unloaded — bootout returns non-zero in that case.
   }
+}
+
+/**
+ * `launchctl bootstrap` exits 0 even when it silently fails to register the
+ * plist (seen in practice after bootout on some macOS releases). Verify by
+ * probing `launchctl print` — if the domain still doesn't see the job, throw
+ * with enough context to point the user at the root cause instead of letting
+ * waitUntilRunning time out silently.
+ */
+async function bootstrapAndVerify(context: ServiceInstallContext): Promise<void> {
+  const plistPath = plistPathFor(context.name);
+  try {
+    await runLaunchctl(["bootstrap", domainTarget(), plistPath]);
+  } catch (err) {
+    throw new Error(
+      `launchctl bootstrap failed for '${context.name}': ${describeLaunchctlError(err)}`,
+      { cause: err },
+    );
+  }
+  if ((await isLoaded(context.name)) === false) {
+    throw new Error(
+      `launchctl bootstrap exited 0 but '${context.name}' is not registered in ${domainTarget()}. The plist at ${plistPath} may be malformed or missing; check ${context.stderrLogPath} and macOS Console for launchd errors, or run \`redqueen service install\`.`,
+    );
+  }
+}
+
+function describeLaunchctlError(err: unknown): string {
+  if (err === null || typeof err !== "object") {
+    return String(err);
+  }
+  const stderr = (err as { stderr?: unknown }).stderr;
+  const stderrText =
+    typeof stderr === "string" ? stderr : stderr instanceof Buffer ? stderr.toString("utf8") : "";
+  const message = (err as { message?: unknown }).message;
+  const messageText = typeof message === "string" ? message : "";
+  const combined = [messageText, stderrText].filter((s) => s.length > 0).join(" — ");
+  return combined.length > 0 ? combined : "unknown launchctl error";
 }
 
 async function isLoaded(name: string): Promise<boolean> {

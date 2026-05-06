@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- macOS: `service start` after `service stop` again reloads and starts
+  the LaunchAgent. 0.3.1 removed the post-bootstrap `kickstart` on a
+  race theory that didn't hold up; in practice `launchctl bootstrap`
+  exits 0 but silently no-ops on some macOS releases, so with no
+  `kickstart` the job never ran and the 5s postcondition poll timed
+  out. `start` and `restart` now verify the job actually registered
+  after `bootstrap` (throwing a descriptive error if not) and then
+  explicitly `kickstart` the job. `launchctl` stderr is now included
+  in the thrown error when `bootstrap` itself fails.
+
 ## [0.3.1] - 2026-05-06
 
 Patch release. `redqueen service start` on macOS after a prior
