@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { fromAdf, toAdf } from "../adf.js";
+import type { AdfNode } from "../adf.js";
 
 describe("toAdf", () => {
   it("creates a doc with an empty paragraph for empty input", () => {
@@ -26,6 +27,13 @@ describe("toAdf", () => {
     expect(code?.type).toBe("codeBlock");
     expect(code?.attrs?.language).toBe("ts");
     expect(code?.content?.[0]?.text).toBe("const x = 1;");
+  });
+
+  it("emits code blocks without language", () => {
+    const doc = toAdf("```\nplain\n```");
+    const code = doc.content?.[0];
+    expect(code?.type).toBe("codeBlock");
+    expect(code?.attrs?.language).toBeUndefined();
   });
 
   it("recognizes inline code", () => {
@@ -55,6 +63,103 @@ describe("toAdf", () => {
     const para = doc.content?.[0];
     const hb = para?.content?.find((n) => n.type === "hardBreak");
     expect(hb).toBeDefined();
+  });
+
+  it("emits headings with the correct level", () => {
+    const doc = toAdf("# Title\n\n## Subtitle\n\n### Third");
+    expect(doc.content?.[0]?.type).toBe("heading");
+    expect(doc.content?.[0]?.attrs?.level).toBe(1);
+    expect(doc.content?.[1]?.attrs?.level).toBe(2);
+    expect(doc.content?.[2]?.attrs?.level).toBe(3);
+  });
+
+  it("folds inline marks inside heading text", () => {
+    const doc = toAdf("## Use `npm run check`");
+    const heading = doc.content?.[0];
+    const code = heading?.content?.find((n) => n.marks?.some((m) => m.type === "code"));
+    expect(code?.text).toBe("npm run check");
+  });
+
+  it("emits bulletList for dash bullets", () => {
+    const doc = toAdf("- one\n- two");
+    const list = doc.content?.[0];
+    expect(list?.type).toBe("bulletList");
+    expect(list?.content).toHaveLength(2);
+    expect(list?.content?.[0]?.type).toBe("listItem");
+  });
+
+  it("emits orderedList for numbered items", () => {
+    const doc = toAdf("1. first\n2. second");
+    const list = doc.content?.[0];
+    expect(list?.type).toBe("orderedList");
+    expect(list?.content).toHaveLength(2);
+  });
+
+  it("emits taskList with TODO / DONE state", () => {
+    const doc = toAdf("- [ ] pending\n- [x] done");
+    const list = doc.content?.[0];
+    expect(list?.type).toBe("taskList");
+    expect(list?.content?.[0]?.type).toBe("taskItem");
+    expect(list?.content?.[0]?.attrs?.state).toBe("TODO");
+    expect(list?.content?.[1]?.attrs?.state).toBe("DONE");
+  });
+
+  it("nests a bullet list inside a bullet list", () => {
+    const doc = toAdf("- outer\n  - inner\n- back");
+    const list = doc.content?.[0];
+    const firstItem = list?.content?.[0];
+    const nested = firstItem?.content?.find((n) => n.type === "bulletList");
+    expect(nested).toBeDefined();
+    expect(nested?.content?.[0]?.type).toBe("listItem");
+  });
+
+  it("emits blockquote", () => {
+    const doc = toAdf("> quoted text");
+    const quote = doc.content?.[0];
+    expect(quote?.type).toBe("blockquote");
+    expect(quote?.content?.[0]?.type).toBe("paragraph");
+  });
+
+  it("emits rule for ---", () => {
+    const doc = toAdf("before\n\n---\n\nafter");
+    expect(doc.content?.[1]?.type).toBe("rule");
+  });
+
+  it("recognizes bold with asterisks", () => {
+    const doc = toAdf("This is **bold** text.");
+    const para = doc.content?.[0];
+    const strong = para?.content?.find((n) => n.marks?.some((m) => m.type === "strong"));
+    expect(strong?.text).toBe("bold");
+  });
+
+  it("recognizes italic with asterisks", () => {
+    const doc = toAdf("This is *emphasis*.");
+    const para = doc.content?.[0];
+    const em = para?.content?.find((n) => n.marks?.some((m) => m.type === "em"));
+    expect(em?.text).toBe("emphasis");
+  });
+
+  it("recognizes strikethrough", () => {
+    const doc = toAdf("~~gone~~");
+    const para = doc.content?.[0];
+    const strike = para?.content?.find((n) => n.marks?.some((m) => m.type === "strike"));
+    expect(strike?.text).toBe("gone");
+  });
+
+  it("prefers strong over nested em when overlapping", () => {
+    const doc = toAdf("**bold**");
+    const para = doc.content?.[0];
+    const marks = para?.content?.[0]?.marks ?? [];
+    expect(marks[0]?.type).toBe("strong");
+  });
+
+  it("passes Jira wiki syntax through as literal text (not special-cased)", () => {
+    // Skill prompts forbid {{ }} — this test documents that the parser
+    // does not quietly rescue it.
+    const doc = toAdf("The {{OnPostAsync}} method.");
+    const para = doc.content?.[0];
+    expect(para?.content?.[0]?.text).toBe("The {{OnPostAsync}} method.");
+    expect(para?.content?.[0]?.marks).toBeUndefined();
   });
 });
 
@@ -129,6 +234,94 @@ describe("fromAdf", () => {
     expect(out).toBe("@accountId:712020:abc");
   });
 
+  it("renders headings", () => {
+    const out = fromAdf({
+      type: "doc",
+      content: [
+        { type: "heading", attrs: { level: 2 }, content: [{ type: "text", text: "Title" }] },
+      ],
+    });
+    expect(out).toBe("## Title");
+  });
+
+  it("renders bullet lists", () => {
+    const out = fromAdf({
+      type: "doc",
+      content: [
+        {
+          type: "bulletList",
+          content: [
+            {
+              type: "listItem",
+              content: [{ type: "paragraph", content: [{ type: "text", text: "one" }] }],
+            },
+            {
+              type: "listItem",
+              content: [{ type: "paragraph", content: [{ type: "text", text: "two" }] }],
+            },
+          ],
+        },
+      ],
+    });
+    expect(out).toBe("- one\n- two");
+  });
+
+  it("renders task lists with state", () => {
+    const out = fromAdf({
+      type: "doc",
+      content: [
+        {
+          type: "taskList",
+          content: [
+            {
+              type: "taskItem",
+              attrs: { state: "DONE" },
+              content: [{ type: "text", text: "done" }],
+            },
+            {
+              type: "taskItem",
+              attrs: { state: "TODO" },
+              content: [{ type: "text", text: "todo" }],
+            },
+          ],
+        },
+      ],
+    });
+    expect(out).toBe("- [x] done\n- [ ] todo");
+  });
+
+  it("renders blockquote", () => {
+    const out = fromAdf({
+      type: "doc",
+      content: [
+        {
+          type: "blockquote",
+          content: [{ type: "paragraph", content: [{ type: "text", text: "quoted" }] }],
+        },
+      ],
+    });
+    expect(out).toBe("> quoted");
+  });
+
+  it("renders strong, em, strike marks", () => {
+    const doc: AdfNode = {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: "a", marks: [{ type: "strong" }] },
+            { type: "text", text: " " },
+            { type: "text", text: "b", marks: [{ type: "em" }] },
+            { type: "text", text: " " },
+            { type: "text", text: "c", marks: [{ type: "strike" }] },
+          ],
+        },
+      ],
+    };
+    expect(fromAdf(doc)).toBe("**a** *b* ~~c~~");
+  });
+
   it("tolerates unknown nodes by concatenating text descendants", () => {
     const out = fromAdf({
       type: "doc",
@@ -146,7 +339,7 @@ describe("fromAdf", () => {
 describe("round-trip", () => {
   it("preserves a spec-style body", () => {
     const input = [
-      "Acceptance Criteria",
+      "## Acceptance Criteria",
       "",
       "- Must compile without warnings.",
       "- Use `npm run check`.",
@@ -159,9 +352,35 @@ describe("round-trip", () => {
     ].join("\n");
     const adf = toAdf(input);
     const rendered = fromAdf(adf);
-    expect(rendered).toContain("Acceptance Criteria");
+    expect(rendered).toContain("## Acceptance Criteria");
+    expect(rendered).toContain("- Must compile without warnings.");
     expect(rendered).toContain("`npm run check`");
     expect(rendered).toContain("```ts");
     expect(rendered).toContain("[docs](https://example.com)");
+  });
+
+  it("preserves a realistic implementation spec", () => {
+    const input = [
+      "## Problem",
+      "",
+      "The `OnPostAsync` method never receives the annotated URL.",
+      "",
+      "## Files to Change",
+      "",
+      "- `Pages/Measurement.cshtml.cs` — remove dead handler",
+      "- `Pages/Shared/ImageUpload.cshtml.cs` — add logging",
+      "",
+      "## Open Questions",
+      "",
+      "- [ ] Should we delete the unused field?",
+      "- [x] Confirmed: no external callers.",
+    ].join("\n");
+    const adf = toAdf(input);
+    const rendered = fromAdf(adf);
+    expect(rendered).toContain("## Problem");
+    expect(rendered).toContain("`OnPostAsync`");
+    expect(rendered).toContain("- `Pages/Measurement.cshtml.cs` — remove dead handler");
+    expect(rendered).toContain("- [ ] Should we delete the unused field?");
+    expect(rendered).toContain("- [x] Confirmed: no external callers.");
   });
 });

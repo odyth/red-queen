@@ -194,3 +194,7 @@ When CI fails for reasons outside the coder's control:
 - Distinguish CI failures the coder can fix (send back to coding) from CI
   failures nobody can fix without infra (set Blocked). Don't send the same
   migration issue to the coder three times.
+- **Standard markdown only in tracker output.** PR reviews and issue
+  comments render as markdown. Use backticks (`` `code` ``), fenced code
+  blocks, `**bold**`, `- bullet`, `[text](url)`. Never emit Jira wiki
+  syntax such as `{{monospace}}`, `{code}…{code}`, `h1.`, `||header||`.

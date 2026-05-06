@@ -155,3 +155,7 @@ Steps:
 - Keep commits atomic — one commit per feedback round, not per comment.
 - The goal is to resolve the feedback so the PR can be re-reviewed, not to
   perfect the code beyond the feedback.
+- **Standard markdown only in tracker replies.** PR comments and issue
+  comments render as markdown. Use backticks, `**bold**`, `- bullet`,
+  `[text](url)`. Never emit Jira wiki syntax (`{{text}}`, `{code}…{code}`,
+  `h1.`).

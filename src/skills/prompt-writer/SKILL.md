@@ -227,6 +227,13 @@ the next decision is theirs.
 - **Testable:** every acceptance criterion has a verification step.
 - **Scoped:** Non-Goals prevent scope creep.
 - **Honest:** if you are uncertain, put it in Open Questions — do not guess.
+- **Standard markdown only:** the tracker renders markdown — spec fields and
+  comments. Use backticks (`` `code` ``) for inline code, triple-backtick
+  fences for blocks, `**bold**`, `*italic*`, `- bullet`, `1. numbered`,
+  `- [ ] / - [x]` for checkboxes, `[text](url)` for links. Do **not** emit
+  Jira wiki syntax such as `{{monospaced}}`, `{code}…{code}`, `h1.`, `*bold*`
+  (wiki bold), `||header||` tables, or `{{variable-style}}` placeholders —
+  those render as literal garbage in modern Jira.
 
 ## Context isolation rules
 

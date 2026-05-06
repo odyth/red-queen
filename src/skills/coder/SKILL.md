@@ -200,3 +200,7 @@ Steps:
 - If you deviate from the spec, note the deviation in the PR body.
 - Do not modify files outside the scope the spec defines.
 - Do not commit secrets, generated artifacts, or unrelated fix-ups.
+- **Standard markdown only in tracker output.** PR bodies and tracker
+  comments render as markdown. Use backticks for inline code, fenced code
+  blocks, `**bold**`, `- bullet`, `[text](url)`. Never emit Jira wiki
+  syntax like `{{text}}`, `{code}…{code}`, or `h1.`.
