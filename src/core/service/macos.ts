@@ -103,6 +103,9 @@ export class MacServiceManager extends ServiceManager {
     // bootout first if a prior plist is loaded — bootstrap fails otherwise.
     await safeBootout(context.name);
     await runLaunchctl(["bootstrap", domainTarget(), plistPath]);
+    // launchctl exits 0 on bootstrap even when the plist failed to load.
+    // Poll status as the source of truth.
+    await this.waitUntilRunning(context);
   }
 
   async uninstall(context: ServiceInstallContext): Promise<void> {
@@ -114,15 +117,19 @@ export class MacServiceManager extends ServiceManager {
   }
 
   async start(context: ServiceInstallContext): Promise<void> {
-    // `launchctl kickstart` only works against a loaded job. A prior
-    // `redqueen service stop` runs `bootout`, which fully unloads the job —
-    // so kickstart would fail with "Could not find service". Re-bootstrap
-    // first when the job isn't registered in the domain.
+    // `launchctl kickstart` only works against a loaded job. After
+    // `redqueen service stop` runs `bootout`, the job is fully unloaded —
+    // bootstrap re-registers it, and with RunAtLoad=true in the plist the
+    // job starts as part of bootstrap. A follow-up kickstart would race
+    // against that and can leave the job in a confused state, so only
+    // kickstart when the job was already loaded (no-op start case).
     if ((await isLoaded(context.name)) === false) {
       const plistPath = plistPathFor(context.name);
       await runLaunchctl(["bootstrap", domainTarget(), plistPath]);
+    } else {
+      await runLaunchctl(["kickstart", serviceTarget(context.name)]);
     }
-    await runLaunchctl(["kickstart", serviceTarget(context.name)]);
+    await this.waitUntilRunning(context);
   }
 
   async stop(context: ServiceInstallContext): Promise<void> {
@@ -133,8 +140,26 @@ export class MacServiceManager extends ServiceManager {
     if ((await isLoaded(context.name)) === false) {
       const plistPath = plistPathFor(context.name);
       await runLaunchctl(["bootstrap", domainTarget(), plistPath]);
+    } else {
+      await runLaunchctl(["kickstart", "-k", serviceTarget(context.name)]);
     }
-    await runLaunchctl(["kickstart", "-k", serviceTarget(context.name)]);
+    await this.waitUntilRunning(context);
+  }
+
+  private async waitUntilRunning(context: ServiceInstallContext): Promise<void> {
+    const deadline = Date.now() + 5000;
+    let lastStatus: ServiceStatus | null = null;
+    while (Date.now() < deadline) {
+      lastStatus = await this.status(context);
+      if (lastStatus.running) {
+        return;
+      }
+      await sleep(200);
+    }
+    const hint = lastStatus?.installed === false ? " (plist missing)" : "";
+    throw new Error(
+      `LaunchAgent '${context.name}' did not reach running state within 5s${hint}. Check ${context.stderrLogPath} for startup errors.`,
+    );
   }
 
   async status(context: ServiceInstallContext): Promise<ServiceStatus> {
@@ -191,6 +216,10 @@ async function isLoaded(name: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function readInstalledPlist(name: string): string | null {

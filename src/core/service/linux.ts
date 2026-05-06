@@ -78,6 +78,7 @@ export class LinuxServiceManager extends ServiceManager {
     // `install` returns with the service running. Do the same via `start` here
     // so the printed banner's "service status" step tells the truth.
     await runSystemctl(["start", context.name]);
+    await this.waitUntilRunning(context);
   }
 
   async uninstall(context: ServiceInstallContext): Promise<void> {
@@ -92,6 +93,7 @@ export class LinuxServiceManager extends ServiceManager {
 
   async start(context: ServiceInstallContext): Promise<void> {
     await runSystemctl(["start", context.name]);
+    await this.waitUntilRunning(context);
   }
 
   async stop(context: ServiceInstallContext): Promise<void> {
@@ -100,6 +102,23 @@ export class LinuxServiceManager extends ServiceManager {
 
   async restart(context: ServiceInstallContext): Promise<void> {
     await runSystemctl(["restart", context.name]);
+    await this.waitUntilRunning(context);
+  }
+
+  private async waitUntilRunning(context: ServiceInstallContext): Promise<void> {
+    const deadline = Date.now() + 5000;
+    let lastStatus: ServiceStatus | null = null;
+    while (Date.now() < deadline) {
+      lastStatus = await this.status(context);
+      if (lastStatus.running) {
+        return;
+      }
+      await sleep(200);
+    }
+    const hint = lastStatus?.installed === false ? " (unit missing)" : "";
+    throw new Error(
+      `systemd unit '${context.name}' did not reach active state within 5s${hint}. Check ${context.stderrLogPath} for startup errors.`,
+    );
   }
 
   async status(context: ServiceInstallContext): Promise<ServiceStatus> {
@@ -146,6 +165,10 @@ async function safeSystemctl(args: string[]): Promise<void> {
   } catch {
     // Unit already stopped/disabled/missing.
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function readInstalledUnit(name: string): string | null {

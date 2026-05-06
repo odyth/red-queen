@@ -251,11 +251,22 @@ describe("renderUnit", () => {
 });
 
 describe("MacServiceManager lifecycle", () => {
+  const runningStatus = {
+    installed: true,
+    running: true,
+    name: FIXTURE_CONTEXT.name,
+    pid: 1234,
+    platform: "darwin" as const,
+    stdoutLog: FIXTURE_CONTEXT.stdoutLogPath,
+    stderrLog: FIXTURE_CONTEXT.stderrLogPath,
+  };
+  const stoppedStatus = { ...runningStatus, running: false, pid: null };
+
   beforeEach(() => {
     execFileMock.mockReset();
   });
 
-  it("start: bootstraps before kickstart when the job isn't loaded", async () => {
+  it("start: bootstraps (and does not kickstart) when the job isn't loaded", async () => {
     execFileMock.mockImplementation((_file, args) => {
       if (args[0] === "print") {
         return Promise.reject(Object.assign(new Error("not loaded"), { stdout: "" }));
@@ -264,19 +275,22 @@ describe("MacServiceManager lifecycle", () => {
     });
 
     const manager = new MacServiceManager();
+    vi.spyOn(manager, "status").mockResolvedValue(runningStatus);
     await manager.start(FIXTURE_CONTEXT);
 
-    const calls = execFileMock.mock.calls.map((c) => c[1]);
-    expect(calls[0]?.[0]).toBe("print");
-    expect(calls[1]?.[0]).toBe("bootstrap");
-    expect(calls[1]?.[2]).toBe(plistPathFor(FIXTURE_CONTEXT.name));
-    expect(calls[2]?.[0]).toBe("kickstart");
+    const verbs = execFileMock.mock.calls.map((c) => c[1][0]);
+    // print (isLoaded) → bootstrap. No kickstart — RunAtLoad=true starts it.
+    expect(verbs).toEqual(["print", "bootstrap"]);
+    expect(verbs.includes("kickstart")).toBe(false);
+    const bootstrapArgs = execFileMock.mock.calls[1]?.[1];
+    expect(bootstrapArgs?.[2]).toBe(plistPathFor(FIXTURE_CONTEXT.name));
   });
 
-  it("start: uses kickstart only when the job is already loaded", async () => {
+  it("start: kickstarts (and does not bootstrap) when the job is already loaded", async () => {
     execFileMock.mockResolvedValue({ stdout: "state = running", stderr: "" });
 
     const manager = new MacServiceManager();
+    vi.spyOn(manager, "status").mockResolvedValue(runningStatus);
     await manager.start(FIXTURE_CONTEXT);
 
     const verbs = execFileMock.mock.calls.map((c) => c[1][0]);
@@ -284,7 +298,9 @@ describe("MacServiceManager lifecycle", () => {
     expect(verbs.includes("bootstrap")).toBe(false);
   });
 
-  it("restart: bootstraps before kickstart -k when the job isn't loaded", async () => {
+  it("start: throws when bootstrap silently fails to load the plist", async () => {
+    // launchctl bootstrap exits 0 but the plist never loads — status never
+    // reaches running. Manager must throw instead of reporting success.
     execFileMock.mockImplementation((_file, args) => {
       if (args[0] === "print") {
         return Promise.reject(Object.assign(new Error("not loaded"), { stdout: "" }));
@@ -293,11 +309,45 @@ describe("MacServiceManager lifecycle", () => {
     });
 
     const manager = new MacServiceManager();
+    vi.spyOn(manager, "status").mockResolvedValue(stoppedStatus);
+
+    vi.useFakeTimers();
+    const promise = manager.start(FIXTURE_CONTEXT);
+    promise.catch(() => {
+      /* swallow — assertion below checks rejection */
+    });
+    await vi.advanceTimersByTimeAsync(6000);
+    await expect(promise).rejects.toThrow(/did not reach running state/);
+    vi.useRealTimers();
+  });
+
+  it("restart: bootstraps (not kickstart -k) when the job isn't loaded", async () => {
+    execFileMock.mockImplementation((_file, args) => {
+      if (args[0] === "print") {
+        return Promise.reject(Object.assign(new Error("not loaded"), { stdout: "" }));
+      }
+      return Promise.resolve({ stdout: "", stderr: "" });
+    });
+
+    const manager = new MacServiceManager();
+    vi.spyOn(manager, "status").mockResolvedValue(runningStatus);
+    await manager.restart(FIXTURE_CONTEXT);
+
+    const verbs = execFileMock.mock.calls.map((c) => c[1][0]);
+    expect(verbs).toEqual(["print", "bootstrap"]);
+    expect(verbs.includes("kickstart")).toBe(false);
+  });
+
+  it("restart: uses kickstart -k when the job is already loaded", async () => {
+    execFileMock.mockResolvedValue({ stdout: "state = running", stderr: "" });
+
+    const manager = new MacServiceManager();
+    vi.spyOn(manager, "status").mockResolvedValue(runningStatus);
     await manager.restart(FIXTURE_CONTEXT);
 
     const calls = execFileMock.mock.calls.map((c) => c[1]);
-    expect(calls.map((c) => c[0])).toEqual(["print", "bootstrap", "kickstart"]);
-    expect(calls[2]).toContain("-k");
+    expect(calls.map((c) => c[0])).toEqual(["print", "kickstart"]);
+    expect(calls[1]).toContain("-k");
   });
 });
 

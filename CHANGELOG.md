@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-05-06
+
+Patch release. `redqueen service start` on macOS after a prior
+`redqueen service stop` reported success but the LaunchAgent never
+actually ran. Root cause: `launchctl bootstrap` exits 0 even when the
+plist fails to load, and the follow-up `kickstart` raced with the
+bootstrap-driven RunAtLoad start. Upgrade path is in place — just
+`npm install -g redqueen@latest` and re-run your existing
+`service start`.
+
+### Fixed
+
+- macOS: `service start` on an unloaded job now bootstraps only (no
+  follow-up kickstart) and lets the plist's `RunAtLoad=true` start
+  the job. When the job is already loaded, `start` kickstarts as
+  before. Fixes the "Service started" false-positive when bootstrap
+  silently failed.
+- `service start`, `restart`, and `install` now poll `service status`
+  for up to 5s and throw a descriptive error (pointing at the stderr
+  log) if the service never reaches running state. No more commands
+  returning success while the dashboard is unreachable.
+- Linux: `service start`, `restart`, and `install` get the same
+  postcondition poll for symmetry.
+
 ## [0.3.0] - 2026-05-05
 
 UX polish release from AlignSmart dogfood feedback. Five install-time
