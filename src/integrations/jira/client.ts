@@ -60,6 +60,7 @@ export class JiraClient {
           headers: {
             Authorization: this.authHeader,
             Accept: "application/json",
+            "Accept-Language": "en",
             "Content-Type": "application/json",
             "User-Agent": this.userAgent,
           },
@@ -110,6 +111,7 @@ export class JiraClient {
       headers: {
         Authorization: this.authHeader,
         Accept: "application/json",
+        "Accept-Language": "en",
         "User-Agent": this.userAgent,
       },
     });

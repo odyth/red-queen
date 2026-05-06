@@ -257,6 +257,7 @@ export class JiraIssueTrackerAdapter implements IssueTracker {
         Authorization: this.client.authorization,
         // Jira's attachment CDN 406s when we narrow content negotiation to the declared MIME type.
         Accept: "*/*",
+        "Accept-Language": "en",
       },
     });
     if (response.ok === false) {
