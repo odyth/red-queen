@@ -14,7 +14,6 @@ function makeTask(overrides: Partial<Task> = {}): Task {
   return {
     id: "task-1",
     type: "coding",
-    priority: 1,
     issueId: "PROJ-1",
     status: "ready",
     description: null,

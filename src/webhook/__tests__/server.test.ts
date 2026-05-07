@@ -408,6 +408,7 @@ describe("WebhookServer pr-merged cleanup", () => {
       audit: audit3,
       gitRunner: (args, cwd) => {
         gitCalls.push({ args, cwd });
+        return Promise.resolve();
       },
     });
     webhook.register(dashboard3);
@@ -441,8 +442,8 @@ describe("WebhookServer pr-merged cleanup", () => {
     await new Promise((r) => setTimeout(r, 30));
 
     expect(gitCalls).toEqual([
-      { args: ["worktree", "remove", "--force", worktreeDir], cwd: tempDir3 },
-      { args: ["branch", "-D", "feature/PROJ-200"], cwd: tempDir3 },
+      { args: ["worktree", "remove", "--force", "--", worktreeDir], cwd: tempDir3 },
+      { args: ["branch", "-D", "--", "feature/PROJ-200"], cwd: tempDir3 },
     ]);
     const record = pipelineState3.get("PROJ-200");
     expect(record?.currentPhase).toBe("done");

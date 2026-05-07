@@ -42,7 +42,8 @@ interface TaskRow {
 //
 // `t.rowid` is the final tiebreaker: SQLite assigns a monotonic integer rowid
 // per insert, so tasks enqueued within the same ISO-ms have deterministic,
-// insertion-order dequeue. `tasks.id` contains random hex and is not ordered.
+// insertion-order dequeue. `tasks.id` has a ms-lexical prefix but a random
+// hex suffix, so it's not a reliable tiebreaker within the same ms.
 const ORDER_CLAUSE = "COALESCE(ps.created_at, t.created_at) ASC, t.created_at ASC, t.rowid ASC";
 
 // --- Implementation ---

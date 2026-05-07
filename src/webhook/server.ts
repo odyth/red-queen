@@ -1,5 +1,8 @@
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AuditLogger } from "../core/audit.js";
 import type { TaskQueue } from "../core/queue.js";
@@ -10,7 +13,7 @@ import type { IssueTracker } from "../integrations/issue-tracker.js";
 import type { SourceControl } from "../integrations/source-control.js";
 import type { DashboardServer, RouteHandler } from "../dashboard/server.js";
 
-export type GitRunner = (args: string[], cwd: string) => void;
+export type GitRunner = (args: string[], cwd: string) => Promise<void>;
 
 export interface WebhookServerDeps {
   issueTracker: IssueTracker;
@@ -253,7 +256,10 @@ export class WebhookServer {
         const projectDir = this.deps.runtime.config.project.directory;
         if (record.worktreePath !== null && existsSync(record.worktreePath)) {
           try {
-            this.gitRunner(["worktree", "remove", "--force", record.worktreePath], projectDir);
+            await this.gitRunner(
+              ["worktree", "remove", "--force", "--", record.worktreePath],
+              projectDir,
+            );
           } catch (err) {
             audit.log({
               component,
@@ -265,7 +271,7 @@ export class WebhookServer {
         }
         if (record.branchName !== null) {
           try {
-            this.gitRunner(["branch", "-D", record.branchName], projectDir);
+            await this.gitRunner(["branch", "-D", "--", record.branchName], projectDir);
           } catch (err) {
             audit.log({
               component,
@@ -389,6 +395,6 @@ function errorMessage(err: unknown): string {
   return String(err);
 }
 
-function defaultGitRunner(args: string[], cwd: string): void {
-  execFileSync("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
+async function defaultGitRunner(args: string[], cwd: string): Promise<void> {
+  await execFileAsync("git", args, { cwd });
 }
