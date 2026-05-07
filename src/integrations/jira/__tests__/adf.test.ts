@@ -104,6 +104,23 @@ describe("toAdf", () => {
     expect(list?.content?.[1]?.attrs?.state).toBe("DONE");
   });
 
+  it("assigns a string localId to taskList and taskItem", () => {
+    const doc = toAdf("- [ ] pending");
+    const list = doc.content?.[0];
+    expect(typeof list?.attrs?.localId).toBe("string");
+    expect((list?.attrs?.localId as string).length).toBeGreaterThan(0);
+    expect(typeof list?.content?.[0]?.attrs?.localId).toBe("string");
+  });
+
+  it("preserves content after a task list as a sibling bullet list", () => {
+    // ADF taskItem is inline-only, so indented bullets under a checkbox can't
+    // become children. They should survive as a following block, not vanish.
+    const doc = toAdf("- [ ] outer\n  - nested detail");
+    expect(doc.content?.[0]?.type).toBe("taskList");
+    const rendered = fromAdf(doc);
+    expect(rendered).toContain("nested detail");
+  });
+
   it("nests a bullet list inside a bullet list", () => {
     const doc = toAdf("- outer\n  - inner\n- back");
     const list = doc.content?.[0];

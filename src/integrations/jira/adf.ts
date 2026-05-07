@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 export interface AdfMark {
   type: string;
   attrs?: Record<string, unknown>;
@@ -25,6 +27,7 @@ const EM_UNDER_RE = /(?<![A-Za-z0-9_])_([^_\n]+)_(?![A-Za-z0-9_])/g;
 const STRIKE_RE = /~~([^~\n]+)~~/g;
 
 const FENCE_RE = /^```(.*)$/;
+const FENCE_CLOSE_RE = /^```\s*$/;
 const HEADING_RE = /^(#{1,6})\s+(.+?)\s*#*\s*$/;
 const RULE_RE = /^(?:-{3,}|\*{3,}|_{3,})\s*$/;
 const QUOTE_RE = /^>\s?(.*)$/;
@@ -40,7 +43,7 @@ type ListKind = "bullet" | "ordered" | "task";
  * - Paragraphs (split on blank lines)
  * - Fenced code blocks (```lang\n…\n```)
  * - Blockquotes (> line)
- * - Bullet, ordered, and task lists (with one level of nesting)
+ * - Bullet and ordered lists (one level of nesting); task lists (flat — taskItem is inline-only per ADF)
  * - Horizontal rules (--- / *** / ___)
  * - Inline code (`code`)
  * - Bold (**text** / __text__), italic (*text* / _text_), strikethrough (~~text~~)
@@ -53,14 +56,14 @@ type ListKind = "bullet" | "ordered" | "task";
  */
 export function toAdf(markdown: string): AdfDocument {
   const lines = markdown.split(/\r?\n/);
-  const content = parseBlocks(lines, 0, lines.length, 0);
+  const content = parseBlocks(lines, 0, lines.length);
   if (content.length === 0) {
     content.push({ type: "paragraph", content: [] });
   }
   return { type: "doc", version: 1, content };
 }
 
-function parseBlocks(lines: string[], start: number, end: number, minIndent: number): AdfNode[] {
+function parseBlocks(lines: string[], start: number, end: number): AdfNode[] {
   const blocks: AdfNode[] = [];
   let i = start;
   while (i < end) {
@@ -77,7 +80,7 @@ function parseBlocks(lines: string[], start: number, end: number, minIndent: num
       i++;
       while (i < end) {
         const next = lines[i] ?? "";
-        if (FENCE_RE.test(next)) {
+        if (FENCE_CLOSE_RE.test(next)) {
           i++;
           break;
         }
@@ -111,7 +114,7 @@ function parseBlocks(lines: string[], start: number, end: number, minIndent: num
       continue;
     }
 
-    const listKind = detectListKind(line, minIndent);
+    const listKind = detectListKind(line, 0);
     if (listKind !== null) {
       const { node, next } = parseList(lines, i, end, listKind.indent, listKind.kind);
       blocks.push(node);
@@ -144,7 +147,7 @@ function parseBlocks(lines: string[], start: number, end: number, minIndent: num
       if (candidate.trim().length === 0) {
         break;
       }
-      if (isBlockStart(candidate, minIndent)) {
+      if (isBlockStart(candidate)) {
         break;
       }
       paraLines.push(candidate);
@@ -160,7 +163,7 @@ function parseBlocks(lines: string[], start: number, end: number, minIndent: num
   return blocks;
 }
 
-function isBlockStart(line: string, minIndent: number): boolean {
+function isBlockStart(line: string): boolean {
   if (FENCE_RE.test(line)) {
     return true;
   }
@@ -173,7 +176,7 @@ function isBlockStart(line: string, minIndent: number): boolean {
   if (QUOTE_RE.test(line)) {
     return true;
   }
-  return detectListKind(line, minIndent) !== null;
+  return detectListKind(line, 0) !== null;
 }
 
 function detectListKind(
@@ -252,6 +255,18 @@ function parseList(
     }
     i++;
 
+    if (kind === "task") {
+      // ADF taskItem accepts inline content only — no nested lists or paragraphs.
+      // Don't peek for a nested block: we'd have to consume it and then throw
+      // it away. Leaving those lines for parseBlocks preserves the content.
+      items.push({
+        type: "taskItem",
+        attrs: { state: item.state ?? "TODO", localId: randomUUID() },
+        content: buildInline(item.text),
+      });
+      continue;
+    }
+
     const itemContent: AdfNode[] = [{ type: "paragraph", content: buildInline(item.text) }];
 
     // A nested list is a list whose indent is strictly greater than the
@@ -269,27 +284,17 @@ function parseList(
       }
     }
 
-    if (kind === "task") {
-      items.push({
-        type: "taskItem",
-        attrs: { state: item.state ?? "TODO", localId: null },
-        content: itemContent[0]?.content ?? [{ type: "text", text: item.text }],
-      });
-    } else {
-      items.push({ type: "listItem", content: itemContent });
-    }
+    items.push({ type: "listItem", content: itemContent });
   }
 
-  const wrapperType =
-    kind === "task" ? "taskList" : kind === "ordered" ? "orderedList" : "bulletList";
-  const attrs = kind === "task" ? { localId: null } : undefined;
-  return {
-    node:
-      attrs === undefined
-        ? { type: wrapperType, content: items }
-        : { type: wrapperType, attrs, content: items },
-    next: i,
-  };
+  if (kind === "task") {
+    return {
+      node: { type: "taskList", attrs: { localId: randomUUID() }, content: items },
+      next: i,
+    };
+  }
+  const wrapperType = kind === "ordered" ? "orderedList" : "bulletList";
+  return { node: { type: wrapperType, content: items }, next: i };
 }
 
 interface InlineToken {
