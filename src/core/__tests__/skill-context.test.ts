@@ -218,6 +218,43 @@ describe("renderSkillPrompt", () => {
     const rendered = renderSkillPrompt(context, body);
     expect(rendered.endsWith(body)).toBe(true);
   });
+
+  it("strips frontmatter with CRLF line endings", () => {
+    const runtime = makeRuntime();
+    const context = buildSkillContext({
+      runtime,
+      task: makeTask(),
+      pipelineRecord: makeRecord(),
+      phaseName: "coding",
+    });
+    const body = [
+      "---",
+      "name: coder",
+      "description: Implements a spec.",
+      "---",
+      "",
+      "# Coder",
+      "Body line.",
+    ].join("\r\n");
+    const rendered = renderSkillPrompt(context, body);
+    expect(rendered).not.toContain("name: coder");
+    expect(rendered).not.toContain("description: Implements a spec.");
+    expect(rendered).toContain("# Coder");
+    expect(rendered).toContain("Body line.");
+  });
+
+  it("leaves markdown unchanged when opening fence has no closing fence", () => {
+    const runtime = makeRuntime();
+    const context = buildSkillContext({
+      runtime,
+      task: makeTask(),
+      pipelineRecord: makeRecord(),
+      phaseName: "coding",
+    });
+    const body = "---\nname: coder\ndescription: no closing fence here\n\n# Coder\nBody line.";
+    const rendered = renderSkillPrompt(context, body);
+    expect(rendered.endsWith(body)).toBe(true);
+  });
 });
 
 describe("resolveSkillPath", () => {

@@ -65,8 +65,11 @@ jobs:
           python-version: "3.12"
 
       - name: Install skills-ref
+        env:
+          AGENTSKILLS_SHA: 2d3e01f590f68bee2cb76a3200823e93b2cc9eaa
         run: |
-          git clone --depth 1 https://github.com/agentskills/agentskills.git /tmp/agentskills
+          git clone https://github.com/agentskills/agentskills.git /tmp/agentskills
+          git -C /tmp/agentskills checkout "$AGENTSKILLS_SHA"
           python -m pip install --upgrade pip
           pip install /tmp/agentskills/skills-ref
 
