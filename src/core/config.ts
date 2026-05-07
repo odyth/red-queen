@@ -29,6 +29,7 @@ const PhaseDefinitionSchema = z.object({
   escalateTo: z.string().optional(),
   assignTo: z.enum(["ai", "human"]),
   priority: z.number().int().min(0).optional(),
+  requiresPr: z.boolean().optional(),
 });
 
 const WEBHOOK_PATH_RE = /^\/[A-Za-z0-9._~\-/]*$/;

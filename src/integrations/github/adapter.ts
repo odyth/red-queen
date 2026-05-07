@@ -281,11 +281,48 @@ export class GitHubSourceControlAdapter implements SourceControl {
         if (unresolvedOnly && node.isResolved) {
           continue;
         }
-        threads.push(toReviewThread(node));
+        const allComments = await this.loadAllThreadComments(prNumber, node);
+        threads.push(toReviewThread(node, allComments));
       }
       cursor = pr.reviewThreads.pageInfo.hasNextPage ? pr.reviewThreads.pageInfo.endCursor : null;
     } while (cursor !== null);
     return threads;
+  }
+
+  private async loadAllThreadComments(
+    prNumber: number,
+    node: ReviewThreadNode,
+  ): Promise<ReviewThreadCommentNode[]> {
+    const all: ReviewThreadCommentNode[] = [...node.comments.nodes];
+    if (node.comments.pageInfo.hasNextPage === false) {
+      return all;
+    }
+    this.audit(
+      `GitHub review thread has >100 comments — paginating remaining pages (totalCount=${String(node.comments.totalCount)})`,
+      {
+        pr: prNumber,
+        threadId: node.id,
+        totalCount: node.comments.totalCount,
+      },
+    );
+    let cursor: string | null = node.comments.pageInfo.endCursor;
+    while (cursor !== null) {
+      const page: ThreadCommentsPage = await this.client.call(
+        `GraphQL threadComments ${this.owner}/${this.repo}#${String(prNumber)} thread=${node.id}`,
+        () =>
+          this.client.octokit.graphql<ThreadCommentsPage>(THREAD_COMMENTS_QUERY, {
+            threadId: node.id,
+            cursor,
+          }),
+      );
+      const comments = page.node?.comments;
+      if (comments === undefined) {
+        break;
+      }
+      all.push(...comments.nodes);
+      cursor = comments.pageInfo.hasNextPage ? comments.pageInfo.endCursor : null;
+    }
+    return all;
   }
 
   async replyToComment(prNumber: number, commentId: number, body: string): Promise<void> {
@@ -468,6 +505,8 @@ query ReviewThreads($owner: String!, $repo: String!, $pr: Int!, $cursor: String)
           path
           line
           comments(first: 100) {
+            pageInfo { hasNextPage endCursor }
+            totalCount
             nodes {
               databaseId
               author { login }
@@ -475,6 +514,25 @@ query ReviewThreads($owner: String!, $repo: String!, $pr: Int!, $cursor: String)
               createdAt
             }
           }
+        }
+      }
+    }
+  }
+}`;
+
+// Follow-up query for threads whose comments exceed the first page. Keyed by
+// the thread's global node id so we can paginate a single thread independently.
+const THREAD_COMMENTS_QUERY = `
+query ThreadComments($threadId: ID!, $cursor: String) {
+  node(id: $threadId) {
+    ... on PullRequestReviewThread {
+      comments(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          databaseId
+          author { login }
+          body
+          createdAt
         }
       }
     }
@@ -492,6 +550,13 @@ interface ReviewThreadsPage {
   } | null;
 }
 
+interface ReviewThreadCommentNode {
+  databaseId: number | null;
+  author: { login?: string } | null;
+  body: string;
+  createdAt: string;
+}
+
 interface ReviewThreadNode {
   id: string;
   isResolved: boolean;
@@ -499,24 +564,44 @@ interface ReviewThreadNode {
   path: string | null;
   line: number | null;
   comments: {
-    nodes: {
-      databaseId: number | null;
-      author: { login?: string } | null;
-      body: string;
-      createdAt: string;
-    }[];
+    pageInfo: { hasNextPage: boolean; endCursor: string | null };
+    totalCount: number;
+    nodes: ReviewThreadCommentNode[];
   };
 }
 
-function toReviewThread(node: ReviewThreadNode): ReviewThread {
-  const comments: ReviewThreadComment[] = node.comments.nodes
-    .filter((c) => c.databaseId !== null)
-    .map((c) => ({
-      id: String(c.databaseId),
-      author: c.author?.login ?? "unknown",
-      body: c.body,
-      createdAt: c.createdAt,
-    }));
+interface ThreadCommentsPage {
+  node: {
+    comments: {
+      pageInfo: { hasNextPage: boolean; endCursor: string | null };
+      nodes: ReviewThreadCommentNode[];
+    };
+  } | null;
+}
+
+function toReviewThreadComment(c: ReviewThreadCommentNode): ReviewThreadComment | null {
+  if (c.databaseId === null) {
+    return null;
+  }
+  return {
+    id: String(c.databaseId),
+    author: c.author?.login ?? "unknown",
+    body: c.body,
+    createdAt: c.createdAt,
+  };
+}
+
+function toReviewThread(
+  node: ReviewThreadNode,
+  allComments: ReviewThreadCommentNode[],
+): ReviewThread {
+  const comments: ReviewThreadComment[] = [];
+  for (const raw of allComments) {
+    const mapped = toReviewThreadComment(raw);
+    if (mapped !== null) {
+      comments.push(mapped);
+    }
+  }
   return {
     threadId: node.id,
     isResolved: node.isResolved,

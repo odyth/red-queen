@@ -479,17 +479,20 @@ export class RedQueen {
     if (gate?.rework !== targetPhase) {
       return "skip";
     }
-    const record = this.deps.pipelineState.get(issueId);
-    const hasPr = record !== null && record.prNumber !== null;
-    if (targetPhase === "code-feedback" && hasPr === false) {
-      return "skip";
-    }
-    if (targetPhase === "spec-feedback" && hasPr) {
-      return "skip";
+    const targetPhaseDef = this.deps.runtime.phaseGraph.getPhase(targetPhase);
+    const requiresPr = targetPhaseDef?.requiresPr;
+    if (requiresPr !== undefined) {
+      const record = this.deps.pipelineState.get(issueId);
+      const hasPr = record !== null && record.prNumber !== null;
+      if (requiresPr === true && hasPr === false) {
+        return "skip";
+      }
+      if (requiresPr === false && hasPr === true) {
+        return "skip";
+      }
     }
     try {
       await this.deps.issueTracker.setPhase(issueId, targetPhase);
-      await this.deps.issueTracker.assignToAi(issueId);
     } catch (err) {
       this.deps.audit.log({
         component: "orchestrator",
@@ -499,7 +502,21 @@ export class RedQueen {
       });
       return "skip";
     }
+    // setPhase succeeded — commit the transition locally. assignToAi below is an
+    // ops signal (ticket assignee in the tracker UI); a failure there does not
+    // undo the phase change, so we still return "transitioned" and let the user
+    // see progress instead of apparent silence.
     this.deps.pipelineState.updatePhase(issueId, targetPhase);
+    try {
+      await this.deps.issueTracker.assignToAi(issueId);
+    } catch (err) {
+      this.deps.audit.log({
+        component: "orchestrator",
+        issueId,
+        message: `Auto-transition ${currentPhase} -> ${targetPhase}: assignToAi failed after setPhase succeeded: ${errorMessage(err)}`,
+        metadata: { taskId: task.id, from: currentPhase, to: targetPhase },
+      });
+    }
     this.deps.audit.log({
       component: "orchestrator",
       issueId,
@@ -514,7 +531,11 @@ export class RedQueen {
     phaseName: string,
     taskId: string,
   ): Promise<void> {
-    if (phaseName === "spec-writing") {
+    // Only re-read when the phase is downstream of a human gate (the gate's
+    // `next` or `rework` target). Those are the moments humans can inline-edit
+    // the spec on the tracker. Skipping mid-automation phases avoids a tracker
+    // round-trip per dispatch.
+    if (this.isPhaseAfterHumanGate(phaseName) === false) {
       return;
     }
     let fresh: string | null;
@@ -555,6 +576,18 @@ export class RedQueen {
       message: `Pre-dispatch: refreshed cached spec from tracker (was ${String(record.specContent?.length ?? 0)} chars, now ${String(fresh.length)} chars)`,
       metadata: { taskId, phase: phaseName },
     });
+  }
+
+  private isPhaseAfterHumanGate(phaseName: string): boolean {
+    for (const gate of this.deps.runtime.phaseGraph.getHumanGates()) {
+      if (gate.next === phaseName) {
+        return true;
+      }
+      if (gate.rework === phaseName) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private async dispatchWorkerForTask(task: Task, phase: PhaseDefinition): Promise<void> {

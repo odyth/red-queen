@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking (CLI output)**: `redqueen pr comments <pr>` now returns
+  only the comments on unresolved review threads. Previously it
+  returned every review comment on the PR, including those on
+  resolved threads. Pass `--include-resolved` to restore the old
+  behavior. Scripts that parsed the old output will see fewer
+  results after upgrade.
+- Phase definitions gain an optional `requiresPr` field. When set,
+  the orchestrator only auto-transitions into that phase (and the
+  pr-feedback webhook only enqueues it) when the PR-existence
+  matches — `requiresPr: true` needs a PR, `requiresPr: false`
+  requires no PR. Previously this routing was hardcoded to the
+  default phase names `code-feedback` / `spec-feedback`, silently
+  breaking customized phase graphs. The default phases now carry
+  the right `requiresPr` values, so no config change is required
+  for the default setup.
+- GitHub review-thread fetches now paginate per-thread comments
+  past the initial 100, so hot PRs with very long threads no
+  longer silently truncate.
+
 ### Fixed
 
 - macOS: `service start` after `service stop` again reloads and starts
@@ -18,6 +39,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after `bootstrap` (throwing a descriptive error if not) and then
   explicitly `kickstart` the job. `launchctl` stderr is now included
   in the thrown error when `bootstrap` itself fails.
+- Auto-transition from a human gate into its rework phase no longer
+  rolls back if `assignToAi` fails after `setPhase` succeeds. The
+  assignee is an ops signal; the phase change is the correctness
+  requirement, so we keep it and audit the assignToAi failure
+  instead of marking the task stale.
+- Orchestrator only re-reads the spec from the tracker when the
+  dispatching phase is a direct successor of a human gate (its
+  `next` or `rework` target). Previously every non-spec-writing
+  dispatch made an extra tracker round-trip, burning rate-limit
+  budget on phases where the human has no opportunity to edit.
 
 ## [0.3.1] - 2026-05-06
 

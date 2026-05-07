@@ -23,6 +23,7 @@ export class MockIssueTracker implements IssueTracker {
   parseResult: PipelineEvent | null = null;
   validateResult = true;
   calls: string[] = [];
+  getSpecThrowsFor = new Set<string>();
 
   async getIssue(issueId: string): Promise<Issue> {
     this.calls.push(`getIssue:${issueId}`);
@@ -62,6 +63,9 @@ export class MockIssueTracker implements IssueTracker {
   }
 
   getSpec(issueId: string): Promise<string | null> {
+    if (this.getSpecThrowsFor.has(issueId)) {
+      return Promise.reject(new Error(`mock getSpec failure for ${issueId}`));
+    }
     return Promise.resolve(this.specs.get(issueId) ?? null);
   }
 

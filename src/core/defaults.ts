@@ -27,6 +27,7 @@ export const DEFAULT_PHASES: PhaseDefinition[] = [
     escalateTo: "blocked",
     assignTo: "ai",
     priority: 0,
+    requiresPr: false,
   },
   {
     name: "coding",
@@ -74,6 +75,7 @@ export const DEFAULT_PHASES: PhaseDefinition[] = [
     escalateTo: "human-review",
     assignTo: "ai",
     priority: 0,
+    requiresPr: true,
   },
   {
     name: "blocked",

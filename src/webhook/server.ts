@@ -201,14 +201,27 @@ export class WebhookServer {
       case "pr-feedback": {
         const record = pipelineState.get(event.issueId);
         const hasPr = record !== null && record.prNumber !== null;
-        const taskType = hasPr ? "code-feedback" : "spec-feedback";
+        // Find the rework phase whose requiresPr matches current PR state. Looking up
+        // by metadata (not hardcoded "code-feedback"/"spec-feedback") lets customized
+        // phase graphs route correctly.
+        const reworkPhase = runtime.phaseGraph.getAllPhases().find((p) => p.requiresPr === hasPr);
+        if (reworkPhase === undefined) {
+          audit.log({
+            component,
+            issueId: event.issueId,
+            message: `pr-feedback: no phase with requiresPr=${String(hasPr)} in graph — dropping event`,
+            metadata: { hasPr },
+          });
+          break;
+        }
+        const taskType = reworkPhase.name;
         if (queue.hasOpenTask(event.issueId, taskType)) {
           break;
         }
         queue.enqueue({
           type: taskType,
           issueId: event.issueId,
-          priority: 0,
+          priority: reworkPhase.priority,
           description: "PR feedback",
         });
         audit.log({

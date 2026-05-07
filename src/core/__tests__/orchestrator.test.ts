@@ -593,6 +593,83 @@ describe("RedQueen orchestrator", () => {
     expect(stored?.result).toContain("Stale");
   });
 
+  it("keeps cached spec and logs when getSpec throws", async () => {
+    const auditPathLocal = auditPath;
+    const h = setupHarness(() =>
+      Promise.resolve({
+        success: false,
+        exitCode: 1,
+        elapsed: 1,
+        summary: "",
+        error: "stop cascade",
+      }),
+    );
+    // PROJ-90 is in coding (next-after-spec-review), so syncSpecFromTracker runs.
+    h.pipelineState.create("PROJ-90", "coding");
+    h.pipelineState.updateSpec("PROJ-90", "CACHED spec");
+    h.issueTracker.phases.set("PROJ-90", "coding");
+    h.issueTracker.getSpecThrowsFor.add("PROJ-90");
+    h.queue.enqueue({ type: "coding", issueId: "PROJ-90" });
+
+    await runUntilAfterRuns(h, 1);
+
+    // Cache preserved
+    expect(h.pipelineState.get("PROJ-90")?.specContent).toBe("CACHED spec");
+    // Audit logged the failure
+    const audit = readFileSync(auditPathLocal, "utf8");
+    expect(audit).toContain("Pre-dispatch spec re-read failed");
+  });
+
+  it("keeps cached spec and warns when tracker returns null but cache has content", async () => {
+    const auditPathLocal = auditPath;
+    const h = setupHarness(() =>
+      Promise.resolve({
+        success: false,
+        exitCode: 1,
+        elapsed: 1,
+        summary: "",
+        error: "stop cascade",
+      }),
+    );
+    h.pipelineState.create("PROJ-91", "coding");
+    h.pipelineState.updateSpec("PROJ-91", "CACHED spec");
+    h.issueTracker.phases.set("PROJ-91", "coding");
+    // Tracker has no spec stored — getSpec returns null
+    h.queue.enqueue({ type: "coding", issueId: "PROJ-91" });
+
+    await runUntilAfterRuns(h, 1);
+
+    // Cache preserved despite null from tracker
+    expect(h.pipelineState.get("PROJ-91")?.specContent).toBe("CACHED spec");
+    const audit = readFileSync(auditPathLocal, "utf8");
+    expect(audit).toContain("Tracker returned no spec but a cached spec exists");
+  });
+
+  it("updates pipelineState.currentPhase after successful auto-transition", async () => {
+    let phaseAtDispatch: string | null | undefined;
+    const h = setupHarness(() => {
+      // Capture the pipelineState record at the moment the worker runs — this
+      // is right after tryAutoTransitionRework has committed the transition
+      // and before handleFailure's retry/escalate cascade can mutate it.
+      phaseAtDispatch = h.pipelineState.get("PROJ-92")?.currentPhase;
+      return Promise.resolve({
+        success: false,
+        exitCode: 1,
+        elapsed: 1,
+        summary: "",
+        error: "stop cascade",
+      });
+    });
+    h.pipelineState.create("PROJ-92", "human-review");
+    h.pipelineState.updatePrNumber("PROJ-92", 42);
+    h.issueTracker.phases.set("PROJ-92", "human-review");
+    h.queue.enqueue({ type: "code-feedback", issueId: "PROJ-92" });
+
+    await runUntilAfterRuns(h, 1);
+
+    expect(phaseAtDispatch).toBe("code-feedback");
+  });
+
   it("transitionTo on failure passes stored delegator to assignToHuman", async () => {
     // Pre-bump reviewIterations past maxIterations so code-review failure escalates
     // immediately via transitionTo, which is the path that reads delegator.

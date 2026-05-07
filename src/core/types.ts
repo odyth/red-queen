@@ -16,6 +16,10 @@ export interface PhaseDefinition {
   escalateTo?: string;
   assignTo: AssignTo;
   priority?: number;
+  // When set, the phase is only executed if a PR's presence matches this value.
+  // true  → phase consumes PR-level feedback (e.g. code-feedback); skip when no PR.
+  // false → phase consumes tracker-level feedback pre-PR (e.g. spec-feedback); skip when a PR exists.
+  requiresPr?: boolean;
 }
 
 export class PhaseGraph {

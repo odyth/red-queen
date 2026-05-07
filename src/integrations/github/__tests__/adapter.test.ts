@@ -249,6 +249,8 @@ describe("GitHubSourceControlAdapter", () => {
                     path: "a.ts",
                     line: 5,
                     comments: {
+                      pageInfo: { hasNextPage: false, endCursor: null },
+                      totalCount: 1,
                       nodes: [
                         {
                           databaseId: 100,
@@ -266,6 +268,8 @@ describe("GitHubSourceControlAdapter", () => {
                     path: "b.ts",
                     line: 9,
                     comments: {
+                      pageInfo: { hasNextPage: false, endCursor: null },
+                      totalCount: 1,
                       nodes: [
                         {
                           databaseId: 101,
@@ -295,6 +299,8 @@ describe("GitHubSourceControlAdapter", () => {
                   path: "c.ts",
                   line: null,
                   comments: {
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                    totalCount: 1,
                     nodes: [
                       {
                         databaseId: 102,
@@ -331,7 +337,11 @@ describe("GitHubSourceControlAdapter", () => {
                 isOutdated: false,
                 path: "a.ts",
                 line: 1,
-                comments: { nodes: [] },
+                comments: {
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                  totalCount: 0,
+                  nodes: [],
+                },
               },
               {
                 id: "T2",
@@ -339,7 +349,11 @@ describe("GitHubSourceControlAdapter", () => {
                 isOutdated: false,
                 path: "b.ts",
                 line: 2,
-                comments: { nodes: [] },
+                comments: {
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                  totalCount: 0,
+                  nodes: [],
+                },
               },
             ],
           },
@@ -364,6 +378,8 @@ describe("GitHubSourceControlAdapter", () => {
                 path: "a.ts",
                 line: 1,
                 comments: {
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                  totalCount: 1,
                   nodes: [
                     {
                       databaseId: 12345,
@@ -389,6 +405,82 @@ describe("GitHubSourceControlAdapter", () => {
       return {};
     });
     await adapter.replyToComment(5, asInt, "thanks");
+  });
+
+  it("getReviewThreads paginates inner comments when a thread has >100", async () => {
+    const auditMessages: { msg: string; meta: Record<string, unknown> }[] = [];
+    const client = new GitHubClient({
+      auth: new StubAuth(),
+      octokit: fake.octokit as GitHubClient["octokit"],
+      sleep: () => Promise.resolve(),
+    });
+    const local = new GitHubSourceControlAdapter({
+      client,
+      owner: "me",
+      repo: "r",
+      webhookSecret: null,
+      audit: (msg, meta) => auditMessages.push({ msg, meta }),
+    });
+    fake.setGraphql((query, vars) => {
+      if (query.includes("ReviewThreads")) {
+        return {
+          repository: {
+            pullRequest: {
+              reviewThreads: {
+                pageInfo: { hasNextPage: false, endCursor: null },
+                nodes: [
+                  {
+                    id: "T1",
+                    isResolved: false,
+                    isOutdated: false,
+                    path: "a.ts",
+                    line: 1,
+                    comments: {
+                      pageInfo: { hasNextPage: true, endCursor: "cc1" },
+                      totalCount: 150,
+                      nodes: [
+                        {
+                          databaseId: 1,
+                          author: { login: "a" },
+                          body: "1",
+                          createdAt: "2026-01-01",
+                        },
+                      ],
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        };
+      }
+      // ThreadComments follow-up query
+      expect(vars.threadId).toBe("T1");
+      if (vars.cursor === "cc1") {
+        return {
+          node: {
+            comments: {
+              pageInfo: { hasNextPage: true, endCursor: "cc2" },
+              nodes: [
+                { databaseId: 2, author: { login: "a" }, body: "2", createdAt: "2026-01-01" },
+              ],
+            },
+          },
+        };
+      }
+      return {
+        node: {
+          comments: {
+            pageInfo: { hasNextPage: false, endCursor: null },
+            nodes: [{ databaseId: 3, author: { login: "a" }, body: "3", createdAt: "2026-01-01" }],
+          },
+        },
+      };
+    });
+    const threads = await local.getReviewThreads(5);
+    expect(threads).toHaveLength(1);
+    expect(threads[0]?.comments.map((c) => c.id)).toEqual(["1", "2", "3"]);
+    expect(auditMessages.some((m) => m.msg.includes(">100 comments"))).toBe(true);
   });
 
   it("maps check conclusions", async () => {
