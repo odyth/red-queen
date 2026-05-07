@@ -124,8 +124,98 @@ describe("PipelineStateStore", () => {
     expect(record?.feedbackIterations).toBe(0);
   });
 
+  it("resetIterations clears any stored plan-review verdict", () => {
+    store.create("PROJ-1");
+    store.setPlanReviewVerdict("PROJ-1", {
+      verdict: "approve",
+      rating: 9,
+      blockers: 0,
+      openQuestions: 1,
+      recordedAt: "2026-05-07T00:00:00.000Z",
+    });
+    expect(store.resetIterations("PROJ-1")).toBe(true);
+    expect(store.get("PROJ-1")?.planReviewVerdict).toBeNull();
+  });
+
   it("resetIterations returns false when no record exists", () => {
     expect(store.resetIterations("PROJ-NOBODY")).toBe(false);
+  });
+
+  it("hydrates planReviewVerdict as null by default", () => {
+    const record = store.create("PROJ-1");
+    expect(record.planReviewVerdict).toBeNull();
+  });
+
+  it("setPlanReviewVerdict stores and roundtrips the struct", () => {
+    store.create("PROJ-1");
+    expect(
+      store.setPlanReviewVerdict("PROJ-1", {
+        verdict: "approve",
+        rating: 9,
+        blockers: 0,
+        openQuestions: 0,
+        recordedAt: "2026-05-07T00:00:00.000Z",
+      }),
+    ).toBe(true);
+    expect(store.get("PROJ-1")?.planReviewVerdict).toEqual({
+      verdict: "approve",
+      rating: 9,
+      blockers: 0,
+      openQuestions: 0,
+      recordedAt: "2026-05-07T00:00:00.000Z",
+    });
+  });
+
+  it("setPlanReviewVerdict overwrites a prior verdict in place", () => {
+    store.create("PROJ-1");
+    store.setPlanReviewVerdict("PROJ-1", {
+      verdict: "request-changes",
+      rating: 4,
+      blockers: 3,
+      openQuestions: 2,
+      recordedAt: "2026-05-07T00:00:00.000Z",
+    });
+    store.setPlanReviewVerdict("PROJ-1", {
+      verdict: "approve",
+      rating: 8,
+      blockers: 0,
+      openQuestions: 1,
+      recordedAt: "2026-05-07T00:01:00.000Z",
+    });
+    const v = store.get("PROJ-1")?.planReviewVerdict;
+    expect(v?.verdict).toBe("approve");
+    expect(v?.rating).toBe(8);
+    expect(v?.blockers).toBe(0);
+    expect(v?.openQuestions).toBe(1);
+  });
+
+  it("setPlanReviewVerdict returns false when record is missing", () => {
+    expect(
+      store.setPlanReviewVerdict("PROJ-NOBODY", {
+        verdict: "approve",
+        rating: 9,
+        blockers: 0,
+        openQuestions: 0,
+        recordedAt: "2026-05-07T00:00:00.000Z",
+      }),
+    ).toBe(false);
+  });
+
+  it("clearPlanReviewVerdict nulls all verdict columns", () => {
+    store.create("PROJ-1");
+    store.setPlanReviewVerdict("PROJ-1", {
+      verdict: "request-changes",
+      rating: 5,
+      blockers: 2,
+      openQuestions: 1,
+      recordedAt: "2026-05-07T00:00:00.000Z",
+    });
+    expect(store.clearPlanReviewVerdict("PROJ-1")).toBe(true);
+    expect(store.get("PROJ-1")?.planReviewVerdict).toBeNull();
+  });
+
+  it("clearPlanReviewVerdict returns false when record is missing", () => {
+    expect(store.clearPlanReviewVerdict("PROJ-NOBODY")).toBe(false);
   });
 
   it("updates spec content", () => {

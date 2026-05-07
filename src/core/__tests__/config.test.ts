@@ -35,6 +35,7 @@ project:
     expect(config.pipeline.workerTimeout).toBe(2700);
     expect(config.pipeline.baseBranch).toBe("origin/main");
     expect(config.pipeline.webhooks.enabled).toBe(false);
+    expect(config.pipeline.skipSpecReviewIfReady).toBe(false);
     expect(config.dashboard.enabled).toBe(true);
     expect(config.dashboard.port).toBe(4400);
     expect(config.audit.logFile).toBe("audit.log");
@@ -56,6 +57,7 @@ project:
 pipeline:
   pollInterval: 60
   baseBranch: origin/develop
+  skipSpecReviewIfReady: true
 dashboard:
   port: 8080
 `;
@@ -64,6 +66,7 @@ dashboard:
     expect(config.project.directory).toBe("./src");
     expect(config.pipeline.pollInterval).toBe(60);
     expect(config.pipeline.baseBranch).toBe("origin/develop");
+    expect(config.pipeline.skipSpecReviewIfReady).toBe(true);
     expect(config.dashboard.port).toBe(8080);
   });
 

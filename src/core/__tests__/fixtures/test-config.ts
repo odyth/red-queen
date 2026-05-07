@@ -28,6 +28,7 @@ export function makeTestConfig(overrides: Partial<RedQueenConfig> = {}): RedQuee
       effort: "high",
       stallThresholdMs: 300000,
       reconcileInterval: 300,
+      skipSpecReviewIfReady: false,
     },
     phases: DEFAULT_PHASES,
     skills: { directory: ".redqueen/skills", disabled: [] },

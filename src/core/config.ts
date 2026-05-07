@@ -116,6 +116,7 @@ const ConfigSchema = z
         effort: z.string().default("high"),
         stallThresholdMs: z.number().default(300000),
         reconcileInterval: z.number().default(300),
+        skipSpecReviewIfReady: z.boolean().default(false),
       })
       .default({
         pollInterval: 30,
@@ -134,6 +135,7 @@ const ConfigSchema = z
         effort: "high",
         stallThresholdMs: 300000,
         reconcileInterval: 300,
+        skipSpecReviewIfReady: false,
       }),
     phases: z.array(PhaseDefinitionSchema).default(DEFAULT_PHASES),
     skills: z

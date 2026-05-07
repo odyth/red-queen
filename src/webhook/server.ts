@@ -210,10 +210,15 @@ export class WebhookServer {
       case "pr-feedback": {
         const record = pipelineState.get(event.issueId);
         const hasPr = record !== null && record.prNumber !== null;
-        // Find the rework phase whose requiresPr matches current PR state. Looking up
-        // by metadata (not hardcoded "code-feedback"/"spec-feedback") lets customized
-        // phase graphs route correctly.
-        const reworkPhase = runtime.phaseGraph.getAllPhases().find((p) => p.requiresPr === hasPr);
+        // Find the rework phase whose requiresPr matches current PR state.
+        // Restrict to "-feedback" phases so we don't accidentally pick a
+        // scored review phase (e.g. plan-review also has requiresPr: false).
+        // Looking up by metadata + name suffix (not hardcoded
+        // "code-feedback"/"spec-feedback") lets customized phase graphs
+        // route correctly as long as they follow the naming convention.
+        const reworkPhase = runtime.phaseGraph
+          .getAllPhases()
+          .find((p) => p.requiresPr === hasPr && p.name.endsWith("-feedback"));
         if (reworkPhase === undefined) {
           audit.log({
             component,

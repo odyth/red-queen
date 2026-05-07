@@ -348,6 +348,13 @@ export class RedQueen {
       return;
     }
 
+    // plan-review's forward edge reads this verdict from pipeline state. Clear
+    // stale values from previous attempts up front so a skill that forgets to
+    // call `redqueen plan verdict` can't leak a prior verdict forward.
+    if (phaseName === "plan-review") {
+      this.deps.pipelineState.clearPlanReviewVerdict(task.issueId);
+    }
+
     await this.dispatchWorkerForTask(task, phase);
   }
 
@@ -881,8 +888,43 @@ export class RedQueen {
     }
   }
 
+  // Plan-review is the only phase whose forward edge depends on a skill-emitted
+  // verdict. If the skill logged a clean pass (rating >= 8, zero blockers, zero
+  // open questions) AND the user opted into skipping the human gate, we jump
+  // straight to coding. Otherwise we fall through to phase.next (spec-review).
+  private resolvePlanReviewTarget(issueId: string, phase: PhaseDefinition, task: Task): string {
+    const record = this.deps.pipelineState.get(issueId);
+    const verdict = record?.planReviewVerdict ?? null;
+    const skipEnabled = this.deps.runtime.config.pipeline.skipSpecReviewIfReady;
+    const canSkip =
+      skipEnabled === true &&
+      verdict !== null &&
+      verdict.verdict === "approve" &&
+      verdict.rating >= 8 &&
+      verdict.blockers === 0 &&
+      verdict.openQuestions === 0;
+    if (canSkip === false) {
+      return phase.next;
+    }
+    this.deps.audit.log({
+      component: "orchestrator",
+      issueId,
+      message: `plan-review clean (${String(verdict.rating)}/10, 0 blockers, 0 open questions) — skipping spec-review gate`,
+      metadata: {
+        taskId: task.id,
+        rating: verdict.rating,
+        blockers: verdict.blockers,
+        openQuestions: verdict.openQuestions,
+      },
+    });
+    return "coding";
+  }
+
   private async advanceNormal(issueId: string, phase: PhaseDefinition, task: Task): Promise<void> {
-    const nextPhaseName = phase.next;
+    let nextPhaseName = phase.next;
+    if (phase.name === "plan-review") {
+      nextPhaseName = this.resolvePlanReviewTarget(issueId, phase, task);
+    }
     if (nextPhaseName === "done") {
       this.deps.pipelineState.updatePhase(issueId, "done");
       this.deps.audit.log({

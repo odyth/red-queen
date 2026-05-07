@@ -33,6 +33,11 @@ export const SCHEMA_SQL = `
     spec_content TEXT,
     prior_context TEXT,
     delegator_account_id TEXT,
+    plan_review_verdict TEXT,
+    plan_review_rating INTEGER,
+    plan_review_blockers INTEGER,
+    plan_review_open_questions INTEGER,
+    plan_review_recorded_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -100,6 +105,24 @@ export class RedQueenDatabase {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes("no such column") === false) {
         throw err;
+      }
+    }
+    // Phase 6: plan-review verdict columns on pipeline_state.
+    const planReviewColumns: string[] = [
+      "ALTER TABLE pipeline_state ADD COLUMN plan_review_verdict TEXT",
+      "ALTER TABLE pipeline_state ADD COLUMN plan_review_rating INTEGER",
+      "ALTER TABLE pipeline_state ADD COLUMN plan_review_blockers INTEGER",
+      "ALTER TABLE pipeline_state ADD COLUMN plan_review_open_questions INTEGER",
+      "ALTER TABLE pipeline_state ADD COLUMN plan_review_recorded_at TEXT",
+    ];
+    for (const stmt of planReviewColumns) {
+      try {
+        this.db.exec(stmt);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes("duplicate column") === false) {
+          throw err;
+        }
       }
     }
   }

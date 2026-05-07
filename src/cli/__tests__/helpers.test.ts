@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cmdIssue } from "../issue.js";
 import { cmdPipeline } from "../pipeline.js";
+import { cmdPlan } from "../plan.js";
 import { cmdPr } from "../pr.js";
 
 let tmp: string;
@@ -121,6 +122,128 @@ describe("cmdPr review via --body", () => {
     await expect(cmdPr(["review", "1", "--verdict", "hmm", "--body", "x"])).rejects.toThrow(
       /verdict/,
     );
+  });
+});
+
+describe("cmdPlan verdict", () => {
+  it("persists a clean pass verdict", async () => {
+    await cmdPlan([
+      "verdict",
+      "PLAN-1",
+      "--verdict",
+      "approve",
+      "--rating",
+      "9",
+      "--blockers",
+      "0",
+      "--open-questions",
+      "0",
+    ]);
+    const out = stdoutCapture.join("");
+    const parsed = JSON.parse(out) as {
+      ok: boolean;
+      verdict: string;
+      rating: number;
+      blockers: number;
+      openQuestions: number;
+    };
+    expect(parsed.ok).toBe(true);
+    expect(parsed.verdict).toBe("approve");
+    expect(parsed.rating).toBe(9);
+    expect(parsed.blockers).toBe(0);
+    expect(parsed.openQuestions).toBe(0);
+  });
+
+  it("persists a request-changes verdict", async () => {
+    await cmdPlan([
+      "verdict",
+      "PLAN-2",
+      "--verdict",
+      "request-changes",
+      "--rating",
+      "4",
+      "--blockers",
+      "3",
+      "--open-questions",
+      "2",
+    ]);
+    const parsed = JSON.parse(stdoutCapture.join("")) as {
+      verdict: string;
+      rating: number;
+      blockers: number;
+      openQuestions: number;
+    };
+    expect(parsed.verdict).toBe("request-changes");
+    expect(parsed.rating).toBe(4);
+    expect(parsed.blockers).toBe(3);
+    expect(parsed.openQuestions).toBe(2);
+  });
+
+  it("rejects an invalid verdict value", async () => {
+    await expect(
+      cmdPlan([
+        "verdict",
+        "PLAN-3",
+        "--verdict",
+        "maybe",
+        "--rating",
+        "8",
+        "--blockers",
+        "0",
+        "--open-questions",
+        "0",
+      ]),
+    ).rejects.toThrow(/verdict/);
+  });
+
+  it("rejects a rating outside [1,10]", async () => {
+    await expect(
+      cmdPlan([
+        "verdict",
+        "PLAN-4",
+        "--verdict",
+        "approve",
+        "--rating",
+        "11",
+        "--blockers",
+        "0",
+        "--open-questions",
+        "0",
+      ]),
+    ).rejects.toThrow(/rating/);
+  });
+
+  it("rejects negative blockers", async () => {
+    await expect(
+      cmdPlan([
+        "verdict",
+        "PLAN-5",
+        "--verdict",
+        "approve",
+        "--rating",
+        "8",
+        "--blockers",
+        "-1",
+        "--open-questions",
+        "0",
+      ]),
+    ).rejects.toThrow(/blockers/);
+  });
+
+  it("errors without issueId", async () => {
+    await expect(
+      cmdPlan([
+        "verdict",
+        "--verdict",
+        "approve",
+        "--rating",
+        "8",
+        "--blockers",
+        "0",
+        "--open-questions",
+        "0",
+      ]),
+    ).rejects.toThrow(/issueId/);
   });
 });
 

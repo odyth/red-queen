@@ -206,19 +206,32 @@ for the next phase.
   the orchestrator from the tracker before this dispatch — so inline
   human edits made on the spec custom field or marker comment during
   spec-review are already folded in. That is what you are revising.
-- Fetch comments: `redqueen issue comments <issueId>`. Find the most recent
-  human feedback — that is what you must address.
+- `priorContext` in the context block carries the summary of whoever
+  triggered this feedback pass — either the planning-review skill (when
+  plan-review failed) or human commentary picked up on exit from the
+  spec-review gate. Read it before anything else; it names the upstream.
+- Fetch comments: `redqueen issue comments <issueId>`. Find the most
+  recent human feedback, if any. When the upstream is plan-review there
+  may be no new human comments — the verdict body (blockers, required
+  decisions) IS the feedback, and it has already been surfaced via
+  `priorContext`.
 - Attachments may have changed — re-run `redqueen issue attachments` and
   re-read any new images.
 
 ### Rev Step 2: Analyze the feedback
 
-For each point, classify it:
+For each point — whether it came from a human comment or from a
+plan-review verdict summary — classify it:
 
 - **Diagnosis change** — the reviewer disagrees with the root cause.
 - **Scope change** — files or acceptance criteria are added or removed.
 - **Question answered** — the reviewer resolved an Open Question.
 - **Clarification** — wording or structure needs adjustment.
+
+Plan-review blockers will typically land as "Diagnosis change" or
+"Clarification" — they name a decision the spec must lock in, not a
+request to do the implementation. Address the decision; do not bloat the
+spec with plan-review's own commentary.
 
 ### Rev Step 3: Refresh the worktree
 

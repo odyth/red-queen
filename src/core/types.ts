@@ -128,6 +128,16 @@ export interface NewTask {
 
 // --- Pipeline state ---
 
+export type PlanReviewVerdictKind = "approve" | "request-changes";
+
+export interface PlanReviewVerdict {
+  verdict: PlanReviewVerdictKind;
+  rating: number;
+  blockers: number;
+  openQuestions: number;
+  recordedAt: string;
+}
+
 export interface PipelineRecord {
   issueId: string;
   currentPhase: string | null;
@@ -139,6 +149,7 @@ export interface PipelineRecord {
   specContent: string | null;
   priorContext: string | null;
   delegatorAccountId: string | null;
+  planReviewVerdict: PlanReviewVerdict | null;
   createdAt: string;
   updatedAt: string;
 }

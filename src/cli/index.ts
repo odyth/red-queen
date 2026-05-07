@@ -7,6 +7,7 @@ import { cmdStop } from "./stop.js";
 import { cmdStatus } from "./status.js";
 import { cmdIssue } from "./issue.js";
 import { cmdSpec } from "./spec.js";
+import { cmdPlan } from "./plan.js";
 import { cmdPr } from "./pr.js";
 import { cmdPipeline } from "./pipeline.js";
 import { cmdService } from "./service.js";
@@ -42,6 +43,9 @@ async function main(argv: string[]): Promise<void> {
       return;
     case "spec":
       await cmdSpec(rest);
+      return;
+    case "plan":
+      await cmdPlan(rest);
       return;
     case "pr":
       await cmdPr(rest);
