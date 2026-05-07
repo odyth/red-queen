@@ -76,14 +76,20 @@ identify the affected code. If it does not, route to awaiting info:
    echo "<questions>" | redqueen issue comment <issueId>
    ```
 
-2. Move the issue into the Awaiting Info human-gate:
+2. Move the issue into the Awaiting Info human-gate. Check the exit
+   code — if the phase is missing from the configured graph or the
+   tracker rejects the call, `set-phase` exits non-zero:
 
    ```
-   redqueen issue set-phase <issueId> spec-awaiting-info
+   if ! redqueen issue set-phase <issueId> spec-awaiting-info; then
+     echo "Could not route to spec-awaiting-info — summary: phase-change failed"
+     exit 1
+   fi
    ```
 
-3. Exit 0. The orchestrator respects the phase change and reassigns the
-   ticket to the reporter.
+3. Exit 0 on success. The orchestrator respects the phase change and
+   reassigns the ticket to the reporter. A non-zero exit lets the
+   orchestrator retry or escalate rather than silently advancing.
 
 Only use this route for "reporter can answer with a comment" questions.
 For structural blockers (the change contradicts code reality,
@@ -240,10 +246,15 @@ not keep grinding.
 1. Post a `redqueen issue comment` explaining what is blocking you, what
    you have tried, and what the human needs to provide.
 2. Move the issue into the Blocked human-gate so the orchestrator stops
-   advancing the pipeline and assigns the reporter:
+   advancing the pipeline and assigns the reporter. Exit non-zero if
+   the set-phase call fails so the orchestrator doesn't advance
+   normally:
 
    ```
-   redqueen issue set-phase <issueId> blocked
+   if ! redqueen issue set-phase <issueId> blocked; then
+     echo "Could not route to blocked — summary: phase-change failed"
+     exit 1
+   fi
    ```
 
 3. Your final stdout summary should say "Blocked — <reason>" so

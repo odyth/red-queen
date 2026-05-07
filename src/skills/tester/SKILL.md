@@ -32,14 +32,21 @@ coder created at `.redqueen/worktrees/<issueId>` inside `projectDir`.
 
 1. If `codebaseMapPath` is non-null, read it for context.
 2. Determine the worktree path: `${projectDir}/.redqueen/worktrees/${issueId}`.
-3. If the worktree does not exist, route back to coding:
+3. If the worktree does not exist, route back to coding. Check the exit
+   code — if set-phase fails (misconfigured phase graph), exit non-zero
+   so the orchestrator retries rather than silently advancing to
+   human-review:
 
    ```
-   redqueen issue set-phase "${issueId}" coding
+   if ! redqueen issue set-phase "${issueId}" coding; then
+     echo "Could not route to coding — summary: phase-change failed"
+     exit 1
+   fi
    ```
 
-   Exit 0. Audit log only — do not post a tracker comment. The orchestrator
-   will respect the phase change and re-dispatch the coder.
+   Exit 0 on success. Audit log only — do not post a tracker comment.
+   The orchestrator will respect the phase change and re-dispatch the
+   coder.
 
 4. Fetch attachments:
    ```
@@ -144,10 +151,14 @@ external service outage):
    echo "<same text>" | redqueen pr review <prNumber> --verdict request-changes
    ```
 3. Move the issue into the Blocked human-gate so the orchestrator stops
-   advancing the pipeline and assigns the reporter:
+   advancing the pipeline and assigns the reporter. Exit non-zero on
+   failure so the orchestrator doesn't advance normally:
 
    ```
-   redqueen issue set-phase "${issueId}" blocked
+   if ! redqueen issue set-phase "${issueId}" blocked; then
+     echo "Could not route to blocked — summary: phase-change failed"
+     exit 1
+   fi
    ```
 
 4. Your summary: "Blocked on infrastructure — <cause>."

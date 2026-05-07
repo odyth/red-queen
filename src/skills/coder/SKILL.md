@@ -56,15 +56,20 @@ Read the YAML context block. Fields you rely on:
 ### Step 1: Verify the spec exists
 
 If `specContent` is null or trivially empty, route back to spec-writing
-instead of escalating:
+instead of escalating. Check the exit code — if set-phase fails (e.g.
+misconfigured phase graph), exit non-zero so the orchestrator retries
+rather than silently advancing:
 
 ```
-redqueen issue set-phase "${issueId}" spec-writing
+if ! redqueen issue set-phase "${issueId}" spec-writing; then
+  echo "Could not route to spec-writing — summary: phase-change failed"
+  exit 1
+fi
 ```
 
-Exit 0. Audit log only — do not post a tracker comment. The orchestrator
-will respect the phase change and re-run the prompt-writer to regenerate
-the spec. Humans don't need to see transient auto-recovery.
+Exit 0 on success. Audit log only — do not post a tracker comment. The
+orchestrator will respect the phase change and re-run the prompt-writer
+to regenerate the spec. Humans don't need to see transient auto-recovery.
 
 ### Step 2: Resolve names
 
@@ -209,10 +214,14 @@ Steps:
 2. If a PR exists, also `redqueen pr review <prNumber> --verdict request-changes`
    with the same text so the human sees it from either place.
 3. Move the issue into the Blocked human-gate so the orchestrator stops
-   advancing the pipeline and assigns the reporter:
+   advancing the pipeline and assigns the reporter. Exit non-zero on
+   failure so the orchestrator doesn't advance normally:
 
    ```
-   redqueen issue set-phase "${issueId}" blocked
+   if ! redqueen issue set-phase "${issueId}" blocked; then
+     echo "Could not route to blocked — summary: phase-change failed"
+     exit 1
+   fi
    ```
 
 4. Exit. Include "Blocked — <reason>" in your stdout summary.

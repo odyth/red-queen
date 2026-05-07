@@ -1,6 +1,7 @@
 import { mkdirSync, existsSync } from "node:fs";
 import { basename, resolve, sep } from "node:path";
 import { parseArgs } from "node:util";
+import { buildPhaseGraph } from "../core/config.js";
 import { loadCliContext } from "./context.js";
 import { CliError } from "./errors.js";
 import { readBodyFromStdinOrFlag, writeJson } from "./io.js";
@@ -42,6 +43,17 @@ async function cmdIssueSetPhase(args: string[]): Promise<void> {
   }
   const ctx = loadCliContext();
   try {
+    // Skills invoke this CLI and can be tricked by untrusted comment content
+    // into passing an attacker-chosen phase. Reject anything outside the
+    // configured graph before touching the tracker — the graph is the
+    // authority on which phases exist.
+    const phaseGraph = buildPhaseGraph(ctx.config.phases);
+    if (phaseGraph.has(phaseName) === false) {
+      const valid = phaseGraph.getPhaseNames().join(", ");
+      throw new CliError(
+        `issue set-phase: '${phaseName}' is not a configured phase. Valid: [${valid}].`,
+      );
+    }
     await ctx.issueTracker.setPhase(issueId, phaseName);
     ctx.audit.log({
       component: "helper:issue",

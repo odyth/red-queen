@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking (Jira config)**: missing `phaseMapping` entries in
+  `redqueen.yaml` are now startup errors, not warnings. Before,
+  `redqueen start` would print a warning and continue; now it
+  refuses to start until every phase in the graph has a mapping.
+  The goal is to surface typos at boot instead of letting
+  `setPhase` fail silently mid-pipeline. The default phase graph
+  added `spec-awaiting-info` in this release, so upgraders on Jira
+  need to add a `phaseMapping.spec-awaiting-info` entry (run
+  `redqueen jira discover` to auto-resolve it) before starting.
 - **Breaking (CLI output)**: `redqueen pr comments <pr>` now returns
   only the comments on unresolved review threads. Previously it
   returned every review comment on the PR, including those on

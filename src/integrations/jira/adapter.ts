@@ -393,15 +393,18 @@ export class JiraIssueTrackerAdapter implements IssueTracker {
     try {
       await this.transitionTo(issueId, target);
     } catch (err) {
-      // Two shapes land here: (a) issue already in `target` — Jira's transitions
-      // API only lists moves available *from* the current state, so a same-state
-      // request throws "no transition available to X"; (b) real config bugs
-      // (typo in statusTransitions.inProgress, workflow permissions). Swallow
-      // both so dispatch doesn't fail; operators see (b) in the audit log.
-      this.audit(
-        `Jira: markInProgress non-fatal error: ${err instanceof Error ? err.message : String(err)}`,
-        { issueId, target },
-      );
+      const message = err instanceof Error ? err.message : String(err);
+      // Jira's transitions API only lists moves available *from* the current
+      // state, so requesting a transition to the state the issue is already
+      // in throws "no transition available to X". That's the no-op case and
+      // happens on every retry and every feedback-loop trip — drop it
+      // silently. Real config bugs (typo in statusTransitions.inProgress,
+      // workflow permissions, etc.) have different error shapes and still
+      // surface in the audit log.
+      if (message.includes(`no transition available to '${target}'`)) {
+        return;
+      }
+      this.audit(`Jira: markInProgress non-fatal error: ${message}`, { issueId, target });
     }
   }
 

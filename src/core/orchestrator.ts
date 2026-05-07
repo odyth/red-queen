@@ -599,15 +599,21 @@ export class RedQueen {
   }
 
   private isPhaseAfterHumanGate(phaseName: string): boolean {
-    // Only count review-style gates (those with a `rework` branch) — those are
-    // the ones where humans inline-edit the spec before moving forward. Gates
-    // without a rework branch (blocked, spec-awaiting-info) exist to pause
-    // the pipeline for out-of-band input that does not live in the spec field,
-    // so there's nothing to re-sync when leaving them.
+    // Entry phases (the ones with no inbound `next` edge, i.e. spec-writing)
+    // author the spec fresh, so there's nothing to re-sync on their first
+    // dispatch — skip them regardless of which gate points here. Every other
+    // phase reachable from a gate's `next`/`rework` is a spot a human may
+    // have inline-edited the spec on the tracker, so we re-read it before
+    // dispatch. This keeps blocked → coding covered (humans plausibly edit
+    // the spec there before unblocking) while still short-circuiting
+    // spec-awaiting-info → spec-writing.
+    const entryPhaseNames = new Set(
+      this.deps.runtime.phaseGraph.getEntryPhases().map((p) => p.name),
+    );
+    if (entryPhaseNames.has(phaseName)) {
+      return false;
+    }
     for (const gate of this.deps.runtime.phaseGraph.getHumanGates()) {
-      if (gate.rework === undefined) {
-        continue;
-      }
       if (gate.next === phaseName) {
         return true;
       }
@@ -972,16 +978,27 @@ export class RedQueen {
     const escalateTo = phase.escalateTo;
 
     if (onFail !== undefined && onFail !== "done") {
-      const iter = this.deps.pipelineState.incrementReviewIterations(issueId);
-      const maxIter = phase.maxIterations;
-      if (
-        maxIter !== undefined &&
-        iter > maxIter &&
-        escalateTo !== undefined &&
-        escalateTo !== "done"
-      ) {
-        await this.transitionTo(issueId, escalateTo, task);
-        return;
+      // reviewIterations measures automated-retry pressure within a single
+      // review loop. When onFail points at a human-gate (e.g. spec-writing →
+      // spec-awaiting-info), there's no automated retry happening — the
+      // human is taking over — so don't bump the counter. The gate-leave
+      // reset on the way back would zero it anyway, but skipping the
+      // increment keeps the semantics clean and avoids confusing audit
+      // entries.
+      const onFailPhase = this.deps.runtime.phaseGraph.getPhase(onFail);
+      const onFailIsAutomated = onFailPhase?.type === "automated";
+      if (onFailIsAutomated) {
+        const iter = this.deps.pipelineState.incrementReviewIterations(issueId);
+        const maxIter = phase.maxIterations;
+        if (
+          maxIter !== undefined &&
+          iter > maxIter &&
+          escalateTo !== undefined &&
+          escalateTo !== "done"
+        ) {
+          await this.transitionTo(issueId, escalateTo, task);
+          return;
+        }
       }
       await this.transitionTo(issueId, onFail, task);
       return;
