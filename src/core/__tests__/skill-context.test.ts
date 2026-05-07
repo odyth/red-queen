@@ -179,6 +179,45 @@ describe("renderSkillPrompt", () => {
     expect(rendered).toContain("issueId: PROJ-1");
     expect(rendered).toContain("# Skill content");
   });
+
+  it("strips agentskills YAML frontmatter from skill body", () => {
+    const runtime = makeRuntime();
+    const context = buildSkillContext({
+      runtime,
+      task: makeTask(),
+      pipelineRecord: makeRecord(),
+      phaseName: "coding",
+    });
+    const body = [
+      "---",
+      "name: coder",
+      "description: Implements a spec.",
+      "metadata:",
+      "  phase: coding",
+      "---",
+      "",
+      "# Coder",
+      "Body line.",
+    ].join("\n");
+    const rendered = renderSkillPrompt(context, body);
+    expect(rendered).not.toContain("name: coder");
+    expect(rendered).not.toContain("description: Implements a spec.");
+    expect(rendered).toContain("# Coder");
+    expect(rendered).toContain("Body line.");
+  });
+
+  it("leaves markdown unchanged when there is no frontmatter", () => {
+    const runtime = makeRuntime();
+    const context = buildSkillContext({
+      runtime,
+      task: makeTask(),
+      pipelineRecord: makeRecord(),
+      phaseName: "coding",
+    });
+    const body = "# Skill\n\nJust body, no frontmatter.";
+    const rendered = renderSkillPrompt(context, body);
+    expect(rendered.endsWith(body)).toBe(true);
+  });
 });
 
 describe("resolveSkillPath", () => {

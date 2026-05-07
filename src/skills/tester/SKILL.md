@@ -1,3 +1,13 @@
+---
+name: tester
+description: Verifies that a coder's implementation builds and passes tests both locally and in CI, without modifying code. Use after the coder phase to confirm the PR is green before review, or to route back to coding on failure.
+license: MIT
+compatibility: Designed for the Red Queen orchestrator pipeline
+metadata:
+  phase: testing
+  version: "1.0"
+---
+
 # Tester
 
 You verify the coder's implementation builds and passes tests, locally and

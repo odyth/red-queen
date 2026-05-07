@@ -51,3 +51,31 @@ jobs:
 
       - name: Run tests
         run: npm run test:ci
+
+  skills-validate:
+    name: Validate Agent Skills
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install skills-ref
+        run: |
+          git clone --depth 1 https://github.com/agentskills/agentskills.git /tmp/agentskills
+          python -m pip install --upgrade pip
+          pip install /tmp/agentskills/skills-ref
+
+      - name: Validate built-in skills
+        run: |
+          set -e
+          for skill in src/skills/*/; do
+            if [ -f "${skill}SKILL.md" ]; then
+              echo "Validating $skill"
+              skills-ref validate "$skill"
+            fi
+          done

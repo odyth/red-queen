@@ -100,7 +100,19 @@ function relevantIterationCount(phaseName: string, record: PipelineRecord): numb
 
 export function renderSkillPrompt(context: SkillContext, skillMarkdown: string): string {
   const yamlBlock = stringifyYaml(context, { lineWidth: 0 });
-  return `\`\`\`yaml context\n${yamlBlock}\`\`\`\n\n${skillMarkdown}`;
+  return `\`\`\`yaml context\n${yamlBlock}\`\`\`\n\n${stripFrontmatter(skillMarkdown)}`;
+}
+
+function stripFrontmatter(markdown: string): string {
+  if (markdown.startsWith("---\n") === false && markdown.startsWith("---\r\n") === false) {
+    return markdown;
+  }
+  const closingMatch = /\r?\n---\r?\n/.exec(markdown);
+  if (closingMatch === null) {
+    return markdown;
+  }
+  const end = closingMatch.index + closingMatch[0].length;
+  return markdown.slice(end).replace(/^\r?\n+/, "");
 }
 
 export function resolveSkillPath(

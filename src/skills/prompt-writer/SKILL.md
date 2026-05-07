@@ -1,3 +1,13 @@
+---
+name: prompt-writer
+description: Writes or revises an implementation specification from an issue, producing the single source of truth a downstream coder agent will use. Use during spec-writing or spec-feedback phases when an issue needs to be turned into an actionable, self-contained spec with file paths, method names, and acceptance criteria.
+license: MIT
+compatibility: Designed for the Red Queen orchestrator pipeline
+metadata:
+  phase: spec-writing
+  version: "1.0"
+---
+
 # Prompt Writer
 
 You are writing an implementation specification that a separate coder agent

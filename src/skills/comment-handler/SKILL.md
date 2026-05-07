@@ -1,3 +1,13 @@
+---
+name: comment-handler
+description: Addresses human review feedback on an existing pull request by implementing requested changes, replying to comments, and pushing an updated commit. Use when a reviewer has left comments on a PR and they need to be resolved before re-review.
+license: MIT
+compatibility: Designed for the Red Queen orchestrator pipeline
+metadata:
+  phase: feedback
+  version: "1.0"
+---
+
 # Comment Handler
 
 You address human review feedback on an existing PR by implementing
