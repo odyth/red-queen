@@ -5,7 +5,7 @@ All notable changes to Red Queen are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.0] - YYYY-MM-DD
 
 ### Changed
 
@@ -24,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resolved threads. Pass `--include-resolved` to restore the old
   behavior. Scripts that parsed the old output will see fewer
   results after upgrade.
+- **Breaking (phase schema)**: `PhaseDefinition.priority` has been
+  removed and the phase schema is now strict — unknown keys are
+  rejected at load time. Custom `redqueen.yaml` phase entries that
+  carry `priority: N` will fail startup with a schema error. Delete
+  the field; queue ordering is now derived from phase topology, not
+  per-phase priority.
 - Phase definitions gain an optional `requiresPr` field. When set,
   the orchestrator only auto-transitions into that phase (and the
   pr-feedback webhook only enqueues it) when the PR-existence
@@ -39,15 +45,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- macOS: `service start` after `service stop` again reloads and starts
-  the LaunchAgent. 0.3.1 removed the post-bootstrap `kickstart` on a
-  race theory that didn't hold up; in practice `launchctl bootstrap`
-  exits 0 but silently no-ops on some macOS releases, so with no
-  `kickstart` the job never ran and the 5s postcondition poll timed
-  out. `start` and `restart` now verify the job actually registered
-  after `bootstrap` (throwing a descriptive error if not) and then
-  explicitly `kickstart` the job. `launchctl` stderr is now included
-  in the thrown error when `bootstrap` itself fails.
 - Auto-transition from a human gate into its rework phase no longer
   rolls back if `assignToAi` fails after `setPhase` succeeds. The
   assignee is an ops signal; the phase change is the correctness
@@ -58,6 +55,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `next` or `rework` target). Previously every non-spec-writing
   dispatch made an extra tracker round-trip, burning rate-limit
   budget on phases where the human has no opportunity to edit.
+
+## [0.3.3] - 2026-05-06
+
+### Fixed
+
+- Jira client now forces `Accept-Language: en` on every request so
+  error messages surface in English regardless of the service
+  account's locale. Localized error text from non-English tenants
+  was breaking the adapter's error-message pattern matching.
+
+## [0.3.2] - 2026-05-06
+
+### Fixed
+
+- macOS: `service start` after `service stop` again reloads and starts
+  the LaunchAgent. 0.3.1 removed the post-bootstrap `kickstart` on a
+  race theory that didn't hold up; in practice `launchctl bootstrap`
+  exits 0 but silently no-ops on some macOS releases, so with no
+  `kickstart` the job never ran and the 5s postcondition poll timed
+  out. `start` and `restart` now verify the job actually registered
+  after `bootstrap` (throwing a descriptive error if not) and then
+  explicitly `kickstart` the job. `launchctl` stderr is now included
+  in the thrown error when `bootstrap` itself fails.
 
 ## [0.3.1] - 2026-05-06
 
