@@ -285,6 +285,27 @@ export class RedQueen {
       return;
     }
 
+    // If pipeline_state's last phase was a human-gate, we're leaving it now.
+    // Reset iteration counters so reopens/reworks start fresh. Lives at the
+    // top of processTask so it fires once per gate-leave regardless of source
+    // (webhook phase-change / pr-feedback / assignment-change / new-ticket,
+    // poller, reconciler) — none of those paths mutate current_phase before
+    // enqueueing, so reading the record here still sees the gate.
+    const gateLeavePhase = this.deps.pipelineState.get(task.issueId)?.currentPhase ?? null;
+    if (gateLeavePhase !== null && this.deps.runtime.phaseGraph.isHumanGate(gateLeavePhase)) {
+      this.deps.pipelineState.resetIterations(task.issueId);
+      this.deps.audit.log({
+        component: "orchestrator",
+        issueId: task.issueId,
+        message: `Leaving human gate ${gateLeavePhase} — reset iteration counters`,
+        metadata: {
+          taskId: task.id,
+          fromGate: gateLeavePhase,
+          toPhase: task.type,
+        },
+      });
+    }
+
     if (task.type === "new-ticket") {
       await this.processNewTicketTask(task);
       return;
@@ -578,7 +599,15 @@ export class RedQueen {
   }
 
   private isPhaseAfterHumanGate(phaseName: string): boolean {
+    // Only count review-style gates (those with a `rework` branch) — those are
+    // the ones where humans inline-edit the spec before moving forward. Gates
+    // without a rework branch (blocked, spec-awaiting-info) exist to pause
+    // the pipeline for out-of-band input that does not live in the spec field,
+    // so there's nothing to re-sync when leaving them.
     for (const gate of this.deps.runtime.phaseGraph.getHumanGates()) {
+      if (gate.rework === undefined) {
+        continue;
+      }
       if (gate.next === phaseName) {
         return true;
       }
@@ -684,6 +713,21 @@ export class RedQueen {
     }
 
     const prompt = `Read and follow ${tempPath} exactly.`;
+
+    // Best-effort Jira "In Progress" transition. Awaited so the status flips
+    // before the worker spawns (ops visibility) — don't "optimize" to
+    // fire-and-forget, that races the worker's "starting work" log output.
+    // Adapter swallows its own errors; this outer catch is defense-in-depth.
+    try {
+      await this.deps.issueTracker.markInProgress(issueId);
+    } catch (err) {
+      this.deps.audit.log({
+        component: "orchestrator",
+        issueId,
+        message: `markInProgress failed (non-fatal): ${errorMessage(err)}`,
+        metadata: { taskId: task.id, phase: phase.name },
+      });
+    }
 
     this.deps.queue.markWorking(task.id);
     this.deps.orchestratorState.setStatus("working");
@@ -799,7 +843,27 @@ export class RedQueen {
       message: `Agent changed phase to ${newPhase} — respecting agent decision`,
       metadata: { taskId: task.id, newPhase },
     });
-    if (phaseDef === undefined || phaseDef.type === "human-gate") {
+    if (phaseDef === undefined) {
+      return;
+    }
+    if (phaseDef.type === "human-gate") {
+      const record = this.deps.pipelineState.get(issueId);
+      // Fire-and-forget: the phase update above is already persisted and is
+      // the user-visible primary signal; assignToHuman is a ping on top of
+      // that. Unlike markInProgress (awaited because it races the worker's
+      // own log output), this call has nothing to race — the skill has
+      // already exited. Making respectAgentPhaseChange async would cascade
+      // through handleSuccess for no behavioral win.
+      void this.deps.issueTracker
+        .assignToHuman(issueId, record?.delegatorAccountId ?? null)
+        .catch((err: unknown) => {
+          this.deps.audit.log({
+            component: "orchestrator",
+            issueId,
+            message: `assignToHuman after agent phase change failed: ${errorMessage(err)}`,
+            metadata: { taskId: task.id, newPhase },
+          });
+        });
       return;
     }
     if (this.deps.queue.hasOpenTask(issueId, newPhase) === false) {

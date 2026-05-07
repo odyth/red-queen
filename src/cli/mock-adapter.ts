@@ -59,6 +59,9 @@ export class MockIssueTrackerAdapter implements IssueTracker {
   transitionTo(): Promise<void> {
     return Promise.resolve();
   }
+  markInProgress(): Promise<void> {
+    return Promise.resolve();
+  }
   validateWebhook(): boolean {
     return true;
   }

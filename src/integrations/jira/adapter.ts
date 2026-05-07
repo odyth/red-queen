@@ -34,6 +34,7 @@ export const JiraConfigSchema = z.object({
       done: z.string().optional(),
     })
     .default({}),
+  reconcileScope: z.enum(["active-sprint-or-all", "all-non-done"]).default("active-sprint-or-all"),
   botAccountId: z.string().optional(),
   webhookSecret: z.string().optional(),
 });
@@ -93,6 +94,10 @@ interface JiraTransitionRaw {
 
 const DEFAULT_MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
 
+const SPRINT_PROBE_TTL_MS = 5 * 60 * 1000;
+const LIST_PAGE_SIZE = 100;
+const LIST_MAX_PAGES = 20;
+
 export class JiraIssueTrackerAdapter implements IssueTracker {
   private readonly client: JiraClient;
   private readonly config: JiraAdapterConfig;
@@ -101,6 +106,7 @@ export class JiraIssueTrackerAdapter implements IssueTracker {
   private readonly maxAttachmentBytes: number;
   private botAccountId: string | null;
   private transitionCache = new Map<string, JiraTransitionRaw[]>();
+  private activeSprintProbe: { checkedAt: number; hasActive: boolean } | null = null;
 
   constructor(options: JiraAdapterOptions) {
     this.client = options.client;
@@ -127,28 +133,88 @@ export class JiraIssueTrackerAdapter implements IssueTracker {
     if (mapping === undefined) {
       return [];
     }
-    const jql = `project = "${escapeJql(this.config.projectKey)}" AND "${this.config.customFields.phase}" = "${escapeJql(mapping.optionId)}" AND statusCategory != Done`;
-    const params = new URLSearchParams({
-      jql,
-      fields: [
-        "summary",
-        "status",
-        "assignee",
-        "reporter",
-        "issuetype",
-        "labels",
-        "created",
-        "updated",
-        this.config.customFields.phase,
-        this.config.customFields.spec,
-      ].join(","),
-      maxResults: "50",
-    });
-    const response = await this.client.request<{ issues?: JiraIssueRaw[] }>(
-      "GET",
-      `/rest/api/3/search/jql?${params.toString()}`,
-    );
-    return (response.issues ?? []).map((r) => this.toIssue(r));
+    const clauses = [
+      `project = "${escapeJql(this.config.projectKey)}"`,
+      `"${this.config.customFields.phase}" = "${escapeJql(mapping.optionId)}"`,
+      `statusCategory != Done`,
+    ];
+    if (this.config.reconcileScope === "active-sprint-or-all") {
+      if (await this.hasActiveSprint()) {
+        clauses.push("sprint in openSprints()");
+      }
+    }
+    const jql = clauses.join(" AND ");
+    const fields = [
+      "summary",
+      "status",
+      "assignee",
+      "reporter",
+      "issuetype",
+      "labels",
+      "created",
+      "updated",
+      this.config.customFields.phase,
+      this.config.customFields.spec,
+    ].join(",");
+
+    const all: Issue[] = [];
+    let nextPageToken: string | undefined;
+    let pages = 0;
+    do {
+      pages++;
+      if (pages > LIST_MAX_PAGES) {
+        throw new Error(
+          `Jira listIssuesByPhase page cap (${String(LIST_MAX_PAGES)}) exceeded for phase '${phaseName}' — adapter bug or runaway result set.`,
+        );
+      }
+      const params = new URLSearchParams({
+        jql,
+        fields,
+        maxResults: String(LIST_PAGE_SIZE),
+      });
+      if (nextPageToken !== undefined) {
+        params.set("nextPageToken", nextPageToken);
+      }
+      const response = await this.client.request<{
+        issues?: JiraIssueRaw[];
+        nextPageToken?: string;
+        isLast?: boolean;
+      }>("GET", `/rest/api/3/search/jql?${params.toString()}`);
+      for (const r of response.issues ?? []) {
+        all.push(this.toIssue(r));
+      }
+      nextPageToken = response.isLast === true ? undefined : response.nextPageToken;
+    } while (nextPageToken !== undefined);
+
+    return all;
+  }
+
+  private async hasActiveSprint(): Promise<boolean> {
+    const now = Date.now();
+    if (
+      this.activeSprintProbe !== null &&
+      now - this.activeSprintProbe.checkedAt < SPRINT_PROBE_TTL_MS
+    ) {
+      return this.activeSprintProbe.hasActive;
+    }
+    try {
+      const jql = `project = "${escapeJql(this.config.projectKey)}" AND sprint in openSprints()`;
+      const params = new URLSearchParams({ jql, fields: "summary", maxResults: "1" });
+      const response = await this.client.request<{ issues?: JiraIssueRaw[] }>(
+        "GET",
+        `/rest/api/3/search/jql?${params.toString()}`,
+      );
+      const hasActive = (response.issues ?? []).length > 0;
+      this.activeSprintProbe = { checkedAt: now, hasActive };
+      return hasActive;
+    } catch {
+      // Jira Core without Software (no `openSprints()` support) or a permission
+      // issue — fall back to unscoped. Cache false so we don't hammer on every
+      // phase; worst case we reconcile unscoped for up to TTL, which is
+      // strictly safer than silently skipping issues.
+      this.activeSprintProbe = { checkedAt: now, hasActive: false };
+      return false;
+    }
   }
 
   async getPhase(issueId: string): Promise<string | null> {
@@ -159,8 +225,9 @@ export class JiraIssueTrackerAdapter implements IssueTracker {
   async setPhase(issueId: string, phaseName: string): Promise<void> {
     const mapping = this.config.phaseMapping[phaseName];
     if (mapping === undefined) {
-      this.audit(`Jira: no phaseMapping for ${phaseName} — skipping setPhase`, { phaseName });
-      return;
+      throw new Error(
+        `Jira: no phaseMapping for '${phaseName}'. Add phaseMapping.${phaseName} to redqueen.yaml.`,
+      );
     }
     await this.client.request("PUT", `/rest/api/3/issue/${encodeURIComponent(issueId)}`, {
       fields: {
@@ -318,6 +385,26 @@ export class JiraIssueTrackerAdapter implements IssueTracker {
     );
   }
 
+  async markInProgress(issueId: string): Promise<void> {
+    const target = this.config.statusTransitions.inProgress;
+    if (target === undefined) {
+      return;
+    }
+    try {
+      await this.transitionTo(issueId, target);
+    } catch (err) {
+      // Two shapes land here: (a) issue already in `target` — Jira's transitions
+      // API only lists moves available *from* the current state, so a same-state
+      // request throws "no transition available to X"; (b) real config bugs
+      // (typo in statusTransitions.inProgress, workflow permissions). Swallow
+      // both so dispatch doesn't fail; operators see (b) in the audit log.
+      this.audit(
+        `Jira: markInProgress non-fatal error: ${err instanceof Error ? err.message : String(err)}`,
+        { issueId, target },
+      );
+    }
+  }
+
   validateWebhook(headers: Record<string, string>, body: string): boolean {
     return validateJiraWebhook(this.config.webhookSecret ?? null, headers, body);
   }
@@ -356,15 +443,15 @@ export class JiraIssueTrackerAdapter implements IssueTracker {
   }
 
   validatePhaseMapping(phaseNames: string[]): ValidationResult {
-    const warnings: string[] = [];
+    const errors: string[] = [];
     for (const name of phaseNames) {
       if (this.config.phaseMapping[name] === undefined) {
-        warnings.push(
-          `Jira: no option mapping for phase '${name}' — issues in this phase won't reflect in the AI Phase dropdown field. Add phaseMapping.${name} to redqueen.yaml.`,
+        errors.push(
+          `Jira: no option mapping for phase '${name}' — setPhase will fail at runtime. Add phaseMapping.${name} to redqueen.yaml.`,
         );
       }
     }
-    return { errors: [], warnings };
+    return { errors, warnings: [] };
   }
 
   async warmIdentity(): Promise<string> {

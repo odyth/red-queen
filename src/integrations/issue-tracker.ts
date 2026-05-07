@@ -50,6 +50,7 @@ export interface IssueTracker {
 
   // Status transitions
   transitionTo(issueId: string, status: string): Promise<void>;
+  markInProgress(issueId: string): Promise<void>;
 
   // Webhook handling
   validateWebhook(headers: Record<string, string>, body: string): boolean;

@@ -69,7 +69,17 @@ export class PhaseGraph {
   getEntryPhases(): PhaseDefinition[] {
     const referenced = new Set<string>();
     for (const phase of this.phases.values()) {
-      for (const target of [phase.next, phase.onFail, phase.rework, phase.escalateTo]) {
+      // Human-gates don't auto-advance via `next` — a human manually
+      // transitions the ticket, so that field is documentation of the exit
+      // path rather than an automated forward edge. Counting it here would
+      // incorrectly classify a gate's exit target as "downstream" when the
+      // target is actually an entry phase the gate returns to (e.g.
+      // spec-awaiting-info.next = spec-writing).
+      const targets =
+        phase.type === "human-gate"
+          ? [phase.onFail, phase.rework, phase.escalateTo]
+          : [phase.next, phase.onFail, phase.rework, phase.escalateTo];
+      for (const target of targets) {
         if (target !== undefined && target !== "done") {
           referenced.add(target);
         }

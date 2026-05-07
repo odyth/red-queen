@@ -55,9 +55,16 @@ Read the YAML context block. Fields you rely on:
 
 ### Step 1: Verify the spec exists
 
-If `specContent` is null or trivially empty, stop. Post a comment via
-`redqueen issue comment <issueId>` explaining that the spec is missing, and
-exit. The orchestrator will escalate.
+If `specContent` is null or trivially empty, route back to spec-writing
+instead of escalating:
+
+```
+redqueen issue set-phase "${issueId}" spec-writing
+```
+
+Exit 0. Audit log only — do not post a tracker comment. The orchestrator
+will respect the phase change and re-run the prompt-writer to regenerate
+the spec. Humans don't need to see transient auto-recovery.
 
 ### Step 2: Resolve names
 
@@ -201,7 +208,14 @@ Steps:
 
 2. If a PR exists, also `redqueen pr review <prNumber> --verdict request-changes`
    with the same text so the human sees it from either place.
-3. Exit. Include "Blocked — <reason>" in your stdout summary.
+3. Move the issue into the Blocked human-gate so the orchestrator stops
+   advancing the pipeline and assigns the reporter:
+
+   ```
+   redqueen issue set-phase "${issueId}" blocked
+   ```
+
+4. Exit. Include "Blocked — <reason>" in your stdout summary.
 
 ## Important rules
 

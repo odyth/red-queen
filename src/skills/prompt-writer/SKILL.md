@@ -68,18 +68,43 @@ fetched via `redqueen issue comments <issueId>`.
 ### Step 2: Assess clarity
 
 The issue must describe what needs to change and include enough context to
-identify the affected code. If it does not:
+identify the affected code. If it does not, route to awaiting info:
 
-- Do **not** guess. Write a comment via
-  `echo "<questions>" | redqueen issue comment <issueId>` explaining what
-  is unclear, list the specific questions in plain language, and exit.
-- The orchestrator will surface the question to the human.
+1. Post your questions so the reporter can answer in-thread:
+
+   ```
+   echo "<questions>" | redqueen issue comment <issueId>
+   ```
+
+2. Move the issue into the Awaiting Info human-gate:
+
+   ```
+   redqueen issue set-phase <issueId> spec-awaiting-info
+   ```
+
+3. Exit 0. The orchestrator respects the phase change and reassigns the
+   ticket to the reporter.
+
+Only use this route for "reporter can answer with a comment" questions.
+For structural blockers (the change contradicts code reality,
+infrastructure is missing, etc.), use the **When to set Blocked** path at
+the bottom of this file instead — that is a different signal and keeps the
+existing Blocked human-gate loop.
+
+**Revision Flow does not route to awaiting-info.** When a reviewer
+requests changes in `spec-feedback`, the input is disagreement, not
+absence — revise the spec to reflect the new direction. If the reviewer's
+feedback itself is unclear, follow the existing Blocked path.
 
 ### Step 3: Check for prior clarification responses
 
-Fetch comments: `redqueen issue comments <issueId>`. If this issue was
-previously flagged and has new responses from the reporter, fold them into
-the context before proceeding.
+Fetch comments: `redqueen issue comments <issueId>`. If `priorContext`
+references a prior awaiting-info handoff (your own previous summary will
+name it), the newest reporter comments since that handoff are their
+answers — fold them into your exploration before writing the spec. If you
+still cannot find responsive answers despite the round trip, route back
+to `spec-awaiting-info` with a pointed follow-up question rather than
+guessing.
 
 ### Step 4: Create a fresh worktree
 
@@ -210,10 +235,19 @@ summary naming the main changes so the next review has context.
 ## When to set Blocked
 
 If you cannot produce a usable spec after a reasonable exploration pass, do
-not keep grinding. Post a `redqueen issue comment` explaining what is
-blocking you, what you have tried, and what the human needs to provide. The
-orchestrator will route the issue to the human gate. Your final stdout
-summary should say "Blocked — <reason>" so `priorContext` reflects it.
+not keep grinding.
+
+1. Post a `redqueen issue comment` explaining what is blocking you, what
+   you have tried, and what the human needs to provide.
+2. Move the issue into the Blocked human-gate so the orchestrator stops
+   advancing the pipeline and assigns the reporter:
+
+   ```
+   redqueen issue set-phase <issueId> blocked
+   ```
+
+3. Your final stdout summary should say "Blocked — <reason>" so
+   `priorContext` reflects it.
 
 ## Iteration limit
 

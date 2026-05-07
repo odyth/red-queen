@@ -161,6 +161,16 @@ export class PipelineStateStore {
     return row?.feedback_iterations ?? 0;
   }
 
+  resetIterations(issueId: string): boolean {
+    const now = new Date().toISOString();
+    const result = this.db
+      .prepare(
+        "UPDATE pipeline_state SET review_iterations = 0, feedback_iterations = 0, updated_at = ? WHERE issue_id = ?",
+      )
+      .run(now, issueId);
+    return result.changes > 0;
+  }
+
   updateSpec(issueId: string, specContent: string): boolean {
     const now = new Date().toISOString();
     const result = this.db

@@ -103,6 +103,16 @@ export class MockIssueTracker implements IssueTracker {
     return Promise.resolve();
   }
 
+  markInProgressThrowsFor = new Set<string>();
+
+  markInProgress(issueId: string): Promise<void> {
+    this.calls.push(`markInProgress:${issueId}`);
+    if (this.markInProgressThrowsFor.has(issueId)) {
+      return Promise.reject(new Error(`mock markInProgress failure for ${issueId}`));
+    }
+    return Promise.resolve();
+  }
+
   validateWebhook(): boolean {
     return this.validateResult;
   }

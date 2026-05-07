@@ -130,6 +130,11 @@ export class InMemoryIssueTracker implements IssueTracker {
     return Promise.resolve();
   }
 
+  markInProgress(issueId: string): Promise<void> {
+    this.calls.push(`markInProgress:${issueId}`);
+    return Promise.resolve();
+  }
+
   validateWebhook(): boolean {
     return true;
   }

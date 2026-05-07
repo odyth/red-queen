@@ -281,22 +281,35 @@ describe("RedQueen orchestrator", () => {
   });
 
   it("processes new-ticket tasks without a worker", async () => {
+    // Snapshot tracker state as soon as the follow-up worker is invoked — at
+    // that point new-ticket is complete and we're still at spec-writing+ai
+    // (the worker hasn't advanced the phase yet). We resolve the worker with
+    // failure+no-retries metadata so the main loop drains cleanly.
+    const snapshot: { phase: string | null; assignment: string | null } = {
+      phase: null,
+      assignment: null,
+    };
     const h = setupHarness(() => {
-      // Return failure so downstream spec-writing task fails and doesn't loop forever
+      snapshot.phase = h.issueTracker.phases.get("PROJ-1") ?? null;
+      snapshot.assignment = h.issueTracker.assignments.get("PROJ-1") ?? null;
+      // Return success but with a phase the skill never changes — advanceNormal
+      // will flip phase to spec-review after this worker returns, but that
+      // happens AFTER this function returns and we've already captured.
       return Promise.resolve({
-        success: false,
-        exitCode: 1,
+        success: true,
+        exitCode: 0,
         elapsed: 0,
         summary: "",
-        error: "stop the loop",
+        error: null,
       });
     });
     h.queue.enqueue({ type: "new-ticket", issueId: "PROJ-1" });
 
-    await runUntil(h, () => h.issueTracker.phases.get("PROJ-1") === "spec-writing");
+    // Run until the worker ran at least once — that's our snapshot point.
+    await runUntil(h, () => h.runs.length >= 1);
 
-    expect(h.issueTracker.phases.get("PROJ-1")).toBe("spec-writing");
-    expect(h.issueTracker.assignments.get("PROJ-1")).toBe("ai");
+    expect(snapshot.phase).toBe("spec-writing");
+    expect(snapshot.assignment).toBe("ai");
   });
 
   it("performs crash recovery for working tasks", async () => {
@@ -795,5 +808,165 @@ describe("RedQueen orchestrator", () => {
     );
 
     expect(h.issueTracker.calls.some((c) => c === "assignToHuman:PROJ-60:justin-60")).toBe(true);
+  });
+
+  it("Gap 1: calls markInProgress once on happy-path dispatch", async () => {
+    const h = setupHarness(() =>
+      Promise.resolve({
+        success: true,
+        exitCode: 0,
+        elapsed: 1,
+        summary: "done",
+        error: null,
+      }),
+    );
+    h.pipelineState.create("PROJ-201", "coding");
+    h.issueTracker.phases.set("PROJ-201", "coding");
+    h.queue.enqueue({ type: "coding", issueId: "PROJ-201" });
+
+    await runUntilAfterRuns(h, 1);
+
+    expect(h.issueTracker.calls).toContain("markInProgress:PROJ-201");
+  });
+
+  it("Gap 1: swallows markInProgress failures, worker still dispatches", async () => {
+    const h = setupHarness(() =>
+      Promise.resolve({
+        success: true,
+        exitCode: 0,
+        elapsed: 1,
+        summary: "done",
+        error: null,
+      }),
+    );
+    h.pipelineState.create("PROJ-202", "coding");
+    h.issueTracker.phases.set("PROJ-202", "coding");
+    h.issueTracker.markInProgressThrowsFor.add("PROJ-202");
+    h.queue.enqueue({ type: "coding", issueId: "PROJ-202" });
+
+    await runUntilAfterRuns(h, 1);
+
+    // Worker dispatched despite markInProgress throwing
+    expect(h.runs.length).toBeGreaterThanOrEqual(1);
+    // Audit should mention the non-fatal failure
+    const audit = readFileSync(auditPath, "utf8");
+    expect(audit).toContain("markInProgress failed (non-fatal)");
+  });
+
+  it("Gap 1: does not call markInProgress on fail-fast dispatch paths", async () => {
+    // Skill not found → fail-fast before reaching the markInProgress call site.
+    const h = setupHarness(() =>
+      Promise.resolve({
+        success: true,
+        exitCode: 0,
+        elapsed: 1,
+        summary: "done",
+        error: null,
+      }),
+    );
+    // Remove the reviewer skill file to force "Skill not found"
+    rmSync(join(skillsDir, "reviewer"), { recursive: true, force: true });
+    h.pipelineState.create("PROJ-203", "code-review");
+    h.issueTracker.phases.set("PROJ-203", "code-review");
+    h.queue.enqueue({ type: "code-review", issueId: "PROJ-203" });
+
+    await runUntil(h, () => h.queue.listByStatus("failed").some((t) => t.issueId === "PROJ-203"));
+
+    expect(h.issueTracker.calls).not.toContain("markInProgress:PROJ-203");
+  });
+
+  it("Gap 3: resets iteration counters when leaving a human-gate phase", async () => {
+    const h = setupHarness(() =>
+      Promise.resolve({
+        success: true,
+        exitCode: 0,
+        elapsed: 1,
+        summary: "done",
+        error: null,
+      }),
+    );
+    h.pipelineState.create("PROJ-301", "human-review");
+    h.pipelineState.incrementReviewIterations("PROJ-301");
+    h.pipelineState.incrementReviewIterations("PROJ-301");
+    h.pipelineState.incrementFeedbackIterations("PROJ-301");
+    h.issueTracker.phases.set("PROJ-301", "code-feedback");
+    h.queue.enqueue({ type: "code-feedback", issueId: "PROJ-301" });
+
+    await runUntilAfterRuns(h, 1);
+
+    const record = h.pipelineState.get("PROJ-301");
+    expect(record?.reviewIterations).toBe(0);
+    expect(record?.feedbackIterations).toBe(0);
+    const audit = readFileSync(auditPath, "utf8");
+    expect(audit).toContain("Leaving human gate human-review");
+  });
+
+  it("Gap 3: does not reset when leaving an automated phase", async () => {
+    const h = setupHarness(() =>
+      Promise.resolve({
+        success: true,
+        exitCode: 0,
+        elapsed: 1,
+        summary: "done",
+        error: null,
+      }),
+    );
+    // Automated → automated (coding → code-review). Seed counters; they must NOT reset.
+    h.pipelineState.create("PROJ-302", "coding");
+    h.pipelineState.incrementReviewIterations("PROJ-302");
+    h.pipelineState.incrementReviewIterations("PROJ-302");
+    h.issueTracker.phases.set("PROJ-302", "code-review");
+    h.queue.enqueue({ type: "code-review", issueId: "PROJ-302" });
+
+    await runUntilAfterRuns(h, 1);
+
+    const record = h.pipelineState.get("PROJ-302");
+    expect(record?.reviewIterations).toBe(2);
+  });
+
+  it("Gap 4: respectAgentPhaseChange to human-gate calls assignToHuman", async () => {
+    const h = setupHarness(() => {
+      // Simulate the prompt-writer self-routing to spec-awaiting-info
+      void h.issueTracker.setPhase("PROJ-401", "spec-awaiting-info");
+      return Promise.resolve({
+        success: true,
+        exitCode: 0,
+        elapsed: 1,
+        summary: "awaiting info",
+        error: null,
+      });
+    });
+    h.pipelineState.create("PROJ-401", "spec-writing", "reporter-42");
+    h.issueTracker.phases.set("PROJ-401", "spec-writing");
+    h.queue.enqueue({ type: "spec-writing", issueId: "PROJ-401" });
+
+    await runUntil(h, () =>
+      h.issueTracker.calls.some((c) => c.startsWith("assignToHuman:PROJ-401:")),
+    );
+
+    expect(h.issueTracker.calls).toContain("assignToHuman:PROJ-401:reporter-42");
+    expect(h.pipelineState.get("PROJ-401")?.currentPhase).toBe("spec-awaiting-info");
+  });
+
+  it("Gap 4: respectAgentPhaseChange to blocked calls assignToHuman (regression)", async () => {
+    const h = setupHarness(() => {
+      void h.issueTracker.setPhase("PROJ-402", "blocked");
+      return Promise.resolve({
+        success: true,
+        exitCode: 0,
+        elapsed: 1,
+        summary: "blocked",
+        error: null,
+      });
+    });
+    h.pipelineState.create("PROJ-402", "coding", "reporter-99");
+    h.issueTracker.phases.set("PROJ-402", "coding");
+    h.queue.enqueue({ type: "coding", issueId: "PROJ-402" });
+
+    await runUntil(h, () =>
+      h.issueTracker.calls.some((c) => c.startsWith("assignToHuman:PROJ-402:")),
+    );
+
+    expect(h.issueTracker.calls).toContain("assignToHuman:PROJ-402:reporter-99");
   });
 });

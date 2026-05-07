@@ -418,6 +418,7 @@ async function pickIssueTracker(
     phaseMapping: {
       "spec-writing": { optionId: "<CHANGE ME>" },
       "spec-review": { optionId: "<CHANGE ME>" },
+      "spec-awaiting-info": { optionId: "<CHANGE ME>" },
       coding: { optionId: "<CHANGE ME>" },
       "code-review": { optionId: "<CHANGE ME>" },
       testing: { optionId: "<CHANGE ME>" },

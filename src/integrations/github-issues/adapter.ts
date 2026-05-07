@@ -245,6 +245,10 @@ export class GitHubIssuesAdapter implements IssueTracker {
     return Promise.resolve();
   }
 
+  markInProgress(): Promise<void> {
+    return Promise.resolve();
+  }
+
   validateWebhook(headers: Record<string, string>, body: string): boolean {
     return validateGitHubWebhook(this.webhookSecret, headers, body);
   }

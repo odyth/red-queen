@@ -20,10 +20,38 @@ export async function cmdIssue(args: string[]): Promise<void> {
     case "attachments":
       await cmdIssueAttachments(rest);
       return;
+    case "set-phase":
+      await cmdIssueSetPhase(rest);
+      return;
     default:
       throw new CliError(
-        `Unknown 'issue' subcommand: ${subcommand ?? "(missing)"}. Valid: get, comment, comments, attachments.`,
+        `Unknown 'issue' subcommand: ${subcommand ?? "(missing)"}. Valid: get, comment, comments, attachments, set-phase.`,
       );
+  }
+}
+
+async function cmdIssueSetPhase(args: string[]): Promise<void> {
+  const { positionals } = parseArgs({ args, allowPositionals: true });
+  const issueId = positionals[0];
+  const phaseName = positionals[1];
+  if (issueId === undefined) {
+    throw new CliError("issue set-phase: <id> is required");
+  }
+  if (phaseName === undefined) {
+    throw new CliError("issue set-phase: <phaseName> is required");
+  }
+  const ctx = loadCliContext();
+  try {
+    await ctx.issueTracker.setPhase(issueId, phaseName);
+    ctx.audit.log({
+      component: "helper:issue",
+      issueId,
+      message: `Set phase to ${phaseName} via redqueen issue set-phase`,
+      metadata: { phaseName },
+    });
+    writeJson({ ok: true, phase: phaseName });
+  } finally {
+    ctx.cleanup();
   }
 }
 

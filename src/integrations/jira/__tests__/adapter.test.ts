@@ -88,6 +88,7 @@ function mkHarness(): {
       "code-review": { optionId: "10057", label: "Code Review" },
     },
     statusTransitions: {},
+    reconcileScope: "active-sprint-or-all",
     botAccountId: "bot-1",
   };
 
@@ -131,20 +132,76 @@ describe("JiraIssueTrackerAdapter", () => {
   });
 
   it("listIssuesByPhase hits GET /search/jql with query string", async () => {
-    h.setResponse((c) => c.method === "GET" && c.url.includes("/rest/api/3/search/jql"), {
+    // Sprint probe fires first (unscoped query to look for openSprints), then
+    // the phase query. Match both via the presence of their JQL fragments.
+    h.setResponse((c) => c.method === "GET" && c.url.includes("fields=summary&maxResults=1"), {
+      issues: [],
+      isLast: true,
+    });
+    h.setResponse((c) => c.method === "GET" && c.url.includes("customfield_10158"), {
       issues: [{ id: "10000", key: "RQ-7", fields: { summary: "s", issuetype: { name: "Task" } } }],
+      isLast: true,
     });
     const issues = await h.adapter.listIssuesByPhase("coding");
-    const searchCall = h.calls.find((c) => c.url.includes("/rest/api/3/search/jql"));
-    expect(searchCall?.method).toBe("GET");
-    expect(searchCall?.url).toContain("jql=");
-    expect(searchCall?.url).toContain("fields=");
-    expect(searchCall?.url).toContain("maxResults=50");
+    const phaseCall = h.calls.find(
+      (c) => c.url.includes("/rest/api/3/search/jql") && c.url.includes("customfield_10158"),
+    );
+    expect(phaseCall?.method).toBe("GET");
+    expect(phaseCall?.url).toContain("jql=");
+    expect(phaseCall?.url).toContain("fields=");
+    expect(phaseCall?.url).toContain("maxResults=100");
     // JQL must filter out Done status category (unquoted form)
-    const parsedJql = new URL(searchCall?.url ?? "").searchParams.get("jql") ?? "";
+    const parsedJql = new URL(phaseCall?.url ?? "").searchParams.get("jql") ?? "";
     expect(parsedJql).toContain("statusCategory != Done");
     // Issue.id must be the Jira key, not the numeric id
     expect(issues[0]?.id).toBe("RQ-7");
+  });
+
+  it("listIssuesByPhase paginates via nextPageToken until isLast", async () => {
+    h.setResponse((c) => c.method === "GET" && c.url.includes("fields=summary&maxResults=1"), {
+      issues: [],
+      isLast: true,
+    });
+    // First phase page returns nextPageToken, subsequent call uses it
+    h.setResponse(
+      (c) =>
+        c.method === "GET" &&
+        c.url.includes("customfield_10158") &&
+        c.url.includes("nextPageToken") === false,
+      {
+        issues: [{ id: "1", key: "RQ-A", fields: { issuetype: { name: "Task" } } }],
+        nextPageToken: "page2",
+        isLast: false,
+      },
+    );
+    h.setResponse((c) => c.method === "GET" && c.url.includes("nextPageToken=page2"), {
+      issues: [{ id: "2", key: "RQ-B", fields: { issuetype: { name: "Task" } } }],
+      isLast: true,
+    });
+    const issues = await h.adapter.listIssuesByPhase("coding");
+    expect(issues.map((i) => i.id)).toEqual(["RQ-A", "RQ-B"]);
+    const phaseCalls = h.calls.filter(
+      (c) => c.url.includes("/rest/api/3/search/jql") && c.url.includes("customfield_10158"),
+    );
+    expect(phaseCalls).toHaveLength(2);
+    expect(phaseCalls[1]?.url).toContain("nextPageToken=page2");
+  });
+
+  it("listIssuesByPhase scopes by sprint when active sprint exists", async () => {
+    h.setResponse((c) => c.method === "GET" && c.url.includes("fields=summary&maxResults=1"), {
+      issues: [{ id: "x", key: "RQ-X", fields: { issuetype: { name: "Task" } } }],
+      isLast: true,
+    });
+    h.setResponse((c) => c.method === "GET" && c.url.includes("customfield_10158"), {
+      issues: [],
+      isLast: true,
+    });
+    await h.adapter.listIssuesByPhase("coding");
+    const phaseCall = h.calls.find(
+      (c) => c.url.includes("/rest/api/3/search/jql") && c.url.includes("customfield_10158"),
+    );
+    const jql = new URL(phaseCall?.url ?? "").searchParams.get("jql") ?? "";
+    expect(jql).toContain("sprint in openSprints()");
   });
 
   it("setPhase sends PUT with option id", async () => {
@@ -154,8 +211,8 @@ describe("JiraIssueTrackerAdapter", () => {
     expect(putCall?.body).toContain("10056");
   });
 
-  it("setPhase skips unmapped phase", async () => {
-    await h.adapter.setPhase("RQ-1", "nonexistent");
+  it("setPhase throws on unmapped phase", async () => {
+    await expect(h.adapter.setPhase("RQ-1", "nonexistent")).rejects.toThrow(/phaseMapping/);
     // No HTTP call should have been made
     expect(h.calls).toHaveLength(0);
   });
@@ -308,10 +365,10 @@ describe("JiraIssueTrackerAdapter", () => {
     expect(result.errors.length).toBeGreaterThan(0);
   });
 
-  it("validatePhaseMapping warns on unmapped phases", () => {
+  it("validatePhaseMapping errors on unmapped phases", () => {
     const result = h.adapter.validatePhaseMapping(["coding", "missing"]);
-    expect(result.errors).toEqual([]);
-    expect(result.warnings.some((w) => w.includes("missing"))).toBe(true);
+    expect(result.warnings).toEqual([]);
+    expect(result.errors.some((e) => e.includes("missing"))).toBe(true);
   });
 
   it("parseWebhookEvent returns phase-change", () => {

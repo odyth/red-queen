@@ -701,4 +701,23 @@ describe("buildPhaseGraph", () => {
     expect(entryNames).not.toContain("code-review");
     expect(entryNames).not.toContain("spec-review");
   });
+
+  it("DEFAULT_PHASES includes spec-awaiting-info as a human-gate that exits to spec-writing", () => {
+    const phase = DEFAULT_PHASES.find((p) => p.name === "spec-awaiting-info");
+    expect(phase).toBeDefined();
+    expect(phase?.type).toBe("human-gate");
+    expect(phase?.next).toBe("spec-writing");
+    expect(phase?.assignTo).toBe("human");
+  });
+
+  it("spec-writing.onFail routes to spec-awaiting-info", () => {
+    const phase = DEFAULT_PHASES.find((p) => p.name === "spec-writing");
+    expect(phase?.onFail).toBe("spec-awaiting-info");
+  });
+
+  it("spec-awaiting-info is NOT an entry phase (onFail wiring keeps it out)", () => {
+    const graph = buildPhaseGraph(DEFAULT_PHASES);
+    const entryNames = graph.getEntryPhases().map((p) => p.name);
+    expect(entryNames).not.toContain("spec-awaiting-info");
+  });
 });

@@ -127,6 +127,17 @@ export async function cmdStart(args: string[]): Promise<void> {
   for (const warning of phaseMapping.warnings) {
     process.stderr.write(`warning (phase mapping): ${warning}\n`);
   }
+  if (phaseMapping.errors.length > 0) {
+    for (const err of phaseMapping.errors) {
+      process.stderr.write(`error (phase mapping): ${err}\n`);
+    }
+    database.close();
+    removePidFile(pidPath);
+    const first = phaseMapping.errors[0] ?? "unknown";
+    throw new CliError(
+      `phase mapping invalid: ${first} (${String(phaseMapping.errors.length)} total)`,
+    );
+  }
 
   try {
     await withTimeout(adapterPair.warmup(), 2000);

@@ -7,6 +7,7 @@ export const DEFAULT_PHASES: PhaseDefinition[] = [
     type: "automated",
     skill: "prompt-writer",
     next: "spec-review",
+    onFail: "spec-awaiting-info",
     assignTo: "ai",
   },
   {
@@ -27,6 +28,13 @@ export const DEFAULT_PHASES: PhaseDefinition[] = [
     escalateTo: "blocked",
     assignTo: "ai",
     requiresPr: false,
+  },
+  {
+    name: "spec-awaiting-info",
+    label: "Awaiting Info",
+    type: "human-gate",
+    next: "spec-writing",
+    assignTo: "human",
   },
   {
     name: "coding",

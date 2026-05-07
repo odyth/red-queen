@@ -32,9 +32,15 @@ coder created at `.redqueen/worktrees/<issueId>` inside `projectDir`.
 
 1. If `codebaseMapPath` is non-null, read it for context.
 2. Determine the worktree path: `${projectDir}/.redqueen/worktrees/${issueId}`.
-3. If the worktree does not exist, post an audit summary, exit with a
-   message that coding must re-run. The orchestrator will see the failure
-   and route back.
+3. If the worktree does not exist, route back to coding:
+
+   ```
+   redqueen issue set-phase "${issueId}" coding
+   ```
+
+   Exit 0. Audit log only — do not post a tracker comment. The orchestrator
+   will respect the phase change and re-dispatch the coder.
+
 4. Fetch attachments:
    ```
    redqueen issue attachments <issueId>
@@ -137,7 +143,14 @@ external service outage):
    ```
    echo "<same text>" | redqueen pr review <prNumber> --verdict request-changes
    ```
-3. Your summary: "Blocked on infrastructure — <cause>."
+3. Move the issue into the Blocked human-gate so the orchestrator stops
+   advancing the pipeline and assigns the reporter:
+
+   ```
+   redqueen issue set-phase "${issueId}" blocked
+   ```
+
+4. Your summary: "Blocked on infrastructure — <cause>."
 
 ## Important rules
 
