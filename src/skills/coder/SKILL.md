@@ -42,6 +42,14 @@ Read the YAML context block. Fields you rely on:
 1. If `codebaseMapPath` is non-null, read it.
 2. If `.redqueen/references/coding-standards.md` exists, read it. Follow it
    while writing code.
+3. Fetch attachments:
+   ```
+   redqueen issue attachments <issueId>
+   ```
+   If the JSON output is a non-empty array, read each `localPath` with
+   vision (screenshots frequently carry information the text omits).
+   Use screenshots to clarify UI behavior the spec under-describes before
+   implementing.
 
 ## Execution
 

@@ -35,6 +35,14 @@ coder created at `.redqueen/worktrees/<issueId>` inside `projectDir`.
 3. If the worktree does not exist, post an audit summary, exit with a
    message that coding must re-run. The orchestrator will see the failure
    and route back.
+4. Fetch attachments:
+   ```
+   redqueen issue attachments <issueId>
+   ```
+   If the JSON output is a non-empty array, read each `localPath` with
+   vision (screenshots frequently carry information the text omits).
+   Use attachments only as context for understanding expected behavior;
+   never modify tests based on them.
 
 ## Execution
 

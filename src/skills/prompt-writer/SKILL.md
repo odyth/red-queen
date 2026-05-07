@@ -53,9 +53,9 @@ Before either flow, do these in order:
    redqueen issue attachments <issueId>
    ```
    If the JSON output is a non-empty array, read each `localPath` with
-   vision (screenshots frequently carry information that the text omits).
-   You will write an **ATTACHMENT ANALYSIS** section in the spec describing
-   what each image shows.
+   vision (screenshots frequently carry information the text omits).
+   Write an **ATTACHMENT ANALYSIS** section in the spec describing what
+   each image shows.
 
 ## Fresh Write Flow (`phaseName` = `spec-writing`)
 

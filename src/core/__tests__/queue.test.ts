@@ -14,6 +14,13 @@ function createTestDb(): BetterSqlite3.Database {
   return rawDb;
 }
 
+function seedPipelineState(issueId: string, createdAt: string): void {
+  db.prepare(
+    `INSERT INTO pipeline_state (issue_id, current_phase, created_at, updated_at)
+     VALUES (?, NULL, ?, ?)`,
+  ).run(issueId, createdAt, createdAt);
+}
+
 describe("SqliteTaskQueue", () => {
   beforeEach(() => {
     db = createTestDb();
@@ -42,33 +49,52 @@ describe("SqliteTaskQueue", () => {
       expect(result).toBeNull();
     });
 
-    it("respects priority ordering (lower = higher priority)", () => {
-      queue.enqueue({ type: "coding", issueId: "PROJ-1" }); // priority = 0 (first in empty queue)
-      queue.enqueue({ type: "testing", issueId: "PROJ-2" }); // priority = 1
-      queue.enqueue({ type: "spec-feedback", issueId: "PROJ-3", priority: 0 }); // jumps to front
+    function dequeueAndClaim(): string | null | undefined {
+      const task = queue.dequeue();
+      if (task !== null) {
+        queue.markWorking(task.id);
+      }
+      return task?.issueId;
+    }
 
-      const first = queue.dequeue();
-      expect(first?.type).toBe("spec-feedback");
-      expect(first?.issueId).toBe("PROJ-3");
+    it("orders by pipeline_state.created_at (older ticket first)", () => {
+      // Seed pipeline rows with ascending created_at — A older than B older than C
+      seedPipelineState("PROJ-A", "2026-01-01T00:00:00.000Z");
+      seedPipelineState("PROJ-B", "2026-02-01T00:00:00.000Z");
+      seedPipelineState("PROJ-C", "2026-03-01T00:00:00.000Z");
+      // Enqueue in reverse-age order: C first, then B, then A
+      queue.enqueue({ type: "coding", issueId: "PROJ-C" });
+      queue.enqueue({ type: "coding", issueId: "PROJ-B" });
+      queue.enqueue({ type: "coding", issueId: "PROJ-A" });
+
+      // Dequeue order is still A, B, C because pipeline_state.created_at rules
+      expect(dequeueAndClaim()).toBe("PROJ-A");
+      expect(dequeueAndClaim()).toBe("PROJ-B");
+      expect(dequeueAndClaim()).toBe("PROJ-C");
     });
 
-    it("priority 0 always inserts at front", () => {
-      queue.enqueue({ type: "a", issueId: "1" });
-      queue.enqueue({ type: "b", issueId: "2" });
-      queue.enqueue({ type: "c", issueId: "3" });
-      queue.enqueue({ type: "urgent", issueId: "4", priority: 0 });
+    it("feedback on an older ticket preempts a newer ticket", () => {
+      seedPipelineState("PROJ-OLD", "2026-01-01T00:00:00.000Z");
+      seedPipelineState("PROJ-NEW", "2026-04-01T00:00:00.000Z");
+      // Newer ticket gets enqueued first
+      queue.enqueue({ type: "coding", issueId: "PROJ-NEW" });
+      // Then feedback arrives on the older ticket — it should jump ahead
+      queue.enqueue({ type: "code-feedback", issueId: "PROJ-OLD" });
 
-      const first = queue.dequeue();
-      expect(first?.type).toBe("urgent");
+      expect(dequeueAndClaim()).toBe("PROJ-OLD");
+      expect(dequeueAndClaim()).toBe("PROJ-NEW");
     });
 
-    it("no priority appends to end", () => {
-      queue.enqueue({ type: "first", issueId: "1" });
-      queue.enqueue({ type: "second", issueId: "2" });
-      queue.enqueue({ type: "third", issueId: "3" });
+    it("falls back to tasks.created_at when no pipeline_state row exists", () => {
+      // new-ticket tasks are enqueued before pipeline_state is created
+      queue.enqueue({ type: "new-ticket", issueId: "PROJ-1" });
+      queue.enqueue({ type: "new-ticket", issueId: "PROJ-2" });
+      queue.enqueue({ type: "new-ticket", issueId: "PROJ-3" });
 
-      const first = queue.dequeue();
-      expect(first?.type).toBe("first");
+      // Should dequeue in insertion order since no pipeline_state rows exist
+      expect(dequeueAndClaim()).toBe("PROJ-1");
+      expect(dequeueAndClaim()).toBe("PROJ-2");
+      expect(dequeueAndClaim()).toBe("PROJ-3");
     });
 
     it("stores and retrieves metadata", () => {

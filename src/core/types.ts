@@ -15,7 +15,6 @@ export interface PhaseDefinition {
   maxIterations?: number;
   escalateTo?: string;
   assignTo: AssignTo;
-  priority?: number;
   // When set, the phase is only executed if a PR's presence matches this value.
   // true  → phase consumes PR-level feedback (e.g. code-feedback); skip when no PR.
   // false → phase consumes tracker-level feedback pre-PR (e.g. spec-feedback); skip when a PR exists.
@@ -99,7 +98,6 @@ export type TaskStatus = "ready" | "working" | "complete" | "failed";
 export interface Task {
   id: string;
   type: string;
-  priority: number;
   issueId: string | null;
   status: TaskStatus;
   description: string | null;
@@ -113,7 +111,6 @@ export interface Task {
 
 export interface NewTask {
   type: string;
-  priority?: number;
   issueId?: string;
   description?: string;
   metadata?: Record<string, unknown>;

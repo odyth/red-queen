@@ -14,23 +14,27 @@ const SKILL_NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
 // separators, no '..' traversal — just a POSIX-ish identifier with dots.
 const SERVICE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/;
 
-const PhaseDefinitionSchema = z.object({
-  name: z.string().min(1),
-  label: z.string().min(1),
-  type: z.enum(["automated", "human-gate"]),
-  skill: z
-    .string()
-    .regex(SKILL_NAME_RE, "skill must be lowercase alphanumeric with hyphens (no path separators)")
-    .optional(),
-  next: z.string().min(1),
-  onFail: z.string().optional(),
-  rework: z.string().optional(),
-  maxIterations: z.number().int().positive().optional(),
-  escalateTo: z.string().optional(),
-  assignTo: z.enum(["ai", "human"]),
-  priority: z.number().int().min(0).optional(),
-  requiresPr: z.boolean().optional(),
-});
+const PhaseDefinitionSchema = z
+  .object({
+    name: z.string().min(1),
+    label: z.string().min(1),
+    type: z.enum(["automated", "human-gate"]),
+    skill: z
+      .string()
+      .regex(
+        SKILL_NAME_RE,
+        "skill must be lowercase alphanumeric with hyphens (no path separators)",
+      )
+      .optional(),
+    next: z.string().min(1),
+    onFail: z.string().optional(),
+    rework: z.string().optional(),
+    maxIterations: z.number().int().positive().optional(),
+    escalateTo: z.string().optional(),
+    assignTo: z.enum(["ai", "human"]),
+    requiresPr: z.boolean().optional(),
+  })
+  .strict();
 
 const WEBHOOK_PATH_RE = /^\/[A-Za-z0-9._~\-/]*$/;
 

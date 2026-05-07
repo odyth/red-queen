@@ -65,17 +65,9 @@ function gridSkill(label: string, key: string, val: string, idx: number): string
 
 type PhaseKey = keyof PhaseDefinition;
 
-function applyNumericField(
-  phase: PhaseDefinition,
-  key: "priority" | "maxIterations",
-  raw: string,
-): void {
+function applyNumericField(phase: PhaseDefinition, key: "maxIterations", raw: string): void {
   if (raw === "") {
-    if (key === "priority") {
-      phase.priority = undefined;
-    } else {
-      phase.maxIterations = undefined;
-    }
+    phase.maxIterations = undefined;
     return;
   }
   phase[key] = Number(raw);
@@ -111,7 +103,7 @@ function onFieldChange(evt: Event): void {
   if (phase === undefined) {
     return;
   }
-  if (key === "priority" || key === "maxIterations") {
+  if (key === "maxIterations") {
     applyNumericField(phase, key, raw);
   } else if (key === "skill" || key === "onFail" || key === "rework" || key === "escalateTo") {
     applyOptionalStringField(phase, key, raw);
@@ -154,7 +146,6 @@ function renderPhases(): void {
         gridField("onFail", "onFail", p.onFail ?? "", i) +
         gridField("rework", "rework", p.rework ?? "", i) +
         gridField("escalateTo", "escalateTo", p.escalateTo ?? "", i) +
-        gridField("priority", "priority", p.priority !== undefined ? String(p.priority) : "", i) +
         gridField(
           "maxIterations",
           "maxIterations",

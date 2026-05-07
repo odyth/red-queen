@@ -473,6 +473,27 @@ skills:
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("rejects a phase that still carries a priority field", () => {
+    const yaml = `
+issueTracker:
+  type: jira
+sourceControl:
+  type: github
+project:
+  buildCommand: "npm run build"
+  testCommand: "npm test"
+phases:
+  - name: legacy
+    label: Legacy
+    type: automated
+    skill: coder
+    next: done
+    assignTo: ai
+    priority: 0
+`;
+    expect(() => parseConfig(yaml)).toThrow();
+  });
 });
 
 describe("validatePhaseGraph", () => {

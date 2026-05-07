@@ -380,7 +380,6 @@ export class RedQueen {
       this.deps.queue.enqueue({
         type: firstPhase.name,
         issueId,
-        priority: firstPhase.priority,
         description: `Initial ${firstPhase.label} task`,
       });
     }
@@ -759,6 +758,23 @@ export class RedQueen {
       metadata: { taskId: task.id, elapsed: result.elapsed },
     });
 
+    if (phase.requiresPr === true) {
+      const record = this.deps.pipelineState.get(issueId);
+      const prNumber = record?.prNumber ?? null;
+      if (prNumber !== null) {
+        try {
+          await this.deps.sourceControl.dismissStaleReviews(prNumber);
+        } catch (err) {
+          this.deps.audit.log({
+            component: "orchestrator",
+            issueId,
+            message: `dismissStaleReviews failed after ${phase.name}: ${errorMessage(err)}`,
+            metadata: { taskId: task.id, prNumber },
+          });
+        }
+      }
+    }
+
     let postPhase: string | null;
     try {
       postPhase = await this.deps.issueTracker.getPhase(issueId);
@@ -790,7 +806,6 @@ export class RedQueen {
       this.deps.queue.enqueue({
         type: newPhase,
         issueId,
-        priority: phaseDef.priority,
         description: `Auto-created after agent set phase to ${newPhase}`,
       });
     }
@@ -844,7 +859,6 @@ export class RedQueen {
         this.deps.queue.enqueue({
           type: nextPhaseName,
           issueId,
-          priority: nextPhase.priority,
           description: `Auto-created after ${phase.name} completed`,
         });
       }
@@ -878,7 +892,6 @@ export class RedQueen {
       this.deps.queue.enqueue({
         type: task.type,
         issueId,
-        priority: 0,
         description: `Retry ${String(nextRetries)} after: ${error}`,
         metadata: { ...metadata, retries: nextRetries },
       });
@@ -962,7 +975,6 @@ export class RedQueen {
         this.deps.queue.enqueue({
           type: phaseName,
           issueId,
-          priority: nextPhase.priority,
           description: `Transitioned to ${phaseName}`,
         });
       }

@@ -34,13 +34,3 @@ export function fmtDuration(seconds: number): string {
   s -= m * 60;
   return `${String(d)}d ${String(h)}h ${String(m)}m ${String(s)}s`;
 }
-
-export function fmtPriority(p: number): string {
-  if (p === 0) {
-    return '<span class="pill p0">P0</span>';
-  }
-  if (p === 1) {
-    return '<span class="pill p1">P1</span>';
-  }
-  return `<span class="pill pN">P${String(p)}</span>`;
-}

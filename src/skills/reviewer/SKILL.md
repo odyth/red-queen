@@ -34,6 +34,14 @@ Read the YAML context block. Fields you rely on:
    categories to structure your review.
 3. If `.redqueen/references/coding-standards.md` exists, check the diff
    against it.
+4. Fetch attachments:
+   ```
+   redqueen issue attachments <issueId>
+   ```
+   If the JSON output is a non-empty array, read each `localPath` with
+   vision (screenshots frequently carry information the text omits).
+   Compare the diff against UI attachments during Spec compliance
+   (Step 3); a visual mismatch is a blocker.
 
 ## Execution
 
@@ -92,6 +100,8 @@ high severity) or an **IMPROVEMENT** (non-blocking suggestion).
 - Acceptance criteria are verifiably met.
 - No scope creep (files or changes outside the spec).
 - Tests exist as the spec's Test Plan specifies.
+- If the ticket has UI attachments, verify the implementation matches
+  what the screenshots depict — a visual mismatch is a blocker.
 
 #### Style
 

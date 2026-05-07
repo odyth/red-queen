@@ -209,6 +209,20 @@ describe("WebhookServer", () => {
     expect(pipelineState.get("PROJ-1")?.currentPhase).toBe("done");
   });
 
+  it("pr-merged with no pipeline record skips cleanup without throwing", async () => {
+    sourceControl.parseResult = {
+      source: "webhook",
+      type: "pr-merged",
+      issueId: "PROJ-GHOST",
+      timestamp: new Date().toISOString(),
+      payload: {},
+    };
+    const res = await postWebhook("/webhook/source-control", "{}");
+    expect(res.status).toBe(200);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(pipelineState.get("PROJ-GHOST")).toBeNull();
+  });
+
   it("phase-change to non-entry phase with no local state logs skip", async () => {
     issueTracker.parseResult = {
       source: "webhook",
@@ -339,6 +353,122 @@ describe("WebhookServer", () => {
     const ready = queue.listByStatus("ready");
     const task = ready.find((t) => t.issueId === "PROJ-14" && t.type === "coding");
     expect(task?.metadata.delegator).toBe("justin-14");
+  });
+});
+
+describe("WebhookServer pr-merged cleanup", () => {
+  let db3: BetterSqlite3.Database;
+  let tempDir3: string;
+  let queue3: SqliteTaskQueue;
+  let pipelineState3: PipelineStateStore;
+  let audit3: DualWriteAuditLogger;
+  let dashboard3: DashboardServer;
+  let port3: number;
+  let issueTracker3: MockIssueTracker;
+  let sourceControl3: MockSourceControl;
+  let gitCalls: { args: string[]; cwd: string }[];
+  let worktreeDir: string;
+
+  beforeEach(async () => {
+    tempDir3 = mkdtempSync(join(tmpdir(), "rq-webhook-cleanup-"));
+    worktreeDir = join(tempDir3, "worktree");
+    // Create worktree dir so existsSync gate passes
+    rmSync(worktreeDir, { recursive: true, force: true });
+    const { mkdirSync } = await import("node:fs");
+    mkdirSync(worktreeDir, { recursive: true });
+    db3 = new Database(":memory:");
+    db3.exec(SCHEMA_SQL);
+    queue3 = new SqliteTaskQueue(db3);
+    pipelineState3 = new PipelineStateStore(db3);
+    const orchestratorState3 = new OrchestratorStateStore(db3);
+    audit3 = new DualWriteAuditLogger(db3, join(tempDir3, "audit.log"));
+    issueTracker3 = new MockIssueTracker();
+    sourceControl3 = new MockSourceControl();
+    gitCalls = [];
+    port3 = await getFreePort();
+    dashboard3 = new DashboardServer(
+      { queue: queue3, orchestratorState: orchestratorState3, audit: audit3 },
+      { host: "127.0.0.1", port: port3, enableDashboardUi: true },
+    );
+    await dashboard3.start();
+    const config = makeTestConfig({
+      project: {
+        buildCommand: "npm run build",
+        testCommand: "npm test",
+        directory: tempDir3,
+      },
+    });
+    const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), config);
+    const webhook = new WebhookServer({
+      issueTracker: issueTracker3,
+      sourceControl: sourceControl3,
+      queue: queue3,
+      pipelineState: pipelineState3,
+      runtime,
+      audit: audit3,
+      gitRunner: (args, cwd) => {
+        gitCalls.push({ args, cwd });
+      },
+    });
+    webhook.register(dashboard3);
+  });
+
+  afterEach(async () => {
+    await dashboard3.stop();
+    db3.close();
+    rmSync(tempDir3, { recursive: true, force: true });
+  });
+
+  it("removes worktree, deletes branch, and nulls branch info on pr-merged", async () => {
+    pipelineState3.create("PROJ-200", "human-review");
+    pipelineState3.updateBranchInfo("PROJ-200", {
+      branchName: "feature/PROJ-200",
+      prNumber: 42,
+      worktreePath: worktreeDir,
+    });
+    sourceControl3.parseResult = {
+      source: "webhook",
+      type: "pr-merged",
+      issueId: "PROJ-200",
+      timestamp: new Date().toISOString(),
+      payload: {},
+    };
+    await fetch(`http://127.0.0.1:${String(port3)}/webhook/source-control`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    await new Promise((r) => setTimeout(r, 30));
+
+    expect(gitCalls).toEqual([
+      { args: ["worktree", "remove", "--force", worktreeDir], cwd: tempDir3 },
+      { args: ["branch", "-D", "feature/PROJ-200"], cwd: tempDir3 },
+    ]);
+    const record = pipelineState3.get("PROJ-200");
+    expect(record?.currentPhase).toBe("done");
+    expect(record?.branchName).toBeNull();
+    expect(record?.prNumber).toBeNull();
+    expect(record?.worktreePath).toBeNull();
+  });
+
+  it("does not invoke git when branch and worktree are null", async () => {
+    pipelineState3.create("PROJ-201", "human-review");
+    sourceControl3.parseResult = {
+      source: "webhook",
+      type: "pr-merged",
+      issueId: "PROJ-201",
+      timestamp: new Date().toISOString(),
+      payload: {},
+    };
+    await fetch(`http://127.0.0.1:${String(port3)}/webhook/source-control`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    await new Promise((r) => setTimeout(r, 30));
+
+    expect(gitCalls).toHaveLength(0);
+    expect(pipelineState3.get("PROJ-201")?.currentPhase).toBe("done");
   });
 });
 

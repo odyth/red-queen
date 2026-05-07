@@ -23,7 +23,6 @@ export interface TaskQueue {
 interface TaskRow {
   id: string;
   type: string;
-  priority: number;
   issue_id: string | null;
   status: string;
   description: string | null;
@@ -35,48 +34,24 @@ interface TaskRow {
   metadata: string | null;
 }
 
+// Ordering: tasks sort by the host issue's pipeline_state.created_at when a
+// pipeline row exists ("when RQ first processed this ticket" — monotonic), or
+// by the task's own created_at otherwise (e.g., new-ticket tasks before the
+// pipeline row exists). This makes human feedback on an older ticket naturally
+// preempt newer tickets without needing a priority field.
+//
+// `t.rowid` is the final tiebreaker: SQLite assigns a monotonic integer rowid
+// per insert, so tasks enqueued within the same ISO-ms have deterministic,
+// insertion-order dequeue. `tasks.id` contains random hex and is not ordered.
+const ORDER_CLAUSE = "COALESCE(ps.created_at, t.created_at) ASC, t.created_at ASC, t.rowid ASC";
+
 // --- Implementation ---
 
 export class SqliteTaskQueue implements TaskQueue {
   private readonly db: BetterSqlite3.Database;
-  private readonly enqueueTxn: BetterSqlite3.Transaction<
-    (id: string, task: NewTask, now: string, metadataJson: string | null) => void
-  >;
 
   constructor(db: BetterSqlite3.Database) {
     this.db = db;
-    this.enqueueTxn = this.db.transaction(
-      (id: string, task: NewTask, now: string, metadataJson: string | null) => {
-        const readyCount = (
-          this.db.prepare("SELECT COUNT(*) as count FROM tasks WHERE status = 'ready'").get() as {
-            count: number;
-          }
-        ).count;
-        const priority =
-          task.priority !== undefined ? Math.min(task.priority, readyCount) : readyCount;
-
-        this.db
-          .prepare(
-            "UPDATE tasks SET priority = priority + 1 WHERE status = 'ready' AND priority >= ?",
-          )
-          .run(priority);
-
-        this.db
-          .prepare(
-            `INSERT INTO tasks (id, type, priority, issue_id, status, description, created_at, retry_count, metadata)
-             VALUES (?, ?, ?, ?, 'ready', ?, ?, 0, ?)`,
-          )
-          .run(
-            id,
-            task.type,
-            priority,
-            task.issueId ?? null,
-            task.description ?? null,
-            now,
-            metadataJson,
-          );
-      },
-    );
   }
 
   enqueue(task: NewTask): Task {
@@ -84,10 +59,12 @@ export class SqliteTaskQueue implements TaskQueue {
     const now = new Date().toISOString();
     const metadataJson = task.metadata ? JSON.stringify(task.metadata) : null;
 
-    // BEGIN IMMEDIATE acquires the RESERVED lock up front so concurrent processes
-    // serialize on the write lock instead of racing on read-modify-write and
-    // hitting SQLITE_BUSY_SNAPSHOT at commit time.
-    this.enqueueTxn.immediate(id, task, now, metadataJson);
+    this.db
+      .prepare(
+        `INSERT INTO tasks (id, type, issue_id, status, description, created_at, retry_count, metadata)
+         VALUES (?, ?, ?, 'ready', ?, ?, 0, ?)`,
+      )
+      .run(id, task.type, task.issueId ?? null, task.description ?? null, now, metadataJson);
 
     const created = this.getTask(id);
     if (created === null) {
@@ -99,7 +76,11 @@ export class SqliteTaskQueue implements TaskQueue {
   dequeue(): Task | null {
     const row = this.db
       .prepare(
-        "SELECT * FROM tasks WHERE status = 'ready' ORDER BY priority ASC, created_at ASC LIMIT 1",
+        `SELECT t.* FROM tasks t
+         LEFT JOIN pipeline_state ps ON ps.issue_id = t.issue_id
+         WHERE t.status = 'ready'
+         ORDER BY ${ORDER_CLAUSE}
+         LIMIT 1`,
       )
       .get() as TaskRow | undefined;
 
@@ -160,7 +141,12 @@ export class SqliteTaskQueue implements TaskQueue {
 
   listByStatus(status: TaskStatus): Task[] {
     const rows = this.db
-      .prepare("SELECT * FROM tasks WHERE status = ? ORDER BY priority ASC, created_at ASC")
+      .prepare(
+        `SELECT t.* FROM tasks t
+         LEFT JOIN pipeline_state ps ON ps.issue_id = t.issue_id
+         WHERE t.status = ?
+         ORDER BY ${ORDER_CLAUSE}`,
+      )
       .all(status) as TaskRow[];
     return rows.map(toTask);
   }
@@ -203,7 +189,6 @@ function toTask(row: TaskRow): Task {
   return {
     id: row.id,
     type: row.type,
-    priority: row.priority,
     issueId: row.issue_id,
     status: row.status as TaskStatus,
     description: row.description,

@@ -71,7 +71,6 @@ export async function reconcile(deps: ReconcilerDeps): Promise<ReconcileResult> 
       queue.enqueue({
         type: phase.name,
         issueId: issue.id,
-        priority: phase.priority,
         description: `Reconciled on startup — ${phase.label}`,
       });
       tasksCreated++;

@@ -7,7 +7,6 @@ export const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
     type TEXT NOT NULL,
-    priority INTEGER NOT NULL DEFAULT 1,
     issue_id TEXT,
     status TEXT NOT NULL DEFAULT 'ready',
     description TEXT,
@@ -19,8 +18,8 @@ export const SCHEMA_SQL = `
     metadata TEXT
   );
 
-  CREATE INDEX IF NOT EXISTS idx_tasks_status_priority_created
-    ON tasks(status, priority, created_at);
+  CREATE INDEX IF NOT EXISTS idx_tasks_status_created_at
+    ON tasks(status, created_at);
   CREATE INDEX IF NOT EXISTS idx_tasks_issue_id ON tasks(issue_id);
 
   CREATE TABLE IF NOT EXISTS pipeline_state (
@@ -89,6 +88,17 @@ export class RedQueenDatabase {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes("duplicate column") === false) {
+        throw err;
+      }
+    }
+    // Phase 5: drop tasks.priority (replaced by pipeline_state.created_at ordering).
+    // DROP COLUMN fails with "no such column" on already-migrated DBs — swallow it.
+    this.db.exec("DROP INDEX IF EXISTS idx_tasks_status_priority_created");
+    try {
+      this.db.exec("ALTER TABLE tasks DROP COLUMN priority");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("no such column") === false) {
         throw err;
       }
     }

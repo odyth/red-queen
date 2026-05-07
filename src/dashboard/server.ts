@@ -567,7 +567,6 @@ function summarizeTask(task: Task): TaskSummary {
   return {
     id: task.id,
     type: task.type,
-    priority: task.priority,
     issueId: task.issueId,
     status: task.status,
     description: task.description,

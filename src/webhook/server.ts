@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AuditLogger } from "../core/audit.js";
 import type { TaskQueue } from "../core/queue.js";
@@ -8,6 +10,8 @@ import type { IssueTracker } from "../integrations/issue-tracker.js";
 import type { SourceControl } from "../integrations/source-control.js";
 import type { DashboardServer, RouteHandler } from "../dashboard/server.js";
 
+export type GitRunner = (args: string[], cwd: string) => void;
+
 export interface WebhookServerDeps {
   issueTracker: IssueTracker;
   sourceControl: SourceControl;
@@ -16,6 +20,7 @@ export interface WebhookServerDeps {
   runtime: RuntimeState;
   audit: AuditLogger;
   onEvent?: (event: PipelineEvent) => void;
+  gitRunner?: GitRunner;
 }
 
 export interface WebhookRoutePaths {
@@ -32,9 +37,11 @@ const MAX_BODY_BYTES = 2 * 1024 * 1024;
 
 export class WebhookServer {
   private readonly deps: WebhookServerDeps;
+  private readonly gitRunner: GitRunner;
 
   constructor(deps: WebhookServerDeps) {
     this.deps = deps;
+    this.gitRunner = deps.gitRunner ?? defaultGitRunner;
   }
 
   register(dashboard: DashboardServer, paths: WebhookRoutePaths = DEFAULT_ROUTE_PATHS): void {
@@ -192,7 +199,6 @@ export class WebhookServer {
         queue.enqueue({
           type: phaseName,
           issueId: event.issueId,
-          priority: phase.priority,
           description: `Phase change from webhook`,
           metadata: delegator !== null ? { delegator } : undefined,
         });
@@ -221,7 +227,6 @@ export class WebhookServer {
         queue.enqueue({
           type: taskType,
           issueId: event.issueId,
-          priority: reworkPhase.priority,
           description: "PR feedback",
         });
         audit.log({
@@ -234,14 +239,55 @@ export class WebhookServer {
       }
       case "pr-merged": {
         const record = pipelineState.get(event.issueId);
-        if (record !== null) {
-          pipelineState.updatePhase(event.issueId, "done");
+        if (record === null) {
+          audit.log({
+            component,
+            issueId: event.issueId,
+            message: "PR merged — no pipeline record, skipping local cleanup",
+            metadata: {},
+          });
+          break;
         }
+        pipelineState.updatePhase(event.issueId, "done");
+
+        const projectDir = this.deps.runtime.config.project.directory;
+        if (record.worktreePath !== null && existsSync(record.worktreePath)) {
+          try {
+            this.gitRunner(["worktree", "remove", "--force", record.worktreePath], projectDir);
+          } catch (err) {
+            audit.log({
+              component,
+              issueId: event.issueId,
+              message: `pr-merged cleanup: git worktree remove failed: ${errorMessage(err)}`,
+              metadata: { worktreePath: record.worktreePath },
+            });
+          }
+        }
+        if (record.branchName !== null) {
+          try {
+            this.gitRunner(["branch", "-D", record.branchName], projectDir);
+          } catch (err) {
+            audit.log({
+              component,
+              issueId: event.issueId,
+              message: `pr-merged cleanup: git branch -D failed: ${errorMessage(err)}`,
+              metadata: { branchName: record.branchName },
+            });
+          }
+        }
+        pipelineState.updateBranchInfo(event.issueId, {
+          branchName: null,
+          prNumber: null,
+          worktreePath: null,
+        });
         audit.log({
           component,
           issueId: event.issueId,
-          message: "PR merged — pipeline marked done",
-          metadata: {},
+          message: "PR merged — pipeline marked done, local cleanup complete",
+          metadata: {
+            hadWorktree: record.worktreePath !== null,
+            hadBranch: record.branchName !== null,
+          },
         });
         break;
       }
@@ -341,4 +387,8 @@ function errorMessage(err: unknown): string {
     return err.message;
   }
   return String(err);
+}
+
+function defaultGitRunner(args: string[], cwd: string): void {
+  execFileSync("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
 }

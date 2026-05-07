@@ -70,7 +70,17 @@ Work only on threads with `isResolved === false`. Your replies do **not**
 resolve the thread; after you push the fix, the human verifies and marks
 the thread resolved on the PR UI.
 
-### Step 4: Categorize thread comments
+### Step 4: Fetch attachments
+
+```
+redqueen issue attachments <issueId>
+```
+
+If the JSON output is a non-empty array, read each `localPath` with
+vision (screenshots frequently carry information the text omits).
+Re-fetch in case the human attached new images alongside the feedback.
+
+### Step 5: Categorize thread comments
 
 For each unresolved thread, look at the newest human comment on that
 thread and decide:
@@ -83,7 +93,7 @@ thread and decide:
    the current code already satisfies the feedback. Reply explaining what
    changed and where; do not resolve the thread yourself.
 
-### Step 5: Implement changes
+### Step 6: Implement changes
 
 Working inside the worktree:
 
@@ -92,7 +102,7 @@ Working inside the worktree:
 - For each **question** that reveals a real issue: apply the fix too.
 - Track what you changed so your reply is specific.
 
-### Step 6: Build and test
+### Step 7: Build and test
 
 - Build: `module.buildCommand ?? buildCommands` in the worktree.
 - Tests: `module.testCommandTargeted ?? testCommands`.
@@ -101,7 +111,7 @@ If either fails, fix and retry (up to 3 attempts). If still broken, do
 **not** push. Exit with "Build/test broke after feedback — keeping phase
 at comment-handling" so the orchestrator re-queues.
 
-### Step 7: Commit
+### Step 8: Commit
 
 Stage only the files you modified. One commit per feedback round, not per
 comment:
@@ -116,7 +126,7 @@ Refs: ${issueId}"
 git -C "${worktree_path}" push
 ```
 
-### Step 8: Reply to every unresolved thread
+### Step 9: Reply to every unresolved thread
 
 For each unresolved thread, reply to the first (or newest human) comment:
 
@@ -139,7 +149,7 @@ after verifying.
 
 Do not leave any comment unanswered.
 
-### Step 9: Summary
+### Step 10: Summary
 
 Single line: comments handled (broken down by category), build + test
 status, commit hash. This becomes `priorContext` for the next code review.

@@ -670,6 +670,105 @@ describe("RedQueen orchestrator", () => {
     expect(phaseAtDispatch).toBe("code-feedback");
   });
 
+  it("calls dismissStaleReviews after a requiresPr phase succeeds", async () => {
+    const h = setupHarness(() =>
+      Promise.resolve({
+        success: true,
+        exitCode: 0,
+        elapsed: 1,
+        summary: "addressed feedback",
+        error: null,
+      }),
+    );
+    h.pipelineState.create("PROJ-100", "code-feedback");
+    h.pipelineState.updatePrNumber("PROJ-100", 77);
+    h.issueTracker.phases.set("PROJ-100", "code-feedback");
+    h.queue.enqueue({ type: "code-feedback", issueId: "PROJ-100" });
+
+    await runUntil(h, () => h.sourceControl.calls.includes("dismissStaleReviews:77"));
+
+    expect(h.sourceControl.calls).toContain("dismissStaleReviews:77");
+  });
+
+  it("skips dismissStaleReviews when phase does not require PR", async () => {
+    // coding succeeds but does not have requiresPr: true
+    let runCount = 0;
+    const h = setupHarness(() => {
+      runCount++;
+      if (runCount === 1) {
+        return Promise.resolve({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "done",
+          error: null,
+        });
+      }
+      return Promise.resolve({
+        success: false,
+        exitCode: 1,
+        elapsed: 0,
+        summary: "",
+        error: "stop cascade",
+      });
+    });
+    h.pipelineState.create("PROJ-101", "coding");
+    h.pipelineState.updatePrNumber("PROJ-101", 78);
+    h.issueTracker.phases.set("PROJ-101", "coding");
+    h.queue.enqueue({ type: "coding", issueId: "PROJ-101" });
+
+    await runUntilAfterRuns(h, 1);
+
+    expect(h.sourceControl.calls.some((c) => c.startsWith("dismissStaleReviews"))).toBe(false);
+  });
+
+  it("skips dismissStaleReviews when prNumber is null", async () => {
+    const h = setupHarness(() =>
+      Promise.resolve({
+        success: true,
+        exitCode: 0,
+        elapsed: 1,
+        summary: "done",
+        error: null,
+      }),
+    );
+    // code-feedback with no PR — orchestrator auto-transition guard should have prevented dispatch,
+    // but if we bypass by seeding the phase directly, dismissStaleReviews must still be skipped.
+    h.pipelineState.create("PROJ-102", "code-feedback");
+    // intentionally no updatePrNumber
+    h.issueTracker.phases.set("PROJ-102", "code-feedback");
+    h.queue.enqueue({ type: "code-feedback", issueId: "PROJ-102" });
+
+    await runUntilAfterRuns(h, 1);
+
+    expect(h.sourceControl.calls.some((c) => c.startsWith("dismissStaleReviews"))).toBe(false);
+  });
+
+  it("continues pipeline when dismissStaleReviews throws", async () => {
+    const h = setupHarness(() =>
+      Promise.resolve({
+        success: true,
+        exitCode: 0,
+        elapsed: 1,
+        summary: "addressed",
+        error: null,
+      }),
+    );
+    h.sourceControl.dismissStaleReviewsThrows = true;
+    h.pipelineState.create("PROJ-103", "code-feedback");
+    h.pipelineState.updatePrNumber("PROJ-103", 99);
+    h.issueTracker.phases.set("PROJ-103", "code-feedback");
+    const task = h.queue.enqueue({ type: "code-feedback", issueId: "PROJ-103" });
+
+    await runUntil(h, () => h.queue.getTask(task.id)?.status === "complete");
+
+    // Task still marked complete — dismiss failure must not fail the task
+    expect(h.queue.getTask(task.id)?.status).toBe("complete");
+    // Audit should record the failure
+    const audit = readFileSync(auditPath, "utf8");
+    expect(audit).toContain("dismissStaleReviews failed");
+  });
+
   it("transitionTo on failure passes stored delegator to assignToHuman", async () => {
     // Pre-bump reviewIterations past maxIterations so code-review failure escalates
     // immediately via transitionTo, which is the path that reads delegator.

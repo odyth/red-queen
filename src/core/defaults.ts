@@ -26,7 +26,6 @@ export const DEFAULT_PHASES: PhaseDefinition[] = [
     maxIterations: 3,
     escalateTo: "blocked",
     assignTo: "ai",
-    priority: 0,
     requiresPr: false,
   },
   {
@@ -74,7 +73,6 @@ export const DEFAULT_PHASES: PhaseDefinition[] = [
     maxIterations: 3,
     escalateTo: "human-review",
     assignTo: "ai",
-    priority: 0,
     requiresPr: true,
   },
   {

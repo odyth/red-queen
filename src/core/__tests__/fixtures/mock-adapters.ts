@@ -179,7 +179,13 @@ export class MockSourceControl implements SourceControl {
     return Promise.resolve();
   }
 
-  dismissStaleReviews(): Promise<void> {
+  dismissStaleReviewsThrows = false;
+
+  dismissStaleReviews(prNumber: number): Promise<void> {
+    this.calls.push(`dismissStaleReviews:${String(prNumber)}`);
+    if (this.dismissStaleReviewsThrows) {
+      return Promise.reject(new Error("dismissStaleReviews boom"));
+    }
     return Promise.resolve();
   }
 

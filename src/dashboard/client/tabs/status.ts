@@ -1,5 +1,5 @@
 import { api } from "../api.js";
-import { escapeHtml, fmtPriority, qs } from "../dom.js";
+import { escapeHtml, qs } from "../dom.js";
 import { setStartedAt } from "../uptime.js";
 import type {
   AuditEntryWire,
@@ -97,11 +97,7 @@ function setQueue(items: TaskSummary[] | null): void {
         t.description !== null && t.description !== ""
           ? ` <span class="muted">— ${escapeHtml(t.description)}</span>`
           : "";
-      return (
-        "<li>" +
-        fmtPriority(t.priority) +
-        `<strong>${escapeHtml(t.issueId ?? "—")}</strong> · ${escapeHtml(t.type)}${descr}</li>`
-      );
+      return `<li><strong>${escapeHtml(t.issueId ?? "—")}</strong> · ${escapeHtml(t.type)}${descr}</li>`;
     })
     .join("");
 }

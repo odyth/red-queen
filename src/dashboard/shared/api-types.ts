@@ -18,7 +18,6 @@ export type TaskStatusWire = "ready" | "working" | "complete" | "failed";
 export interface TaskSummary {
   id: string;
   type: string;
-  priority: number;
   issueId: string | null;
   status: TaskStatusWire;
   description: string | null;
