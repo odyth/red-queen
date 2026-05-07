@@ -1,4 +1,10 @@
-import type { Comment, PipelineEvent, ValidationResult } from "../../types.js";
+import type {
+  Comment,
+  GetReviewThreadsOptions,
+  PipelineEvent,
+  ReviewThread,
+  ValidationResult,
+} from "../../types.js";
 import type { Attachment, Issue, IssueTracker } from "../../../integrations/issue-tracker.js";
 import type {
   CheckStatus,
@@ -113,6 +119,7 @@ export class MockIssueTracker implements IssueTracker {
 export class MockSourceControl implements SourceControl {
   branches = new Set<string>();
   prs = new Map<number, PullRequest>();
+  reviewThreadsByPr = new Map<number, ReviewThread[]>();
   parseResult: PipelineEvent | null = null;
   validateResult = true;
   calls: string[] = [];
@@ -174,6 +181,12 @@ export class MockSourceControl implements SourceControl {
 
   getReviewComments(): Promise<Comment[]> {
     return Promise.resolve([]);
+  }
+
+  getReviewThreads(prNumber: number, options?: GetReviewThreadsOptions): Promise<ReviewThread[]> {
+    const all = this.reviewThreadsByPr.get(prNumber) ?? [];
+    const unresolvedOnly = options?.unresolvedOnly ?? true;
+    return Promise.resolve(unresolvedOnly ? all.filter((t) => t.isResolved === false) : all);
   }
 
   replyToComment(): Promise<void> {

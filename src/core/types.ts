@@ -203,6 +203,26 @@ export interface Comment {
   createdAt: string;
 }
 
+export interface ReviewThreadComment {
+  id: string;
+  author: string;
+  body: string;
+  createdAt: string;
+}
+
+export interface ReviewThread {
+  threadId: string;
+  isResolved: boolean;
+  isOutdated: boolean;
+  path: string | null;
+  line: number | null;
+  comments: ReviewThreadComment[];
+}
+
+export interface GetReviewThreadsOptions {
+  unresolvedOnly?: boolean;
+}
+
 export interface ValidationResult {
   errors: string[];
   warnings: string[];

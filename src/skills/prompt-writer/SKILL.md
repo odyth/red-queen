@@ -161,8 +161,10 @@ for the next phase.
 
 ### Rev Step 1: Read the current state
 
-- `specContent` in the context block is the existing spec. That is what you
-  are revising.
+- `specContent` in the context block is the existing spec, refreshed by
+  the orchestrator from the tracker before this dispatch — so inline
+  human edits made on the spec custom field or marker comment during
+  spec-review are already folded in. That is what you are revising.
 - Fetch comments: `redqueen issue comments <issueId>`. Find the most recent
   human feedback — that is what you must address.
 - Attachments may have changed — re-run `redqueen issue attachments` and

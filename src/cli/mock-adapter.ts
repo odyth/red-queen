@@ -5,7 +5,7 @@ import type {
   PullRequest,
   SourceControl,
 } from "../integrations/source-control.js";
-import type { Comment, PipelineEvent, ValidationResult } from "../core/types.js";
+import type { Comment, PipelineEvent, ReviewThread, ValidationResult } from "../core/types.js";
 
 export class MockIssueTrackerAdapter implements IssueTracker {
   getIssue(issueId: string): Promise<Issue> {
@@ -115,6 +115,9 @@ export class MockSourceControlAdapter implements SourceControl {
     return Promise.resolve();
   }
   getReviewComments(): Promise<Comment[]> {
+    return Promise.resolve([]);
+  }
+  getReviewThreads(): Promise<ReviewThread[]> {
     return Promise.resolve([]);
   }
   replyToComment(): Promise<void> {

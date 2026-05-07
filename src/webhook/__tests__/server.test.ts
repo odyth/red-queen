@@ -137,6 +137,10 @@ describe("WebhookServer", () => {
     await postWebhook("/webhook/source-control", "{}");
     await new Promise((r) => setTimeout(r, 30));
     expect(queue.hasOpenTask("PROJ-1", "code-feedback")).toBe(true);
+    // Webhook must not touch tracker state synchronously — auto-transition happens
+    // in the orchestrator's preDispatchValidation when the task dispatches.
+    expect(issueTracker.calls.some((c) => c.startsWith("setPhase:"))).toBe(false);
+    expect(issueTracker.calls.some((c) => c.startsWith("assignToAi:"))).toBe(false);
   });
 
   it("creates spec-feedback task when no PR", async () => {

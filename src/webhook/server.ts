@@ -211,6 +211,12 @@ export class WebhookServer {
           priority: 0,
           description: "PR feedback",
         });
+        audit.log({
+          component,
+          issueId: event.issueId,
+          message: `pr-feedback enqueued ${taskType} — orchestrator will auto-transition if currently at human gate`,
+          metadata: { taskType, hasPr },
+        });
         break;
       }
       case "pr-merged": {

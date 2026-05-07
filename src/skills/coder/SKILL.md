@@ -28,7 +28,9 @@ Read the YAML context block. Fields you rely on:
   Strip `origin/` when passing to `redqueen pr create --base`.
 - `projectDir` — absolute project root. All file operations happen under
   here (or under the worktree you create inside `.redqueen/worktrees`).
-- `specContent` — the spec. Do not re-fetch; it is authoritative.
+- `specContent` — the spec. Do not re-fetch. The orchestrator refreshes
+  `specContent` from the tracker before each dispatch, so inline human
+  edits made during spec-review are already folded in.
 - `buildCommands`, `testCommands` — fallback commands.
 - `module` — if non-null, use `module.buildCommand` instead of
   `buildCommands`, and `module.testCommandTargeted ?? testCommands`

@@ -1,4 +1,9 @@
-import type { Comment, PipelineEvent } from "../core/types.js";
+import type {
+  Comment,
+  GetReviewThreadsOptions,
+  PipelineEvent,
+  ReviewThread,
+} from "../core/types.js";
 
 export interface CreatePROptions {
   title: string;
@@ -42,6 +47,7 @@ export interface SourceControl {
   postReview(prNumber: number, body: string, verdict: "approve" | "request-changes"): Promise<void>;
   dismissStaleReviews(prNumber: number): Promise<void>;
   getReviewComments(prNumber: number): Promise<Comment[]>;
+  getReviewThreads(prNumber: number, options?: GetReviewThreadsOptions): Promise<ReviewThread[]>;
   replyToComment(prNumber: number, commentId: number, body: string): Promise<void>;
 
   // CI checks

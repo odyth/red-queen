@@ -1,4 +1,10 @@
-import type { Comment, PipelineEvent, ValidationResult } from "../../core/types.js";
+import type {
+  Comment,
+  GetReviewThreadsOptions,
+  PipelineEvent,
+  ReviewThread,
+  ValidationResult,
+} from "../../core/types.js";
 import type { Attachment, Issue, IssueTracker } from "../../integrations/issue-tracker.js";
 import type {
   CheckStatus,
@@ -151,6 +157,7 @@ export class InMemorySourceControl implements SourceControl {
   readonly reviews = new Map<number, { verdict: "approve" | "request-changes"; body: string }[]>();
   readonly checks = new Map<number, CheckStatus[]>();
   readonly reviewComments = new Map<number, Comment[]>();
+  readonly reviewThreads = new Map<number, ReviewThread[]>();
   readonly calls: string[] = [];
   private prCounter = 0;
 
@@ -234,6 +241,12 @@ export class InMemorySourceControl implements SourceControl {
 
   getReviewComments(prNumber: number): Promise<Comment[]> {
     return Promise.resolve(this.reviewComments.get(prNumber) ?? []);
+  }
+
+  getReviewThreads(prNumber: number, options?: GetReviewThreadsOptions): Promise<ReviewThread[]> {
+    const all = this.reviewThreads.get(prNumber) ?? [];
+    const unresolvedOnly = options?.unresolvedOnly ?? true;
+    return Promise.resolve(unresolvedOnly ? all.filter((t) => t.isResolved === false) : all);
   }
 
   replyToComment(): Promise<void> {

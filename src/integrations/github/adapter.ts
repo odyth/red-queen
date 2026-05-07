@@ -1,5 +1,11 @@
 import { z } from "zod";
-import type { Comment, PipelineEvent } from "../../core/types.js";
+import type {
+  Comment,
+  GetReviewThreadsOptions,
+  PipelineEvent,
+  ReviewThread,
+  ReviewThreadComment,
+} from "../../core/types.js";
 import { AdapterError } from "../http/retry.js";
 import type {
   CheckConclusion,
@@ -249,6 +255,39 @@ export class GitHubSourceControlAdapter implements SourceControl {
     }));
   }
 
+  async getReviewThreads(
+    prNumber: number,
+    options?: GetReviewThreadsOptions,
+  ): Promise<ReviewThread[]> {
+    const unresolvedOnly = options?.unresolvedOnly ?? true;
+    const threads: ReviewThread[] = [];
+    let cursor: string | null = null;
+    do {
+      const page = await this.client.call(
+        `GraphQL reviewThreads ${this.owner}/${this.repo}#${String(prNumber)}`,
+        () =>
+          this.client.octokit.graphql<ReviewThreadsPage>(REVIEW_THREADS_QUERY, {
+            owner: this.owner,
+            repo: this.repo,
+            pr: prNumber,
+            cursor,
+          }),
+      );
+      const pr = page.repository?.pullRequest;
+      if (pr === null || pr === undefined) {
+        break;
+      }
+      for (const node of pr.reviewThreads.nodes) {
+        if (unresolvedOnly && node.isResolved) {
+          continue;
+        }
+        threads.push(toReviewThread(node));
+      }
+      cursor = pr.reviewThreads.pageInfo.hasNextPage ? pr.reviewThreads.pageInfo.endCursor : null;
+    } while (cursor !== null);
+    return threads;
+  }
+
   async replyToComment(prNumber: number, commentId: number, body: string): Promise<void> {
     await this.client.call(
       `POST /repos/${this.owner}/${this.repo}/pulls/${String(prNumber)}/comments/${String(commentId)}/replies`,
@@ -414,4 +453,76 @@ function toConclusion(value: string | null): CheckConclusion | null {
     default:
       return null;
   }
+}
+
+const REVIEW_THREADS_QUERY = `
+query ReviewThreads($owner: String!, $repo: String!, $pr: Int!, $cursor: String) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $pr) {
+      reviewThreads(first: 50, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          isResolved
+          isOutdated
+          path
+          line
+          comments(first: 100) {
+            nodes {
+              databaseId
+              author { login }
+              body
+              createdAt
+            }
+          }
+        }
+      }
+    }
+  }
+}`;
+
+interface ReviewThreadsPage {
+  repository: {
+    pullRequest: {
+      reviewThreads: {
+        pageInfo: { hasNextPage: boolean; endCursor: string | null };
+        nodes: ReviewThreadNode[];
+      };
+    } | null;
+  } | null;
+}
+
+interface ReviewThreadNode {
+  id: string;
+  isResolved: boolean;
+  isOutdated: boolean;
+  path: string | null;
+  line: number | null;
+  comments: {
+    nodes: {
+      databaseId: number | null;
+      author: { login?: string } | null;
+      body: string;
+      createdAt: string;
+    }[];
+  };
+}
+
+function toReviewThread(node: ReviewThreadNode): ReviewThread {
+  const comments: ReviewThreadComment[] = node.comments.nodes
+    .filter((c) => c.databaseId !== null)
+    .map((c) => ({
+      id: String(c.databaseId),
+      author: c.author?.login ?? "unknown",
+      body: c.body,
+      createdAt: c.createdAt,
+    }));
+  return {
+    threadId: node.id,
+    isResolved: node.isResolved,
+    isOutdated: node.isOutdated,
+    path: node.path,
+    line: node.line,
+    comments,
+  };
 }

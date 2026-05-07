@@ -123,3 +123,19 @@ describe("cmdPr review via --body", () => {
     );
   });
 });
+
+describe("cmdPr comments", () => {
+  it("emits flat JSON when --threads is absent", async () => {
+    await cmdPr(["comments", "1"]);
+    const out = stdoutCapture.join("");
+    const parsed = JSON.parse(out) as unknown;
+    expect(Array.isArray(parsed)).toBe(true);
+  });
+
+  it("emits threads JSON when --threads is set", async () => {
+    await cmdPr(["comments", "1", "--threads"]);
+    const out = stdoutCapture.join("");
+    const parsed = JSON.parse(out) as unknown;
+    expect(Array.isArray(parsed)).toBe(true);
+  });
+});

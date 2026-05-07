@@ -13,12 +13,14 @@ interface FakeOctokitBuilder {
   octokit: unknown;
   calls: Call[];
   setPaginate(fn: (path: string, args: Record<string, unknown>) => unknown[]): void;
+  setGraphql(fn: (query: string, variables: Record<string, unknown>) => unknown): void;
 }
 
 function buildFakeOctokit(): FakeOctokitBuilder {
   const routes = new Map<string, (args: Record<string, unknown>) => unknown>();
   const calls: Call[] = [];
   let paginate: (path: string, args: Record<string, unknown>) => unknown[] = () => [];
+  let graphql: (query: string, variables: Record<string, unknown>) => unknown = () => ({});
 
   const makeCall = (path: string): ((args: Record<string, unknown>) => Promise<unknown>) => {
     const fn = function paginated(args: Record<string, unknown>): Promise<unknown> {
@@ -55,6 +57,10 @@ function buildFakeOctokit(): FakeOctokitBuilder {
       const path = extractLabel(method);
       return Promise.resolve(paginate(path, args));
     },
+    graphql: (query: string, variables: Record<string, unknown>): Promise<unknown> => {
+      calls.push({ label: "graphql", args: variables });
+      return Promise.resolve(graphql(query, variables));
+    },
     request: (path: string, args: Record<string, unknown>): Promise<unknown> => {
       calls.push({ label: path, args });
       const key = path.split(" ")[1] ?? path;
@@ -81,6 +87,9 @@ function buildFakeOctokit(): FakeOctokitBuilder {
     },
     setPaginate(fn) {
       paginate = fn;
+    },
+    setGraphql(fn) {
+      graphql = fn;
     },
     get octokit() {
       return octokit;
@@ -220,6 +229,166 @@ describe("GitHubSourceControlAdapter", () => {
     expect(comments).toHaveLength(1);
     expect(comments[0]?.id).toBe("10");
     expect(comments[0]?.author).toBe("alice");
+  });
+
+  it("getReviewThreads paginates and filters resolved by default", async () => {
+    let calls = 0;
+    fake.setGraphql((_query, vars) => {
+      calls++;
+      if (vars.cursor === null || vars.cursor === undefined) {
+        return {
+          repository: {
+            pullRequest: {
+              reviewThreads: {
+                pageInfo: { hasNextPage: true, endCursor: "c1" },
+                nodes: [
+                  {
+                    id: "T1",
+                    isResolved: false,
+                    isOutdated: false,
+                    path: "a.ts",
+                    line: 5,
+                    comments: {
+                      nodes: [
+                        {
+                          databaseId: 100,
+                          author: { login: "alice" },
+                          body: "fix this",
+                          createdAt: "2026-01-01",
+                        },
+                      ],
+                    },
+                  },
+                  {
+                    id: "T2",
+                    isResolved: true,
+                    isOutdated: false,
+                    path: "b.ts",
+                    line: 9,
+                    comments: {
+                      nodes: [
+                        {
+                          databaseId: 101,
+                          author: { login: "bob" },
+                          body: "resolved",
+                          createdAt: "2026-01-01",
+                        },
+                      ],
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        };
+      }
+      return {
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              pageInfo: { hasNextPage: false, endCursor: null },
+              nodes: [
+                {
+                  id: "T3",
+                  isResolved: false,
+                  isOutdated: true,
+                  path: "c.ts",
+                  line: null,
+                  comments: {
+                    nodes: [
+                      {
+                        databaseId: 102,
+                        author: { login: "alice" },
+                        body: "still unresolved on page 2",
+                        createdAt: "2026-01-02",
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          },
+        },
+      };
+    });
+    const threads = await adapter.getReviewThreads(5);
+    expect(calls).toBe(2);
+    expect(threads.map((t) => t.threadId)).toEqual(["T1", "T3"]);
+    expect(threads[0]?.comments[0]?.id).toBe("100");
+    expect(threads[0]?.isResolved).toBe(false);
+  });
+
+  it("getReviewThreads includes resolved when unresolvedOnly=false", async () => {
+    fake.setGraphql(() => ({
+      repository: {
+        pullRequest: {
+          reviewThreads: {
+            pageInfo: { hasNextPage: false, endCursor: null },
+            nodes: [
+              {
+                id: "T1",
+                isResolved: false,
+                isOutdated: false,
+                path: "a.ts",
+                line: 1,
+                comments: { nodes: [] },
+              },
+              {
+                id: "T2",
+                isResolved: true,
+                isOutdated: false,
+                path: "b.ts",
+                line: 2,
+                comments: { nodes: [] },
+              },
+            ],
+          },
+        },
+      },
+    }));
+    const threads = await adapter.getReviewThreads(5, { unresolvedOnly: false });
+    expect(threads.map((t) => t.threadId)).toEqual(["T1", "T2"]);
+  });
+
+  it("getReviewThreads comment id is REST databaseId (numeric string)", async () => {
+    fake.setGraphql(() => ({
+      repository: {
+        pullRequest: {
+          reviewThreads: {
+            pageInfo: { hasNextPage: false, endCursor: null },
+            nodes: [
+              {
+                id: "T1",
+                isResolved: false,
+                isOutdated: false,
+                path: "a.ts",
+                line: 1,
+                comments: {
+                  nodes: [
+                    {
+                      databaseId: 12345,
+                      author: { login: "alice" },
+                      body: "x",
+                      createdAt: "2026-01-01",
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        },
+      },
+    }));
+    const threads = await adapter.getReviewThreads(5);
+    const commentId = threads[0]?.comments[0]?.id ?? "";
+    const asInt = Number.parseInt(commentId, 10);
+    expect(Number.isFinite(asInt)).toBe(true);
+    expect(asInt).toBe(12345);
+    fake.add("createReplyForReviewComment", (args) => {
+      expect(args.comment_id).toBe(asInt);
+      return {};
+    });
+    await adapter.replyToComment(5, asInt, "thanks");
   });
 
   it("maps check conclusions", async () => {

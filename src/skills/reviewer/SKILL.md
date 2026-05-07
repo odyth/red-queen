@@ -19,7 +19,9 @@ Read the YAML context block. Fields you rely on:
 - `issueId` — the issue this PR addresses.
 - `prNumber` — the PR to review. If null, the coder did not open a PR yet;
   exit with a message (the orchestrator should not have dispatched you).
-- `specContent` — the approved spec the code must satisfy.
+- `specContent` — the approved spec the code must satisfy. Do not
+  re-fetch; the orchestrator refreshes this from the tracker before each
+  dispatch.
 - `iterationCount` / `maxIterations` — review iteration tracking. On the
   last iteration, your decision is final.
 - `projectDir` — project root.

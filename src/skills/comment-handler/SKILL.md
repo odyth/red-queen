@@ -20,8 +20,8 @@ Read the YAML context block. Fields you rely on:
 - `iterationCount` / `maxIterations` — hard limit on how many rounds of
   feedback you attempt before escalating to human review.
 - `projectDir` — project root.
-- `specContent` — the original spec, for reference if feedback questions
-  the scope.
+- `specContent` — the current spec (refreshed from the tracker on each
+  dispatch), for reference if feedback questions the scope.
 - `buildCommands`, `testCommands` — fallback commands.
 - `module` — prefer `module.buildCommand` and
   `module.testCommandTargeted ?? testCommands` when non-null.
@@ -54,26 +54,34 @@ echo "Escalating after ${iterationCount} feedback iterations — human review ne
 Your summary: "Escalating to human — iteration limit reached." The
 orchestrator routes to `escalateTo` based on the phase graph.
 
-### Step 3: Fetch review comments
+### Step 3: Fetch unresolved review threads
 
 ```
-redqueen pr comments <prNumber>
+redqueen pr comments <prNumber> --threads
 ```
 
-This returns an array of `Comment` objects. Each has `id`, `author`,
-`body`, `createdAt`. Focus on comments from the human reviewer since your
-last push — older comments may already be resolved.
+This returns an array of `ReviewThread` objects. Each has `threadId`,
+`isResolved`, `isOutdated`, `path`, `line`, and `comments` (an array of
+`{id, author, body, createdAt}`). By default only unresolved threads are
+returned — you will never see threads the human has already resolved on
+the PR UI, so you will not re-address old feedback across rounds.
 
-### Step 4: Categorize comments
+Work only on threads with `isResolved === false`. Your replies do **not**
+resolve the thread; after you push the fix, the human verifies and marks
+the thread resolved on the PR UI.
 
-For each comment, decide:
+### Step 4: Categorize thread comments
+
+For each unresolved thread, look at the newest human comment on that
+thread and decide:
 
 1. **Actionable change** — concrete request to modify code (e.g. "rename
    this variable", "add error handling here", "this query is vulnerable").
 2. **Question** — asking for reasoning or clarification. Answer requires
    no code change unless the question reveals a real issue.
-3. **Already addressed** — the feedback was handled in a previous
-   iteration, or the current code already satisfies it.
+3. **Already addressed** — the human has not yet resolved the thread but
+   the current code already satisfies the feedback. Reply explaining what
+   changed and where; do not resolve the thread yourself.
 
 ### Step 5: Implement changes
 
@@ -108,13 +116,16 @@ Refs: ${issueId}"
 git -C "${worktree_path}" push
 ```
 
-### Step 8: Reply to every comment
+### Step 8: Reply to every unresolved thread
 
-For each comment:
+For each unresolved thread, reply to the first (or newest human) comment:
 
 ```
 echo "<reply>" | redqueen pr reply <prNumber> <commentId>
 ```
+
+Use the `id` of the comment you are replying to (GitHub's REST comment
+ID; the CLI gave it to you in the `comments[].id` field).
 
 Reply format:
 
@@ -122,6 +133,9 @@ Reply format:
 - **Question:** "<clear answer with code reference if needed>."
 - **Already addressed:** "Addressed in <commit hash or previous
   iteration> — <explanation>."
+
+Your reply does not resolve the thread. The human resolves on the PR UI
+after verifying.
 
 Do not leave any comment unanswered.
 

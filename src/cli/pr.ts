@@ -170,14 +170,31 @@ async function cmdPrReview(args: string[]): Promise<void> {
 async function cmdPrComments(args: string[]): Promise<void> {
   const { positionals, values } = parseArgs({
     args,
-    options: { pretty: { type: "boolean", default: false } },
+    options: {
+      pretty: { type: "boolean", default: false },
+      threads: { type: "boolean", default: false },
+      "include-resolved": { type: "boolean", default: false },
+    },
     allowPositionals: true,
   });
   const prNumber = parsePrNumber(positionals[0], "pr comments");
+  const unresolvedOnly = values["include-resolved"] !== true;
   const ctx = loadCliContext();
   try {
-    const comments = await ctx.sourceControl.getReviewComments(prNumber);
-    writeJson(comments, values.pretty === true);
+    const threads = await ctx.sourceControl.getReviewThreads(prNumber, { unresolvedOnly });
+    if (values.threads === true) {
+      writeJson(threads, values.pretty === true);
+      return;
+    }
+    const flat = threads.flatMap((t) =>
+      t.comments.map((c) => ({
+        id: c.id,
+        author: c.author,
+        body: c.body,
+        createdAt: c.createdAt,
+      })),
+    );
+    writeJson(flat, values.pretty === true);
   } finally {
     ctx.cleanup();
   }

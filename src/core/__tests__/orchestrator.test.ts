@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RedQueenDatabase } from "../database.js";
@@ -465,6 +465,132 @@ describe("RedQueen orchestrator", () => {
     );
 
     expect(h.issueTracker.calls).toContain("assignToHuman:PROJ-50:justin-50");
+  });
+
+  it("refreshes cached spec from tracker before dispatch", async () => {
+    let capturedPrompt: string | null = null;
+    const h = setupHarness((opts) => {
+      const promptMatch = /Read and follow (.+) exactly/.exec(opts.prompt);
+      if (promptMatch?.[1] !== undefined) {
+        capturedPrompt = readFileSync(promptMatch[1], "utf8");
+      }
+      return Promise.resolve({
+        success: false,
+        exitCode: 1,
+        elapsed: 1,
+        summary: "",
+        error: "stop cascade",
+      });
+    });
+    h.pipelineState.create("PROJ-70", "coding");
+    h.pipelineState.updateSpec("PROJ-70", "STALE spec body");
+    h.issueTracker.phases.set("PROJ-70", "coding");
+    h.issueTracker.specs.set("PROJ-70", "FRESH spec body");
+    h.queue.enqueue({ type: "coding", issueId: "PROJ-70" });
+
+    await runUntilAfterRuns(h, 1);
+
+    expect(h.pipelineState.get("PROJ-70")?.specContent).toBe("FRESH spec body");
+    expect(capturedPrompt).toContain("FRESH spec body");
+    expect(capturedPrompt).not.toContain("STALE spec body");
+  });
+
+  it("skips spec re-fetch for spec-writing phase", async () => {
+    const h = setupHarness(() =>
+      Promise.resolve({
+        success: false,
+        exitCode: 1,
+        elapsed: 1,
+        summary: "",
+        error: "stop cascade",
+      }),
+    );
+    h.pipelineState.create("PROJ-71", "spec-writing");
+    h.issueTracker.phases.set("PROJ-71", "spec-writing");
+    // Tracker has a different spec value; orchestrator must not pull it during spec-writing
+    h.issueTracker.specs.set("PROJ-71", "pre-existing");
+    h.queue.enqueue({ type: "spec-writing", issueId: "PROJ-71" });
+
+    await runUntilAfterRuns(h, 1);
+
+    const record = h.pipelineState.get("PROJ-71");
+    expect(record?.specContent).toBeNull();
+  });
+
+  it("auto-transitions human-review -> code-feedback when PR exists", async () => {
+    const h = setupHarness(() =>
+      Promise.resolve({
+        success: false,
+        exitCode: 1,
+        elapsed: 1,
+        summary: "",
+        error: "stop cascade",
+      }),
+    );
+    h.pipelineState.create("PROJ-80", "human-review");
+    h.pipelineState.updatePrNumber("PROJ-80", 42);
+    h.issueTracker.phases.set("PROJ-80", "human-review");
+    h.queue.enqueue({ type: "code-feedback", issueId: "PROJ-80" });
+
+    await runUntilAfterRuns(h, 1);
+
+    const transitionIdx = h.issueTracker.calls.indexOf("setPhase:PROJ-80:code-feedback");
+    expect(transitionIdx).toBeGreaterThanOrEqual(0);
+    expect(h.issueTracker.calls.indexOf("assignToAi:PROJ-80")).toBeGreaterThan(transitionIdx);
+    expect(h.runs.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("auto-transitions spec-review -> spec-feedback when no PR exists", async () => {
+    const h = setupHarness(() =>
+      Promise.resolve({
+        success: false,
+        exitCode: 1,
+        elapsed: 1,
+        summary: "",
+        error: "stop cascade",
+      }),
+    );
+    h.pipelineState.create("PROJ-81", "spec-review");
+    h.issueTracker.phases.set("PROJ-81", "spec-review");
+    h.queue.enqueue({ type: "spec-feedback", issueId: "PROJ-81" });
+
+    await runUntilAfterRuns(h, 1);
+
+    const transitionIdx = h.issueTracker.calls.indexOf("setPhase:PROJ-81:spec-feedback");
+    expect(transitionIdx).toBeGreaterThanOrEqual(0);
+    expect(h.issueTracker.calls.indexOf("assignToAi:PROJ-81")).toBeGreaterThan(transitionIdx);
+    expect(h.runs.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("does not auto-transition when task type is not the gate rework", async () => {
+    const h = setupHarness(() => {
+      throw new Error("worker should not run — task must be marked stale");
+    });
+    h.pipelineState.create("PROJ-82", "human-review");
+    h.pipelineState.updatePrNumber("PROJ-82", 50);
+    h.issueTracker.phases.set("PROJ-82", "human-review");
+    const task = h.queue.enqueue({ type: "coding", issueId: "PROJ-82" });
+
+    await runUntil(h, () => h.queue.getTask(task.id)?.status === "complete");
+
+    expect(h.issueTracker.phases.get("PROJ-82")).toBe("human-review");
+    const stored = h.queue.getTask(task.id);
+    expect(stored?.result).toContain("Stale");
+  });
+
+  it("does not auto-transition code-feedback without a PR", async () => {
+    const h = setupHarness(() => {
+      throw new Error("worker should not run — task must be marked stale");
+    });
+    h.pipelineState.create("PROJ-83", "human-review");
+    h.issueTracker.phases.set("PROJ-83", "human-review");
+    const task = h.queue.enqueue({ type: "code-feedback", issueId: "PROJ-83" });
+
+    await runUntil(h, () => h.queue.getTask(task.id)?.status === "complete");
+
+    expect(h.issueTracker.phases.get("PROJ-83")).toBe("human-review");
+    const stored = h.queue.getTask(task.id);
+    expect(stored?.result).toContain("Stale");
   });
 
   it("transitionTo on failure passes stored delegator to assignToHuman", async () => {

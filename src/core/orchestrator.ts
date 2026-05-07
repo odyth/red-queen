@@ -415,14 +415,26 @@ export class RedQueen {
         message: `Pre-dispatch phase read failed: ${errorMessage(err)}`,
         metadata: { taskId: task.id, phase: phaseName },
       });
+      await this.syncSpecFromTracker(issueId, phaseName, task.id);
       return "proceed";
     }
 
     if (currentPhase === phaseName) {
+      await this.syncSpecFromTracker(issueId, phaseName, task.id);
       return "proceed";
     }
 
     if (currentPhase !== null && this.deps.runtime.phaseGraph.isHumanGate(currentPhase)) {
+      const reworkResult = await this.tryAutoTransitionRework(
+        issueId,
+        currentPhase,
+        phaseName,
+        task,
+      );
+      if (reworkResult === "transitioned") {
+        await this.syncSpecFromTracker(issueId, phaseName, task.id);
+        return "proceed";
+      }
       this.deps.queue.markWorking(task.id);
       this.deps.queue.markComplete(task.id, `Stale — issue is in ${currentPhase} (human gate)`);
       this.deps.audit.log({
@@ -452,7 +464,97 @@ export class RedQueen {
         metadata: { taskId: task.id, expectedPhase: phaseName },
       });
     }
+
+    await this.syncSpecFromTracker(issueId, phaseName, task.id);
     return "proceed";
+  }
+
+  private async tryAutoTransitionRework(
+    issueId: string,
+    currentPhase: string,
+    targetPhase: string,
+    task: Task,
+  ): Promise<"transitioned" | "skip"> {
+    const gate = this.deps.runtime.phaseGraph.getPhase(currentPhase);
+    if (gate?.rework !== targetPhase) {
+      return "skip";
+    }
+    const record = this.deps.pipelineState.get(issueId);
+    const hasPr = record !== null && record.prNumber !== null;
+    if (targetPhase === "code-feedback" && hasPr === false) {
+      return "skip";
+    }
+    if (targetPhase === "spec-feedback" && hasPr) {
+      return "skip";
+    }
+    try {
+      await this.deps.issueTracker.setPhase(issueId, targetPhase);
+      await this.deps.issueTracker.assignToAi(issueId);
+    } catch (err) {
+      this.deps.audit.log({
+        component: "orchestrator",
+        issueId,
+        message: `Auto-transition ${currentPhase} -> ${targetPhase} failed: ${errorMessage(err)}`,
+        metadata: { taskId: task.id, from: currentPhase, to: targetPhase },
+      });
+      return "skip";
+    }
+    this.deps.pipelineState.updatePhase(issueId, targetPhase);
+    this.deps.audit.log({
+      component: "orchestrator",
+      issueId,
+      message: `Auto-transitioned ${currentPhase} -> ${targetPhase} for rework`,
+      metadata: { taskId: task.id, from: currentPhase, to: targetPhase },
+    });
+    return "transitioned";
+  }
+
+  private async syncSpecFromTracker(
+    issueId: string,
+    phaseName: string,
+    taskId: string,
+  ): Promise<void> {
+    if (phaseName === "spec-writing") {
+      return;
+    }
+    let fresh: string | null;
+    try {
+      fresh = await this.deps.issueTracker.getSpec(issueId);
+    } catch (err) {
+      this.deps.audit.log({
+        component: "orchestrator",
+        issueId,
+        message: `Pre-dispatch spec re-read failed (${errorMessage(err)}) — keeping cached spec`,
+        metadata: { taskId, phase: phaseName },
+      });
+      return;
+    }
+    const record = this.deps.pipelineState.get(issueId);
+    if (record === null) {
+      return;
+    }
+    if (fresh === null) {
+      if (record.specContent !== null) {
+        this.deps.audit.log({
+          component: "orchestrator",
+          issueId,
+          message:
+            "Tracker returned no spec but a cached spec exists — keeping cache. Check that the spec marker/field is intact on the tracker.",
+          metadata: { taskId, phase: phaseName },
+        });
+      }
+      return;
+    }
+    if (record.specContent === fresh) {
+      return;
+    }
+    this.deps.pipelineState.updateSpec(issueId, fresh);
+    this.deps.audit.log({
+      component: "orchestrator",
+      issueId,
+      message: `Pre-dispatch: refreshed cached spec from tracker (was ${String(record.specContent?.length ?? 0)} chars, now ${String(fresh.length)} chars)`,
+      metadata: { taskId, phase: phaseName },
+    });
   }
 
   private async dispatchWorkerForTask(task: Task, phase: PhaseDefinition): Promise<void> {
