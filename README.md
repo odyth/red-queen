@@ -7,24 +7,26 @@
 [![CI](https://github.com/odyth/red-queen/actions/workflows/ci.yml/badge.svg)](https://github.com/odyth/red-queen/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**The Red Queen doesn't think. It commands.**
+**Red Queen is to Claude Code what Jenkins is to bash.**
 
-Red Queen is a deterministic, zero-token orchestrator that turns Jira or
-GitHub tickets into reviewed pull requests via Claude Code. You file a
-ticket; Red Queen writes a spec, implements the code, runs automated
-review, and hands the final PR back for human approval — all without
-spending tokens on orchestration itself.
+A deterministic state machine that shuttles Jira or GitHub tickets through a
+configurable AI coding pipeline — spec, plan review, code, review, test,
+human review — and drops a merged PR out the end. The orchestrator itself
+spends zero AI tokens; it just dispatches Claude Code workers between phases
+and stops at the gates you configure.
 
 ## TL;DR
 
-You assign a ticket. Red Queen has Claude write a spec. You approve at a
-human gate. Claude writes the code and opens a PR. Another Claude
-reviews it. Another tests it. You review the final PR and merge. You
-can step in at any gate, or remove the gates entirely.
+You assign a ticket. Claude writes a spec. An automated plan-review scores
+it for blockers and ambiguity (and loops back for rework if it's weak). You
+approve at the human gate. Claude writes the code and opens a PR. Another
+Claude reviews it. Another tests it. You review the final PR and merge. Step
+in at any gate, or remove them entirely.
 
-The orchestrator is a state machine, not an LLM. No AI tokens are spent
-deciding what to do next. Skills are user-overridable markdown prompts;
-phases are dynamic config in `redqueen.yaml`.
+Phases, skills, and gates are all declared in `redqueen.yaml` — add a
+`security-review` phase, skip the human spec-review when plan-review scores
+clean, override a skill prompt by dropping a file into `.redqueen/skills/`.
+The graph is yours to shape.
 
 ## Install
 
@@ -111,8 +113,11 @@ Open <http://127.0.0.1:4400>. Five tabs:
 In Jira, set the **AI Phase** field on a ticket to `Spec Writing` and
 assign it to the AI bot account. The orchestrator polls every 30
 seconds (or reacts to a webhook if configured). You'll see it move:
-`Spec Writing` → `Spec Review` (human gate) → `Coding` → `Code Review`
-→ `Testing` → `Human Review` → merged.
+`Spec Writing` → `Plan Review` → `Spec Review` (human gate) → `Coding`
+→ `Code Review` → `Testing` → `Human Review` → merged. A weak plan
+loops back through `Spec Feedback` up to three times before
+escalating; set `pipeline.skipSpecReviewIfReady: true` to auto-promote
+clean plans straight into `Coding` and skip the human gate.
 
 ## Alternative: GitHub Issues
 

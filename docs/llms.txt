@@ -1,11 +1,13 @@
 # Red Queen
 
-> Deterministic orchestrator for AI coding agents. A zero-token state machine
-> dispatches isolated AI workers through a full SDLC pipeline: spec writing,
-> coding, code review, testing, and human review. Human-in-the-loop gates are
-> first-class configuration, not an afterthought. Open source, MIT-licensed,
-> self-hosted on Node.js 24+. Ships integrations for GitHub Issues, Jira, and
-> GitHub source control; dispatches Claude Code workers today.
+> Deterministic orchestrator for AI coding agents. Red Queen is to Claude
+> Code what Jenkins is to bash — a zero-token state machine shuttles
+> isolated AI workers through a configurable SDLC pipeline: spec writing,
+> automated plan review, human spec review, coding, code review, testing,
+> and human review. Phases, skills, and gates are declared in
+> `redqueen.yaml`. Open source, MIT-licensed, self-hosted on Node.js 24+.
+> Ships integrations for GitHub Issues, Jira, and GitHub source control;
+> dispatches Claude Code workers today.
 
 ## Site
 

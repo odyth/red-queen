@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Red Queen — Deterministic AI Agent Orchestrator for Autonomous Coding</title>
-<meta name="description" content="Red Queen is a deterministic, zero-token orchestrator for AI coding agents. Runs your full SDLC — spec, code, review, test — with first-class human-in-the-loop gates. Open source. Self-hosted. Node.js." />
+<title>Red Queen — The Jenkins for Your AI Coding Workflow</title>
+<meta name="description" content="Red Queen is to Claude Code what Jenkins is to bash. A deterministic, zero-token state machine that shuttles tickets through spec → plan review → code → review → test with configurable human gates. Open source. Self-hosted. Node.js." />
 <meta name="keywords" content="AI orchestrator, AI agent orchestrator, autonomous coding, SDLC automation, deterministic orchestrator, human-in-the-loop AI, Claude Code, agentic workflow, multi-agent coding, LLM orchestrator, AI coding agent, state machine" />
 <meta name="author" content="Odyth" />
 <meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large" />
@@ -16,8 +16,8 @@
 <!-- Open Graph -->
 <meta property="og:type" content="website" />
 <meta property="og:site_name" content="Red Queen" />
-<meta property="og:title" content="Red Queen — Deterministic AI Agent Orchestrator" />
-<meta property="og:description" content="Zero-token state machine dispatches AI coding workers through spec → code → review → test → human review. Named for the AI that ran The Hive. Yours runs your SDLC." />
+<meta property="og:title" content="Red Queen — The Jenkins for Your AI Coding Workflow" />
+<meta property="og:description" content="Red Queen is to Claude Code what Jenkins is to bash. A deterministic state machine shuttles tickets through spec → plan review → code → review → test with configurable human gates. Named for the AI that ran The Hive. Yours runs your SDLC." />
 <meta property="og:url" content="https://redqueen.sh/" />
 <meta property="og:image" content="https://redqueen.sh/assets/brand/og-card.png" />
 <meta property="og:image:width" content="1200" />
@@ -26,8 +26,8 @@
 
 <!-- Twitter / X -->
 <meta name="twitter:card" content="summary_large_image" />
-<meta name="twitter:title" content="Red Queen — Deterministic AI Agent Orchestrator" />
-<meta name="twitter:description" content="Zero-token orchestration for AI coding agents. Full SDLC. Human-in-the-loop. Open source." />
+<meta name="twitter:title" content="Red Queen — The Jenkins for Your AI Coding Workflow" />
+<meta name="twitter:description" content="A deterministic state machine that shuttles tickets through your AI coding pipeline — spec, plan review, code, review, test — with configurable human gates. Open source." />
 <meta name="twitter:image" content="https://redqueen.sh/assets/brand/og-card.png" />
 <meta name="twitter:image:alt" content="Red Queen logo and tagline" />
 
@@ -44,7 +44,7 @@
   "applicationCategory": "DeveloperApplication",
   "applicationSubCategory": "AI Orchestrator",
   "operatingSystem": "macOS, Linux, Windows (Node.js 24+)",
-  "description": "Deterministic orchestrator for AI coding agents. A zero-token state machine dispatches AI workers through the full software development lifecycle: spec writing, coding, code review, testing, and human review. Configurable human-in-the-loop gates keep you in control.",
+  "description": "Red Queen is to Claude Code what Jenkins is to bash. A deterministic, zero-token state machine shuttles tickets through a configurable AI coding pipeline — spec writing, automated plan review, human spec review, coding, code review, testing, and human review — and drops a merged PR out the end. Phases, skills, and gates are declared in redqueen.yaml.",
   "softwareVersion": "0.1.2",
   "url": "https://redqueen.sh/",
   "downloadUrl": "https://www.npmjs.com/package/redqueen",
@@ -84,7 +84,7 @@
       "name": "How is Red Queen different from Devin, Cline, or Aider?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "Most AI coding tools use an LLM to orchestrate other LLMs, spending tokens to decide what to do next. Red Queen does the opposite: a deterministic state machine orchestrates isolated, focused AI workers. This is cheaper, faster, and fully debuggable. Human-in-the-loop gates are first-class configuration, not an afterthought."
+        "text": "Red Queen is to Claude Code what Jenkins is to bash. It sits above the coding agent and shuttles tickets through phases on a deterministic state machine — no LLM in the routing layer. Devin, Cline, and Aider are coding agents you interact with directly; Red Queen is the pipeline that dispatches them in the background, with configurable human gates between phases."
       }
     },
     {
@@ -249,12 +249,117 @@
     max-width: 720px;
     font-style: italic;
   }
+  header.hero .pullquote {
+    color: var(--accent-hi);
+    font-size: 22px;
+    font-style: italic;
+    margin: 0 auto 24px;
+    max-width: 760px;
+    padding: 12px 20px;
+    border-left: 3px solid var(--accent);
+    display: inline-block;
+    text-align: left;
+  }
   header.hero .subline {
     color: var(--text);
     font-size: 18px;
     margin: 0 auto 32px;
     max-width: 760px;
   }
+  header.hero .subline strong {
+    color: var(--accent-hi);
+    font-weight: 600;
+  }
+
+  /* Flow diagram (replaces fragile ASCII) */
+  .flow {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    justify-content: flex-start;
+    padding: 20px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin: 12px 0 24px;
+    font-family: var(--mono);
+    font-size: 13.5px;
+  }
+  .flow .node {
+    padding: 10px 14px;
+    border-radius: 5px;
+    border: 1px solid var(--border);
+    background: #0a0c10;
+    white-space: nowrap;
+  }
+  .flow .node.ai { color: var(--accent-hi); border-color: var(--accent); }
+  .flow .node.human { color: var(--warn); border-color: #6b5a12; background: #1a1608; }
+  .flow .node.done { color: var(--ok); border-color: #1f5935; background: #0a1a10; }
+  .flow .arrow { color: var(--muted); font-weight: 700; padding: 0 2px; }
+  .flow .loop {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--muted);
+    padding: 4px 10px;
+    border: 1px dashed var(--border);
+    border-radius: 20px;
+    margin-left: 4px;
+  }
+  .flow-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    margin-top: 8px;
+    color: var(--muted);
+    font-size: 13px;
+  }
+  .flow-legend .sw {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    margin-right: 6px;
+    vertical-align: middle;
+  }
+  .flow-legend .sw.ai { background: var(--accent); }
+  .flow-legend .sw.human { background: #a88d1e; }
+  .flow-legend .sw.done { background: var(--ok); }
+
+  /* "What it's not" */
+  .not-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 16px;
+    margin-top: 20px;
+  }
+  .not-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 6px;
+    padding: 18px 20px;
+  }
+  .not-card h3 {
+    margin: 0 0 8px;
+    font-size: 15px;
+    color: var(--text);
+    letter-spacing: 0.01em;
+  }
+  .not-card .vs {
+    display: inline-block;
+    background: #0a0c10;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 1px 6px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--muted);
+    margin-left: 6px;
+  }
+  .not-card p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.55; }
   header.hero .ctas {
     display: flex;
     gap: 12px;
@@ -420,6 +525,7 @@
     <ul>
       <li><a href="#features">Features</a></li>
       <li><a href="#how">How it works</a></li>
+      <li><a href="#not">What it's not</a></li>
       <li><a href="#quickstart">Quickstart</a></li>
       <li><a href="#compare">Compare</a></li>
       <li><a href="#faq">FAQ</a></li>
@@ -431,15 +537,16 @@
 <header class="hero">
   <div class="container">
     <img class="logo" src="./assets/brand/logo.png" alt="Red Queen logo" />
-    <h1>Deterministic AI Orchestration</h1>
-    <p>
-      A zero-token state machine dispatches isolated AI workers through
+    <h1>The Jenkins for your AI coding workflow.</h1>
+    <p class="pullquote">
+      &ldquo;Red Queen is to Claude Code what Jenkins is to bash.&rdquo;
     </p>
-    <p>
-      <h2>spec → code → review → test → human review</h2>
-    </p>
-    <p>
-      No wasted tokens on routing. First-class human-in-the-loop gates. Open source, self-hosted, Node.js 24+.
+    <p class="subline">
+      A deterministic state machine shuttles tickets through
+      <strong>spec&nbsp;→&nbsp;plan&nbsp;review&nbsp;→&nbsp;code&nbsp;→&nbsp;review&nbsp;→&nbsp;test&nbsp;→&nbsp;human&nbsp;review</strong>.
+      You configure the phases, skills, and gates in YAML. The orchestrator
+      itself spends zero AI tokens — it just shuttles work between workers
+      and stops at the gates you set. Deterministic, like a build server.
     </p>
     <div class="ctas">
       <a class="btn primary" href="#quickstart">Get Started</a>
@@ -453,14 +560,15 @@
   <div class="container">
     <h2 id="features-h">Why Red Queen</h2>
     <p class="lede">
-      Most AI coding tools use an LLM to orchestrate other LLMs — spending tokens to decide what to do next.
-      Red Queen takes the opposite approach: a deterministic state machine commands focused AI workers.
-      Cheaper. Faster. Debuggable. Yours.
+      You already have a coding agent. What you don't have is a deterministic pipeline
+      to shuttle tickets through it — spec, plan review, code, review, test, human gates —
+      while you're not looking. Red Queen is that pipeline. Configurable in YAML, auditable,
+      and built on a state machine that spends zero tokens on routing.
     </p>
     <div class="grid">
       <article class="card">
-        <h3>Zero-token orchestration</h3>
-        <p>The ~600-line state machine is pure deterministic logic. No LLM calls in the routing layer. You only spend tokens on the actual code work.</p>
+        <h3>You pay for code, not coordination</h3>
+        <p>The state machine is pure deterministic logic — no LLM in the routing layer. Every token you spend goes to actual code work, not deciding what to do next.</p>
       </article>
       <article class="card">
         <h3>Isolated skill workers</h3>
@@ -502,22 +610,73 @@
   <div class="container">
     <h2 id="how-h">How it works</h2>
     <p class="lede">
-      You file a ticket. Red Queen has Claude write a spec for it. You approve. Claude writes the code and opens a PR.
-      Another Claude reviews it. Another tests it. You review the final PR and merge. You can jump in at any gate with
-      feedback, or rip the gates out entirely. A tiny AI dev team — and you're the tech lead.
+      You file a ticket. Claude writes a spec. An automated plan review scores
+      it for blockers and ambiguity. You approve at the human gate. Claude
+      writes the code and opens a PR. Another Claude reviews it. Another tests
+      it. You review the final PR and merge. Jump in at any gate, or rip the
+      gates out entirely.
     </p>
-<pre><code>┌─────────────┐     ┌──────────────┐     ┌────────┐     ┌──────────────┐     ┌─────────┐     ┌──────────────┐
-│ spec-writer │ ──▶ │ spec-review  │ ──▶ │ coder  │ ──▶ │ code-review  │ ──▶ │ testing │ ──▶ │ human-review │
-└─────────────┘     └──────┬───────┘     └────────┘     └──────┬───────┘     └────┬────┘     └──────┬───────┘
-                           │ rework                             │ rework           │ fail            │ approve
-                           ▼                                    ▼                  ▼                 ▼
-                     spec-feedback                       code-feedback          coder             merged
-</code></pre>
-    <p>
+
+    <div class="flow" role="img" aria-label="Red Queen pipeline flow: spec-writing, plan-review, spec-review, coding, code-review, testing, human-review, merged">
+      <span class="node ai">spec-writing</span>
+      <span class="arrow">→</span>
+      <span class="node ai">plan-review</span>
+      <span class="loop">↻ spec-feedback · ≤3 retries</span>
+      <span class="arrow">→</span>
+      <span class="node human">spec-review</span>
+      <span class="arrow">→</span>
+      <span class="node ai">coding</span>
+      <span class="arrow">→</span>
+      <span class="node ai">code-review</span>
+      <span class="loop">↻ coding · ≤3 retries</span>
+      <span class="arrow">→</span>
+      <span class="node ai">testing</span>
+      <span class="arrow">→</span>
+      <span class="node human">human-review</span>
+      <span class="arrow">→</span>
+      <span class="node done">merged</span>
+    </div>
+    <div class="flow-legend">
+      <span><span class="sw ai"></span>Automated (AI worker)</span>
+      <span><span class="sw human"></span>Human gate</span>
+      <span><span class="sw done"></span>Terminal</span>
+    </div>
+
+    <p style="margin-top: 28px;">
       Phases are <strong>dynamic</strong> — defined in <code>redqueen.yaml</code>, not baked into the code.
-      Add a <code>security-review</code> gate. Remove <code>spec-writing</code> if you ship from existing tickets.
+      Add a <code>security-review</code> gate. Remove the human <code>spec-review</code> and let
+      <code>plan-review</code> auto-promote clean specs with <code>skipSpecReviewIfReady</code>.
       The graph is yours to shape.
     </p>
+  </div>
+</section>
+
+<section id="not" aria-labelledby="not-h">
+  <div class="container">
+    <h2 id="not-h">What Red Queen is <em>not</em></h2>
+    <p class="lede">
+      Red Queen sits above your coding agent — it doesn't replace it, host it,
+      or manage its skills. If you've seen one of these, Red Queen is a
+      different category of thing.
+    </p>
+    <div class="not-grid">
+      <article class="not-card">
+        <h3>Not an agent host <span class="vs">vs. opencode</span></h3>
+        <p>Red Queen spawns <code>claude</code> CLI subprocesses and drives them through phases. It's the dispatcher, not the agent runtime.</p>
+      </article>
+      <article class="not-card">
+        <h3>Not a skill manager <span class="vs">vs. agentskills.io</span></h3>
+        <p>Our &ldquo;skills&rdquo; are phase prompt templates for the pipeline. They follow the agentskills.io format so they're portable, but Red Queen isn't a registry or loader for generic user skills.</p>
+      </article>
+      <article class="not-card">
+        <h3>Not a spec framework <span class="vs">vs. OpenSpec</span></h3>
+        <p>No persistent PRDs, no cross-session planning layer. Red Queen executes a ticket through a pipeline — complementary to spec frameworks, not a replacement.</p>
+      </article>
+      <article class="not-card">
+        <h3>Not an interactive coding tool <span class="vs">vs. Claude Code, Aider</span></h3>
+        <p>Red Queen runs in the background and moves tickets through phases while you're not looking. Use Claude Code or Aider for pair-programming at the keyboard.</p>
+      </article>
+    </div>
   </div>
 </section>
 
@@ -637,9 +796,30 @@
     <details class="faq">
       <summary>How is it different from Devin, Cline, or Aider?</summary>
       <p>
-        Most AI coding tools use an LLM to orchestrate other LLMs, spending tokens to decide what to do next.
-        Red Queen does the opposite: a deterministic state machine orchestrates isolated, focused AI workers.
-        This is cheaper, faster, and fully debuggable. Human-in-the-loop gates are first-class configuration, not an afterthought.
+        Red Queen is to Claude Code what Jenkins is to bash — it sits above the coding agent and shuttles tickets
+        through phases on a deterministic state machine. Devin, Cline, and Aider are coding agents you interact with
+        directly. Red Queen is the pipeline that dispatches them in the background, with configurable human gates
+        between phases. No LLM in the routing layer, so routing costs zero tokens and is fully debuggable.
+      </p>
+    </details>
+
+    <details class="faq">
+      <summary>Is this an agent host or skill manager like opencode / agentskills.io?</summary>
+      <p>
+        No. Red Queen spawns <code>claude</code> CLI subprocesses and drives them through a phase graph — it's a
+        dispatcher, not an agent runtime or a generic skill registry. Our &ldquo;skills&rdquo; are phase prompt
+        templates for the pipeline; they follow the <a href="https://agentskills.io/" rel="noopener">agentskills.io</a>
+        frontmatter format so they're portable to any compatible client, but Red Queen itself does not load or
+        manage user-installed skills.
+      </p>
+    </details>
+
+    <details class="faq">
+      <summary>How does this relate to OpenSpec?</summary>
+      <p>
+        <a href="https://openspec.dev/" rel="noopener">OpenSpec</a> is a spec / PRD framework — persistent planning
+        artifacts across sessions. Red Queen is an execution pipeline — one ticket in, PR out. They're complementary,
+        not competitive. You can absolutely feed OpenSpec-authored tickets into a Red Queen pipeline.
       </p>
     </details>
 

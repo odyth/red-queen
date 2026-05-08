@@ -1,8 +1,10 @@
 # Red Queen
 
-> Deterministic orchestrator for AI coding agents. Zero-token state machine
-> dispatches Claude Code workers through a full SDLC pipeline (spec → code →
-> review → test → human review) with configurable human gates.
+> Deterministic orchestrator for AI coding agents. Red Queen is to Claude
+> Code what Jenkins is to bash — a zero-token state machine dispatches
+> Claude Code workers through a configurable SDLC pipeline
+> (spec → plan review → code → review → test → human review) with
+> human-in-the-loop gates.
 
 ## Docs
 
