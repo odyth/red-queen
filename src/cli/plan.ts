@@ -80,7 +80,7 @@ function cmdPlanVerdict(args: string[]): Promise<void> {
   try {
     const existing = ctx.pipelineState.get(issueId);
     if (existing === null) {
-      ctx.pipelineState.create(issueId);
+      throw new CliError(`plan verdict: no pipeline record for ${issueId} — run new-ticket first`);
     }
     const recordedAt = new Date().toISOString();
     const persisted = ctx.pipelineState.setPlanReviewVerdict(issueId, {

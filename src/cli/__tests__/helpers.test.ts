@@ -127,6 +127,8 @@ describe("cmdPr review via --body", () => {
 
 describe("cmdPlan verdict", () => {
   it("persists a clean pass verdict", async () => {
+    await cmdPipeline(["update", "PLAN-1"]);
+    stdoutCapture = [];
     await cmdPlan([
       "verdict",
       "PLAN-1",
@@ -155,6 +157,8 @@ describe("cmdPlan verdict", () => {
   });
 
   it("persists a request-changes verdict", async () => {
+    await cmdPipeline(["update", "PLAN-2"]);
+    stdoutCapture = [];
     await cmdPlan([
       "verdict",
       "PLAN-2",
@@ -177,6 +181,23 @@ describe("cmdPlan verdict", () => {
     expect(parsed.rating).toBe(4);
     expect(parsed.blockers).toBe(3);
     expect(parsed.openQuestions).toBe(2);
+  });
+
+  it("errors when no pipeline record exists for the issue", async () => {
+    await expect(
+      cmdPlan([
+        "verdict",
+        "PLAN-MISSING",
+        "--verdict",
+        "approve",
+        "--rating",
+        "9",
+        "--blockers",
+        "0",
+        "--open-questions",
+        "0",
+      ]),
+    ).rejects.toThrow(/no pipeline record/);
   });
 
   it("rejects an invalid verdict value", async () => {
