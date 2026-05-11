@@ -5,6 +5,8 @@ import type { AuditLogger } from "./audit.js";
 import { buildPhaseGraph } from "./config.js";
 import type { RedQueenConfig } from "./config.js";
 import type { OrchestratorStateStore, PipelineStateStore } from "./pipeline-state.js";
+import type { PhaseUsageStore } from "./phase-usage.js";
+import { computeCost } from "./cost.js";
 import { Poller } from "./poller.js";
 import type { TaskQueue } from "./queue.js";
 import { reconcile } from "./reconciler.js";
@@ -33,6 +35,7 @@ export interface RedQueenDeps {
   runtime: RuntimeState;
   queue: TaskQueue;
   pipelineState: PipelineStateStore;
+  phaseUsage: PhaseUsageStore;
   orchestratorState: OrchestratorStateStore;
   audit: AuditLogger;
   issueTracker: IssueTracker;
@@ -805,6 +808,8 @@ export class RedQueen {
       return;
     }
 
+    await this.recordUsageAndPublish(issueId, phase, result);
+
     this.deps.queue.markComplete(task.id, result.summary);
     this.deps.orchestratorState.incrementCompleted();
     this.deps.pipelineState.updatePriorContext(issueId, result.summary);
@@ -977,6 +982,51 @@ export class RedQueen {
     }
   }
 
+  // Cost tracking is observability — failures here must never gate phase
+  // transitions. Any audit noise is surfaced via the audit log and then
+  // swallowed so the pipeline keeps moving.
+  private async recordUsageAndPublish(
+    issueId: string,
+    phase: PhaseDefinition,
+    result: WorkerResult,
+  ): Promise<void> {
+    const costConfig = this.deps.runtime.config.pipeline.cost;
+    if (costConfig.enabled === false) {
+      return;
+    }
+    if (result.usage === null) {
+      return;
+    }
+    const model = this.deps.runtime.config.pipeline.model;
+    const cost = computeCost(result.usage, model, costConfig.pricing);
+    try {
+      this.deps.phaseUsage.recordRun(issueId, phase.name, result.usage, cost);
+    } catch (err) {
+      this.deps.audit.log({
+        component: "orchestrator",
+        issueId,
+        message: `recordUsage failed for ${phase.name}: ${errorMessage(err)}`,
+        metadata: { phase: phase.name },
+      });
+      return;
+    }
+    try {
+      const breakdown = this.deps.phaseUsage.buildBreakdown(
+        issueId,
+        this.deps.runtime.phaseGraph,
+        model,
+      );
+      await this.deps.issueTracker.setCostBreakdown(issueId, breakdown);
+    } catch (err) {
+      this.deps.audit.log({
+        component: "orchestrator",
+        issueId,
+        message: `setCostBreakdown failed for ${phase.name}: ${errorMessage(err)}`,
+        metadata: { phase: phase.name },
+      });
+    }
+  }
+
   private async handleFailure(
     task: Task,
     phase: PhaseDefinition,
@@ -986,6 +1036,7 @@ export class RedQueen {
     if (issueId === null) {
       return;
     }
+    await this.recordUsageAndPublish(issueId, phase, result);
     const error = result.error ?? "unknown error";
     this.deps.queue.markFailed(task.id, error);
     this.deps.orchestratorState.incrementErrors();
@@ -1170,6 +1221,11 @@ export class RedQueen {
         audit: this.deps.audit,
         service: serviceDeps,
         editor: editorDeps,
+        cost: {
+          phaseUsage: this.deps.phaseUsage,
+          enabled: pipeline.cost.enabled,
+          model: pipeline.model,
+        },
       },
       {
         host: dashCfg.host,

@@ -4,6 +4,7 @@ import * as statusTab from "./tabs/status.js";
 import * as configTab from "./tabs/config.js";
 import * as skillsTab from "./tabs/skills.js";
 import * as workflowTab from "./tabs/workflow.js";
+import * as costTab from "./tabs/cost.js";
 import { connect as connectSse } from "./sse.js";
 
 interface ShellWindow extends Window {
@@ -17,6 +18,7 @@ const INIT: Record<string, InitFn> = {
   config: configTab.init,
   skills: skillsTab.init,
   workflow: workflowTab.init,
+  cost: costTab.init,
 };
 
 function activeTabKey(): string | null {

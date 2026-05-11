@@ -1,11 +1,13 @@
 import { z } from "zod";
-import type { Comment, PipelineEvent, ValidationResult } from "../../core/types.js";
+import type { Comment, CostBreakdown, PipelineEvent, ValidationResult } from "../../core/types.js";
+import { renderBreakdownMarkdown } from "../../core/cost-markdown.js";
 import type { Attachment, Issue, IssueTracker } from "../issue-tracker.js";
 import { parseGitHubWebhookEvent, validateGitHubWebhook } from "../github/webhook.js";
 import type { GitHubAuthStrategy, GitHubIdentity } from "../github/auth.js";
 import { GitHubAuthConfigSchema } from "../github/auth/config.js";
 import type { GitHubClient } from "../github/client.js";
 import { ACTIVE_LABEL, colorFor, isPhaseLabel, phaseFromLabel, phaseLabel } from "./labels.js";
+import { findCost, formatCostBody } from "./cost-marker.js";
 import { findSpec, formatSpecBody } from "./spec-marker.js";
 
 export const GitHubIssuesConfigSchema = z.object({
@@ -199,6 +201,47 @@ export class GitHubIssuesAdapter implements IssueTracker {
 
   async addComment(issueId: string, body: string): Promise<void> {
     const number = parseIssueId(issueId);
+    await this.client.call(
+      `POST /repos/${this.owner}/${this.repo}/issues/${String(number)}/comments`,
+      () =>
+        this.client.rest.issues.createComment({
+          owner: this.owner,
+          repo: this.repo,
+          issue_number: number,
+          body,
+        }),
+    );
+  }
+
+  async setCostBreakdown(issueId: string, breakdown: CostBreakdown): Promise<void> {
+    const number = parseIssueId(issueId);
+    const comments = (await this.client.paginate(this.client.rest.issues.listComments, {
+      owner: this.owner,
+      repo: this.repo,
+      issue_number: number,
+      per_page: 100,
+    })) as { id: number; body: string | null; created_at?: string }[];
+    const lookup = findCost(comments);
+    if (lookup.duplicateCount > 0) {
+      this.audit(`setCostBreakdown: duplicate marker comments for issue ${issueId}`, {
+        duplicateCount: lookup.duplicateCount,
+      });
+    }
+    const body = formatCostBody(renderBreakdownMarkdown(breakdown));
+    const commentId = lookup.markerCommentId;
+    if (commentId !== null) {
+      await this.client.call(
+        `PATCH /repos/${this.owner}/${this.repo}/issues/comments/${String(commentId)}`,
+        () =>
+          this.client.rest.issues.updateComment({
+            owner: this.owner,
+            repo: this.repo,
+            comment_id: commentId,
+            body,
+          }),
+      );
+      return;
+    }
     await this.client.call(
       `POST /repos/${this.owner}/${this.repo}/issues/${String(number)}/comments`,
       () =>

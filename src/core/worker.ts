@@ -1,6 +1,7 @@
 import { spawn, execSync } from "node:child_process";
 import { accessSync, constants as fsConstants } from "node:fs";
 import { delimiter, join } from "node:path";
+import type { RunUsage } from "./types.js";
 
 export interface HeartbeatInfo {
   pid: number;
@@ -17,6 +18,7 @@ export interface WorkerResult {
   elapsed: number;
   summary: string;
   error: string | null;
+  usage: RunUsage | null;
 }
 
 export interface WorkerOptions {
@@ -193,9 +195,10 @@ export function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       const elapsed = Math.round((Date.now() - startTime) / 1000);
       const exitCode = code ?? -1;
 
+      const { summary, usage } = extractWorkerOutput(stdout);
+
       if (exitCode === 0 && killed === false) {
-        const summary = extractSummary(stdout);
-        resolve({ success: true, exitCode, elapsed, summary, error: null });
+        resolve({ success: true, exitCode, elapsed, summary, error: null, usage });
         return;
       }
 
@@ -211,8 +214,9 @@ export function runWorker(options: WorkerOptions): Promise<WorkerResult> {
         success: false,
         exitCode,
         elapsed,
-        summary: extractSummary(stdout),
+        summary,
         error,
+        usage,
       });
     });
 
@@ -226,6 +230,7 @@ export function runWorker(options: WorkerOptions): Promise<WorkerResult> {
         elapsed,
         summary: "",
         error: err.message,
+        usage: null,
       });
     });
   });
@@ -315,9 +320,14 @@ function parseCpuTime(timeStr: string): number {
   return parts[0] ?? 0;
 }
 
-function extractSummary(stdout: string): string {
+interface ExtractedOutput {
+  summary: string;
+  usage: RunUsage | null;
+}
+
+export function extractWorkerOutput(stdout: string): ExtractedOutput {
   if (stdout.length === 0) {
-    return "Completed (no output)";
+    return { summary: "Completed (no output)", usage: null };
   }
   try {
     const parsed = JSON.parse(stdout) as unknown;
@@ -329,14 +339,45 @@ function extractSummary(stdout: string): string {
           : typeof obj.text === "string"
             ? obj.text
             : null;
-      if (raw !== null) {
-        return truncate(raw, SUMMARY_MAX_LEN);
-      }
+      const summary =
+        raw !== null ? truncate(raw, SUMMARY_MAX_LEN) : truncate(stdout, SUMMARY_MAX_LEN);
+      return { summary, usage: extractUsage(obj) };
     }
   } catch {
     // Fall through to raw stdout handling
   }
-  return truncate(stdout, SUMMARY_MAX_LEN);
+  return { summary: truncate(stdout, SUMMARY_MAX_LEN), usage: null };
+}
+
+function extractUsage(obj: Record<string, unknown>): RunUsage | null {
+  // Claude Code's -p --output-format json emits usage on the top-level
+  // result object. Field names match the Anthropic API (snake_case).
+  const raw = obj.usage;
+  if (raw === null || raw === undefined || typeof raw !== "object") {
+    return null;
+  }
+  const u = raw as Record<string, unknown>;
+  const input = numericField(u, "input_tokens");
+  const output = numericField(u, "output_tokens");
+  const cacheRead = numericField(u, "cache_read_input_tokens");
+  const cacheCreation = numericField(u, "cache_creation_input_tokens");
+  if (input === null && output === null && cacheRead === null && cacheCreation === null) {
+    return null;
+  }
+  return {
+    inputTokens: input ?? 0,
+    outputTokens: output ?? 0,
+    cacheReadTokens: cacheRead ?? 0,
+    cacheCreationTokens: cacheCreation ?? 0,
+  };
+}
+
+function numericField(obj: Record<string, unknown>, key: string): number | null {
+  const value = obj[key];
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  return null;
 }
 
 function truncate(value: string, max: number): string {

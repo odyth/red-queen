@@ -3,6 +3,7 @@ import type {
   ConfigGetResponse,
   ConfigPutResponse,
   ConfigValidateResponse,
+  CostSummaryPayload,
   PhaseDefinition,
   SkillEntry,
   SkillGetResponse,
@@ -83,4 +84,6 @@ export const api = {
 
   serviceRestart: () => fetch("/api/service/restart", { method: "POST" }),
   serviceStop: () => fetch("/api/service/stop", { method: "POST" }),
+
+  getCostSummary: () => getJson<CostSummaryPayload>("/api/cost"),
 };

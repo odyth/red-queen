@@ -9,6 +9,7 @@ import { RedQueenDatabase } from "../../core/database.js";
 import { DEFAULT_PHASES } from "../../core/defaults.js";
 import { RedQueen } from "../../core/orchestrator.js";
 import { OrchestratorStateStore, PipelineStateStore } from "../../core/pipeline-state.js";
+import { PhaseUsageStore } from "../../core/phase-usage.js";
 import { SqliteTaskQueue } from "../../core/queue.js";
 import { RuntimeState } from "../../core/runtime-state.js";
 import { createFakeWorkerRunner, phaseRule } from "../fakes/fake-worker-runner.js";
@@ -52,11 +53,13 @@ function buildConfig(overrides: Partial<RedQueenConfig> = {}): RedQueenConfig {
       baseBranch: "origin/main",
       branchPrefixes: DEFAULT_BRANCH_PREFIXES,
       webhooks: { enabled: false },
+      cost: { enabled: false, pricing: {} },
       model: "opus",
       effort: "high",
       stallThresholdMs: 60_000,
       reconcileInterval: 0.1,
       claudeBin: "/bin/sh",
+      skipSpecReviewIfReady: false,
     },
     phases: DEFAULT_PHASES,
     skills: { directory: skillsDir, disabled: [] },
@@ -114,6 +117,7 @@ describe("E2E: orchestrator full pipeline loop", () => {
     const db = new RedQueenDatabase(dbPath);
     const queue = new SqliteTaskQueue(db.db);
     const pipelineState = new PipelineStateStore(db.db);
+    const phaseUsage = new PhaseUsageStore(db.db);
     const orchestratorState = new OrchestratorStateStore(db.db);
     const audit = new DualWriteAuditLogger(db.db, auditPath);
     const phaseGraph = buildPhaseGraph(DEFAULT_PHASES);
@@ -152,6 +156,7 @@ describe("E2E: orchestrator full pipeline loop", () => {
           elapsed: 1,
           summary: `Created branch ${branchName} and PR #1`,
           error: null,
+          usage: null,
         };
       },
       phaseRule("code-review", "Review approved"),
@@ -166,6 +171,7 @@ describe("E2E: orchestrator full pipeline loop", () => {
       runtime,
       queue,
       pipelineState,
+      phaseUsage,
       orchestratorState,
       audit,
       issueTracker,

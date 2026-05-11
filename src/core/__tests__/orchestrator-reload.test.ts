@@ -11,6 +11,7 @@ import { SCHEMA_SQL } from "../database.js";
 import { DEFAULT_PHASES } from "../defaults.js";
 import { RedQueen } from "../orchestrator.js";
 import { OrchestratorStateStore, PipelineStateStore } from "../pipeline-state.js";
+import { PhaseUsageStore } from "../phase-usage.js";
 import { SqliteTaskQueue } from "../queue.js";
 import { reconcile } from "../reconciler.js";
 import { RuntimeState } from "../runtime-state.js";
@@ -51,12 +52,14 @@ const SINGLE_PHASE: PhaseDefinition[] = [
 function buildOrchestrator(runtime: RuntimeState, skillsDir: string): RedQueen {
   const queue = new SqliteTaskQueue(db);
   const pipelineState = new PipelineStateStore(db);
+  const phaseUsage = new PhaseUsageStore(db);
   const orchestratorState = new OrchestratorStateStore(db);
   const audit = new DualWriteAuditLogger(db, join(tempDir, "audit.log"));
   return new RedQueen({
     runtime,
     queue,
     pipelineState,
+    phaseUsage,
     orchestratorState,
     audit,
     issueTracker: new MockIssueTracker(),
@@ -64,7 +67,14 @@ function buildOrchestrator(runtime: RuntimeState, skillsDir: string): RedQueen {
     builtInSkillsDir: skillsDir,
     installSignalHandlers: false,
     workerRunner: () =>
-      Promise.resolve({ success: true, exitCode: 0, elapsed: 0, summary: "", error: null }),
+      Promise.resolve({
+        success: true,
+        exitCode: 0,
+        elapsed: 0,
+        summary: "",
+        error: null,
+        usage: null,
+      }),
   });
 }
 

@@ -1,5 +1,6 @@
 import type {
   Comment,
+  CostBreakdown,
   GetReviewThreadsOptions,
   PipelineEvent,
   ReviewThread,
@@ -88,6 +89,14 @@ export class MockIssueTracker implements IssueTracker {
 
   getComments(issueId: string): Promise<Comment[]> {
     return Promise.resolve(this.commentsById.get(issueId) ?? []);
+  }
+
+  costBreakdowns = new Map<string, CostBreakdown>();
+
+  setCostBreakdown(issueId: string, breakdown: CostBreakdown): Promise<void> {
+    this.calls.push(`setCostBreakdown:${issueId}:${breakdown.totalCostUsd.toFixed(4)}`);
+    this.costBreakdowns.set(issueId, breakdown);
+    return Promise.resolve();
   }
 
   listAttachments(): Promise<Attachment[]> {

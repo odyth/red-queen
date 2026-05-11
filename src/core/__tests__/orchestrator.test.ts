@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { RedQueenDatabase } from "../database.js";
 import { SqliteTaskQueue } from "../queue.js";
 import { PipelineStateStore, OrchestratorStateStore } from "../pipeline-state.js";
+import { PhaseUsageStore } from "../phase-usage.js";
 import { DualWriteAuditLogger } from "../audit.js";
 import { buildPhaseGraph } from "../config.js";
 import { DEFAULT_PHASES } from "../defaults.js";
@@ -24,6 +25,7 @@ interface Harness {
   db: RedQueenDatabase;
   queue: SqliteTaskQueue;
   pipelineState: PipelineStateStore;
+  phaseUsage: PhaseUsageStore;
   orchestratorState: OrchestratorStateStore;
   audit: DualWriteAuditLogger;
   issueTracker: MockIssueTracker;
@@ -45,6 +47,7 @@ function setupHarness(
   const db = new RedQueenDatabase(dbPath);
   const queue = new SqliteTaskQueue(db.db);
   const pipelineState = new PipelineStateStore(db.db);
+  const phaseUsage = new PhaseUsageStore(db.db);
   const orchestratorState = new OrchestratorStateStore(db.db);
   const audit = new DualWriteAuditLogger(db.db, auditPath);
   const issueTracker = new MockIssueTracker();
@@ -65,6 +68,7 @@ function setupHarness(
       baseBranch: "origin/main",
       branchPrefixes: { default: "feature/" },
       webhooks: { enabled: false },
+      cost: { enabled: false, pricing: {} },
       model: "opus",
       effort: "high",
       stallThresholdMs: 60_000,
@@ -85,6 +89,7 @@ function setupHarness(
     runtime,
     queue,
     pipelineState,
+    phaseUsage,
     orchestratorState,
     audit,
     issueTracker,
@@ -99,6 +104,7 @@ function setupHarness(
     db,
     queue,
     pipelineState,
+    phaseUsage,
     orchestratorState,
     audit,
     issueTracker,

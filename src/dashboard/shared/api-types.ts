@@ -141,6 +141,23 @@ export interface WorkflowPutConflict {
 
 export type WorkflowPutResponse = WorkflowPutOk | WorkflowPutFail | WorkflowPutConflict;
 
+// --- Cost ---
+
+export interface CostTicketRow {
+  issueId: string;
+  totalCostUsd: number;
+  runCount: number;
+  updatedAt: string;
+}
+
+export interface CostSummaryPayload {
+  enabled: boolean;
+  model: string;
+  totalCostUsd: number;
+  tickets: CostTicketRow[];
+  updatedAt: string;
+}
+
 // --- SSE events ---
 //
 // Each DashboardEvent.type determines the shape of .data. The union

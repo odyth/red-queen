@@ -1,4 +1,4 @@
-export type NavKey = "status" | "service" | "config" | "skills" | "workflow";
+export type NavKey = "status" | "service" | "config" | "skills" | "workflow" | "cost";
 
 export interface NavTab {
   key: NavKey;
@@ -12,6 +12,7 @@ export const NAV_TABS: readonly NavTab[] = [
   { key: "config", label: "Config", partialPath: "/api/config-partial" },
   { key: "skills", label: "Skills", partialPath: "/api/skills-partial" },
   { key: "workflow", label: "Workflow", partialPath: "/api/workflow-partial" },
+  { key: "cost", label: "Cost", partialPath: "/api/cost-partial" },
 ];
 
 export interface ShellOptions {

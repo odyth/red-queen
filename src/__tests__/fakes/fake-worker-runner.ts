@@ -59,6 +59,7 @@ export function phaseRule(
       elapsed: 1,
       summary,
       error: null,
+      usage: null,
       ...overrides,
     };
   };

@@ -216,6 +216,42 @@ export interface PipelineEvent {
   payload: Record<string, unknown>;
 }
 
+// --- Usage & cost ---
+
+export interface RunUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+}
+
+export interface PhaseUsage {
+  issueId: string;
+  phaseName: string;
+  iterations: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  costUsd: number;
+  updatedAt: string;
+}
+
+export interface PhaseCostRow {
+  phase: string;
+  iterations: number;
+  usage: RunUsage;
+  costUsd: number;
+}
+
+export interface CostBreakdown {
+  totalCostUsd: number;
+  phases: PhaseCostRow[];
+  currency: "USD";
+  model: string;
+  updatedAt: string;
+}
+
 // --- Shared integration types ---
 
 export interface Comment {

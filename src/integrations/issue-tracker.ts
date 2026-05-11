@@ -1,4 +1,4 @@
-import type { Comment, PipelineEvent, ValidationResult } from "../core/types.js";
+import type { Comment, CostBreakdown, PipelineEvent, ValidationResult } from "../core/types.js";
 
 export interface Issue {
   id: string;
@@ -43,6 +43,10 @@ export interface IssueTracker {
   // Comments
   addComment(issueId: string, body: string): Promise<void>;
   getComments(issueId: string): Promise<Comment[]>;
+
+  // Cost reporting — publishes the per-phase breakdown and total.
+  // Adapters choose native storage (Jira custom fields, GitHub marker comment).
+  setCostBreakdown(issueId: string, breakdown: CostBreakdown): Promise<void>;
 
   // Attachments
   listAttachments(issueId: string): Promise<Attachment[]>;

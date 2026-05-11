@@ -724,3 +724,107 @@ describe("buildPhaseGraph", () => {
     expect(entryNames).not.toContain("spec-awaiting-info");
   });
 });
+
+describe("pipeline.cost", () => {
+  const baseYamlHeader = `
+issueTracker:
+  type: jira
+  config:
+    baseUrl: "https://example.atlassian.net"
+    email: "bot@example.com"
+    apiToken: "secret"
+    projectKey: "TEST"
+    customFields:
+      phase: "customfield_1"
+      spec: "customfield_2"
+    phaseMapping:
+      coding:
+        optionId: "10001"
+sourceControl:
+  type: github
+project:
+  buildCommand: "npm run build"
+  testCommand: "npm test"
+`;
+
+  it("defaults cost.enabled to false and pricing to {}", () => {
+    const config = parseConfig(baseYamlHeader);
+    expect(config.pipeline.cost.enabled).toBe(false);
+    expect(config.pipeline.cost.pricing).toEqual({});
+  });
+
+  it("rejects cost.enabled=true on Jira without the two custom field IDs", () => {
+    const yaml = `${baseYamlHeader}
+pipeline:
+  cost:
+    enabled: true
+`;
+    expect(() => parseConfig(yaml)).toThrow(/customFields\.totalCost/);
+  });
+
+  it("accepts cost.enabled=true on Jira when both custom field IDs are set", () => {
+    const yaml = `
+issueTracker:
+  type: jira
+  config:
+    baseUrl: "https://example.atlassian.net"
+    email: "bot@example.com"
+    apiToken: "secret"
+    projectKey: "TEST"
+    customFields:
+      phase: "customfield_1"
+      spec: "customfield_2"
+      totalCost: "customfield_3"
+      costBreakdown: "customfield_4"
+    phaseMapping:
+      coding:
+        optionId: "10001"
+sourceControl:
+  type: github
+project:
+  buildCommand: "npm run build"
+  testCommand: "npm test"
+pipeline:
+  cost:
+    enabled: true
+    pricing:
+      opus:
+        input: 15
+        output: 75
+        cacheRead: 1.5
+        cacheCreation: 18.75
+`;
+    const config = parseConfig(yaml);
+    expect(config.pipeline.cost.enabled).toBe(true);
+    expect(config.pipeline.cost.pricing.opus?.input).toBe(15);
+  });
+
+  it("accepts cost.enabled=true on github-issues without custom fields (marker comment path)", () => {
+    const yaml = `
+issueTracker:
+  type: github-issues
+  config:
+    owner: "acme"
+    repo: "app"
+    auth:
+      type: pat
+      token: "ghp_xxx"
+sourceControl:
+  type: github
+  config:
+    owner: "acme"
+    repo: "app"
+    auth:
+      type: pat
+      token: "ghp_xxx"
+project:
+  buildCommand: "npm run build"
+  testCommand: "npm test"
+pipeline:
+  cost:
+    enabled: true
+`;
+    const config = parseConfig(yaml);
+    expect(config.pipeline.cost.enabled).toBe(true);
+  });
+});

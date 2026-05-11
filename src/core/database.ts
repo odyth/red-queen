@@ -58,6 +58,21 @@ export const SCHEMA_SQL = `
 
   CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp);
   CREATE INDEX IF NOT EXISTS idx_audit_issue_id ON audit_log(issue_id);
+
+  CREATE TABLE IF NOT EXISTS phase_usage (
+    issue_id TEXT NOT NULL,
+    phase_name TEXT NOT NULL,
+    iterations INTEGER NOT NULL DEFAULT 0,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+    cost_usd REAL NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (issue_id, phase_name)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_phase_usage_updated_at ON phase_usage(updated_at DESC);
 `;
 
 export class RedQueenDatabase {

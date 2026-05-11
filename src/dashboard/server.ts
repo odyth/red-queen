@@ -7,6 +7,7 @@ import type { AuditLogger } from "../core/audit.js";
 import type { RedQueenConfig } from "../core/config.js";
 import type { TaskQueue } from "../core/queue.js";
 import type { OrchestratorStateStore } from "../core/pipeline-state.js";
+import type { PhaseUsageStore } from "../core/phase-usage.js";
 import type { RuntimeState } from "../core/runtime-state.js";
 import { packageVersion } from "../core/version.js";
 import type {
@@ -16,6 +17,7 @@ import type {
 } from "../core/service/index.js";
 import type { Task } from "../core/types.js";
 import { handleConfigGet, handleConfigPut, handleConfigValidate } from "./api/config.js";
+import { handleCostSummary } from "./api/cost.js";
 import {
   handleServicePartial,
   handleServiceRestart,
@@ -36,6 +38,7 @@ import type { DashboardEvent } from "./events.js";
 import type { StatusPayload, TaskSummary } from "./shared/api-types.js";
 import { renderShell } from "./html/shell.js";
 import { renderConfigPartial } from "./html/partials/config.js";
+import { renderCostPartial } from "./html/partials/cost.js";
 import { renderServicePartial } from "./html/partials/service.js";
 import { renderSkillsPartial } from "./html/partials/skills.js";
 import { renderStatusPartial } from "./html/partials/status.js";
@@ -106,12 +109,22 @@ export interface DashboardEditorDeps {
   reload: (newConfig: RedQueenConfig) => { applied: string[]; restartRequired: string[] };
 }
 
+export interface DashboardCostDeps {
+  phaseUsage: PhaseUsageStore;
+  enabled: boolean;
+  model: string;
+}
+
 export interface DashboardDeps {
   queue: TaskQueue;
   orchestratorState: OrchestratorStateStore;
   audit: AuditLogger;
   service?: DashboardServiceDeps;
   editor?: DashboardEditorDeps;
+  // Cost deps are optional at the type level so legacy call sites and tests
+  // don't need to wire a disabled placeholder. When absent, the cost tab
+  // renders the "disabled" empty state.
+  cost?: DashboardCostDeps;
 }
 
 export interface DashboardServerOptions {
@@ -367,6 +380,39 @@ export class DashboardServer {
       handler: (_req, res) => {
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         res.end(renderStatusPartial());
+      },
+    });
+    routes.push({
+      method: "GET",
+      path: "/api/cost-partial",
+      handler: (_req, res) => {
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(renderCostPartial());
+      },
+    });
+    routes.push({
+      method: "GET",
+      path: "/api/cost",
+      handler: (req, res) => {
+        const cost = this.deps.cost;
+        if (cost === undefined) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              enabled: false,
+              model: "",
+              totalCostUsd: 0,
+              tickets: [],
+              updatedAt: new Date().toISOString(),
+            }),
+          );
+          return;
+        }
+        handleCostSummary(req, res, {
+          phaseUsage: cost.phaseUsage,
+          costEnabled: cost.enabled,
+          model: cost.model,
+        });
       },
     });
     routes.push({

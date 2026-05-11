@@ -4,7 +4,8 @@ import { dirname } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { z } from "zod";
-import type { Comment, PipelineEvent, ValidationResult } from "../../core/types.js";
+import type { Comment, CostBreakdown, PipelineEvent, ValidationResult } from "../../core/types.js";
+import { renderBreakdownMarkdown } from "../../core/cost-markdown.js";
 import type { Attachment, Issue, IssueTracker } from "../issue-tracker.js";
 import { fromAdf, toAdf } from "./adf.js";
 import type { AdfNode } from "./adf.js";
@@ -20,6 +21,8 @@ export const JiraConfigSchema = z.object({
   customFields: z.object({
     phase: z.string().min(1),
     spec: z.string().min(1),
+    totalCost: z.string().min(1).optional(),
+    costBreakdown: z.string().min(1).optional(),
   }),
   phaseMapping: z.record(
     z.string(),
@@ -280,6 +283,23 @@ export class JiraIssueTrackerAdapter implements IssueTracker {
   async addComment(issueId: string, body: string): Promise<void> {
     await this.client.request("POST", `/rest/api/3/issue/${encodeURIComponent(issueId)}/comment`, {
       body: toAdf(body),
+    });
+  }
+
+  async setCostBreakdown(issueId: string, breakdown: CostBreakdown): Promise<void> {
+    const totalField = this.config.customFields.totalCost;
+    const breakdownField = this.config.customFields.costBreakdown;
+    if (totalField === undefined || breakdownField === undefined) {
+      throw new Error(
+        "Jira setCostBreakdown: customFields.totalCost and customFields.costBreakdown must be configured when pipeline.cost.enabled is true",
+      );
+    }
+    const markdown = renderBreakdownMarkdown(breakdown);
+    await this.client.request("PUT", `/rest/api/3/issue/${encodeURIComponent(issueId)}`, {
+      fields: {
+        [totalField]: Number(breakdown.totalCostUsd.toFixed(4)),
+        [breakdownField]: toAdf(markdown),
+      },
     });
   }
 

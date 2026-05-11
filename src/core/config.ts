@@ -75,6 +75,20 @@ const DEFAULT_BRANCH_PREFIXES: Record<string, string> = {
   default: "feature/",
 };
 
+const ModelPricingSchema = z.object({
+  input: z.number().nonnegative(),
+  output: z.number().nonnegative(),
+  cacheRead: z.number().nonnegative(),
+  cacheCreation: z.number().nonnegative(),
+});
+
+const CostSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    pricing: z.record(z.string(), ModelPricingSchema).default({}),
+  })
+  .default({ enabled: false, pricing: {} });
+
 const ConfigSchema = z
   .object({
     issueTracker: z.object({
@@ -111,6 +125,7 @@ const ConfigSchema = z
         baseBranch: z.string().default("origin/main"),
         branchPrefixes: z.record(z.string(), z.string()).default(DEFAULT_BRANCH_PREFIXES),
         webhooks: WebhooksSchema,
+        cost: CostSchema,
         claudeBin: z.string().optional(),
         model: z.string().default("opus"),
         effort: z.string().default("high"),
@@ -131,6 +146,7 @@ const ConfigSchema = z
             sourceControl: "/webhook/source-control",
           },
         },
+        cost: { enabled: false, pricing: {} },
         model: "opus",
         effort: "high",
         stallThresholdMs: 300000,
@@ -210,6 +226,38 @@ const ConfigSchema = z
         path: ["pipeline", "webhooks", "paths"],
         message: `issueTracker and sourceControl webhook paths collide ("${config.pipeline.webhooks.paths.issueTracker}")`,
       });
+    }
+  })
+  .superRefine((config, ctx) => {
+    if (config.pipeline.cost.enabled === false) {
+      return;
+    }
+    // When cost tracking writes to Jira, both custom field IDs must be
+    // provided — otherwise setCostBreakdown would throw at runtime for every
+    // phase transition. GitHub uses a marker comment, so no fields needed.
+    if (config.issueTracker.type === "jira") {
+      const customFields = (config.issueTracker.config.customFields ?? {}) as Record<
+        string,
+        unknown
+      >;
+      const totalField = customFields.totalCost;
+      const breakdownField = customFields.costBreakdown;
+      if (typeof totalField !== "string" || totalField.length === 0) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["issueTracker", "config", "customFields", "totalCost"],
+          message:
+            "pipeline.cost.enabled is true but issueTracker.config.customFields.totalCost is missing — add the Jira number custom field ID (e.g. customfield_10200) or disable cost tracking",
+        });
+      }
+      if (typeof breakdownField !== "string" || breakdownField.length === 0) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["issueTracker", "config", "customFields", "costBreakdown"],
+          message:
+            "pipeline.cost.enabled is true but issueTracker.config.customFields.costBreakdown is missing — add the Jira rich-text custom field ID (e.g. customfield_10201) or disable cost tracking",
+        });
+      }
     }
   });
 

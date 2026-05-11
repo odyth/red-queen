@@ -6,6 +6,7 @@ import { buildPhaseGraph, validatePhaseGraph } from "../core/config.js";
 import { RedQueenDatabase } from "../core/database.js";
 import { RedQueen } from "../core/orchestrator.js";
 import { OrchestratorStateStore, PipelineStateStore } from "../core/pipeline-state.js";
+import { PhaseUsageStore } from "../core/phase-usage.js";
 import { SqliteTaskQueue } from "../core/queue.js";
 import { RuntimeState } from "../core/runtime-state.js";
 import {
@@ -88,6 +89,7 @@ export async function cmdStart(args: string[]): Promise<void> {
   }
   const queue = new SqliteTaskQueue(database.db);
   const pipelineState = new PipelineStateStore(database.db);
+  const phaseUsage = new PhaseUsageStore(database.db);
   const orchestratorState = new OrchestratorStateStore(database.db);
   const audit = new DualWriteAuditLogger(database.db, auditPath);
 
@@ -197,6 +199,7 @@ export async function cmdStart(args: string[]): Promise<void> {
     runtime,
     queue,
     pipelineState,
+    phaseUsage,
     orchestratorState,
     audit,
     issueTracker,

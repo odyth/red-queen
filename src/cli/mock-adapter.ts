@@ -5,9 +5,17 @@ import type {
   PullRequest,
   SourceControl,
 } from "../integrations/source-control.js";
-import type { Comment, PipelineEvent, ReviewThread, ValidationResult } from "../core/types.js";
+import type {
+  Comment,
+  CostBreakdown,
+  PipelineEvent,
+  ReviewThread,
+  ValidationResult,
+} from "../core/types.js";
 
 export class MockIssueTrackerAdapter implements IssueTracker {
+  readonly costBreakdowns = new Map<string, CostBreakdown>();
+
   getIssue(issueId: string): Promise<Issue> {
     return Promise.resolve({
       id: issueId,
@@ -49,6 +57,10 @@ export class MockIssueTrackerAdapter implements IssueTracker {
   }
   getComments(): Promise<Comment[]> {
     return Promise.resolve([]);
+  }
+  setCostBreakdown(issueId: string, breakdown: CostBreakdown): Promise<void> {
+    this.costBreakdowns.set(issueId, breakdown);
+    return Promise.resolve();
   }
   listAttachments(): Promise<Attachment[]> {
     return Promise.resolve([]);

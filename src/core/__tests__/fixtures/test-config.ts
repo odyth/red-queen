@@ -24,6 +24,7 @@ export function makeTestConfig(overrides: Partial<RedQueenConfig> = {}): RedQuee
       baseBranch: "origin/main",
       branchPrefixes: DEFAULT_BRANCH_PREFIXES,
       webhooks: { enabled: false },
+      cost: { enabled: false, pricing: {} },
       model: "opus",
       effort: "high",
       stallThresholdMs: 300000,
