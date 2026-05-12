@@ -400,16 +400,13 @@ export class DashboardServer {
       handler: (req, res) => {
         const cost = this.deps.cost;
         if (cost === undefined) {
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(
-            JSON.stringify({
-              enabled: false,
-              model: "",
-              totalCostUsd: 0,
-              tickets: [],
-              updatedAt: new Date().toISOString(),
-            }),
-          );
+          this.sendJson(res, 200, {
+            enabled: false,
+            model: "",
+            totalCostUsd: 0,
+            tickets: [],
+            updatedAt: new Date().toISOString(),
+          });
           return;
         }
         handleCostSummary(req, res, {
@@ -426,14 +423,11 @@ export class DashboardServer {
       handler: (req, res) => {
         const cost = this.deps.cost;
         if (cost === undefined) {
-          res.writeHead(400, { "Content-Type": "application/json" });
-          res.end(
-            JSON.stringify({
-              ok: false,
-              issueId: "",
-              error: "cost tracking is disabled",
-            }),
-          );
+          this.sendJson(res, 400, {
+            ok: false,
+            issueId: "",
+            error: "cost tracking is disabled",
+          });
           return;
         }
         handleCostBreakdown(req, res, {

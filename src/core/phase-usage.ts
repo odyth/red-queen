@@ -119,7 +119,7 @@ export class PhaseUsageStore {
          FROM phase_usage u
          LEFT JOIN pipeline_state ps ON ps.issue_id = u.issue_id
          GROUP BY u.issue_id
-         ORDER BY updated_at DESC
+         ORDER BY MAX(u.updated_at) DESC
          LIMIT ?`,
       )
       .all(limit) as TicketSummaryRow[];

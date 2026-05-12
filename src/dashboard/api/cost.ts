@@ -15,9 +15,7 @@ export function handleCostSummary(
   res: ServerResponse,
   deps: CostApiDeps,
 ): void {
-  const payload = buildCostSummary(deps);
-  res.writeHead(200, { "Content-Type": "application/json" });
-  res.end(JSON.stringify(payload));
+  sendJson(res, 200, buildCostSummary(deps));
 }
 
 export function buildCostSummary(deps: CostApiDeps): CostSummaryPayload {
@@ -69,8 +67,8 @@ export function handleCostBreakdown(
     } satisfies CostBreakdownPayload);
     return;
   }
-  const rows = deps.phaseUsage.getForIssue(issueId);
-  if (rows.length === 0) {
+  const breakdown = deps.buildBreakdown(issueId);
+  if (breakdown.phases.length === 0) {
     sendJson(res, 404, {
       ok: false,
       issueId,
@@ -78,7 +76,6 @@ export function handleCostBreakdown(
     } satisfies CostBreakdownPayload);
     return;
   }
-  const breakdown = deps.buildBreakdown(issueId);
   sendJson(res, 200, { ok: true, issueId, breakdown } satisfies CostBreakdownPayload);
 }
 

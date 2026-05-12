@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { renderBreakdownMarkdown, formatUsd } from "../cost-markdown.js";
+import { renderBreakdownMarkdown } from "../cost-markdown.js";
+import { formatUsd } from "../cost-format.js";
 import type { CostBreakdown } from "../types.js";
 
 const row = (phase: string, iterations: number, cost: number): CostBreakdown["phases"][number] => ({

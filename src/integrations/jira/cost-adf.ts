@@ -71,10 +71,9 @@ function phaseRow(row: PhaseCostRow): AdfNode {
 }
 
 function totalRow(totalUsd: number): AdfNode {
-  const blanks: AdfNode[] = [];
-  for (let i = 0; i < 5; i++) {
-    blanks.push(cell(""));
-  }
+  // Label + value occupy the first and last columns; every column in between
+  // is blank so a HEADERS change can't silently drop or add a cell.
+  const blanks = HEADERS.slice(1, -1).map(() => cell(""));
   return {
     type: "tableRow",
     content: [cell("Total", true), ...blanks, cell(formatUsd(totalUsd), true)],

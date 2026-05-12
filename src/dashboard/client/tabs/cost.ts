@@ -17,8 +17,9 @@ function renderTicketRow(t: CostTicketRow): string {
   const phase = t.currentPhase ?? "—";
   const phaseClass = t.currentPhase === null ? ' class="muted"' : "";
   const issueId = escapeHtml(t.issueId);
+  const updatedAt = escapeHtml(t.updatedAt);
   return (
-    `<tr class="cost-row" data-issue-id="${issueId}" style="border-bottom:1px dashed var(--border);cursor:pointer">` +
+    `<tr class="cost-row" role="button" tabindex="0" aria-expanded="false" data-issue-id="${issueId}" data-updated-at="${updatedAt}" style="border-bottom:1px dashed var(--border);cursor:pointer">` +
     `<td style="padding:6px 8px">` +
     `<span class="cost-chevron" aria-hidden="true" style="display:inline-block;width:10px;color:var(--muted);margin-right:6px">▸</span>` +
     `<strong>${issueId}</strong>` +
@@ -26,7 +27,7 @@ function renderTicketRow(t: CostTicketRow): string {
     `<td style="padding:6px 8px"${phaseClass}>${escapeHtml(phase)}</td>` +
     `<td style="padding:6px 8px;text-align:right">${String(t.runCount)}</td>` +
     `<td style="padding:6px 8px;text-align:right">${escapeHtml(formatUsd(t.totalCostUsd))}</td>` +
-    `<td style="padding:6px 8px" class="muted">${escapeHtml(t.updatedAt)}</td>` +
+    `<td style="padding:6px 8px" class="muted">${updatedAt}</td>` +
     `</tr>` +
     `<tr class="cost-breakdown" data-issue-id="${issueId}" style="display:none">` +
     `<td colspan="${String(COLUMN_COUNT)}" style="padding:0 8px 10px 28px">` +
@@ -109,8 +110,37 @@ function apply(payload: CostSummaryPayload): void {
   }
   const rows = qs("#cost-rows");
   if (rows) {
+    // Capture which rows the user had expanded so we can restore them after
+    // the innerHTML replace — otherwise every refresh collapses the drill-
+    // down the user is actively reading.
+    const expandedIds = new Set<string>();
+    for (const r of rows.querySelectorAll<HTMLTableRowElement>("tr.cost-row")) {
+      if (r.getAttribute("aria-expanded") === "true") {
+        const id = r.dataset.issueId;
+        if (id !== undefined) {
+          expandedIds.add(id);
+        }
+      }
+    }
     rows.innerHTML = renderRows(payload.tickets);
+    for (const t of payload.tickets) {
+      if (expandedIds.has(t.issueId) === true) {
+        void reexpand(t.issueId);
+      }
+    }
   }
+}
+
+async function reexpand(issueId: string): Promise<void> {
+  const parent = findParentRow(issueId);
+  const breakdownRow = findBreakdownRow(issueId);
+  if (parent === null || breakdownRow === null) {
+    return;
+  }
+  setExpandedState(parent, breakdownRow, true);
+  // innerHTML was just replaced, so the breakdown row is fresh DOM —
+  // always refetch. Gives us current data for free.
+  await loadBreakdown(breakdownRow, issueId);
 }
 
 export async function refresh(): Promise<void> {
@@ -126,27 +156,46 @@ export async function refresh(): Promise<void> {
 }
 
 async function toggleRow(issueId: string): Promise<void> {
-  const selector = `tr.cost-breakdown[data-issue-id="${cssEscape(issueId)}"]`;
-  const row = qs<HTMLTableRowElement>(selector);
-  if (row === null) {
+  const parent = findParentRow(issueId);
+  const breakdownRow = findBreakdownRow(issueId);
+  if (parent === null || breakdownRow === null) {
     return;
   }
-  const chevron = qs<HTMLElement>(
-    `tr.cost-row[data-issue-id="${cssEscape(issueId)}"] .cost-chevron`,
-  );
-  if (row.style.display === "none") {
-    row.style.display = "";
-    if (chevron !== null) {
-      chevron.textContent = "▾";
-    }
-    if (row.dataset.loaded !== "true") {
-      await loadBreakdown(row, issueId);
-    }
+  const isOpen = breakdownRow.style.display !== "none";
+  if (isOpen === true) {
+    setExpandedState(parent, breakdownRow, false);
     return;
   }
-  row.style.display = "none";
+  setExpandedState(parent, breakdownRow, true);
+  // Re-fetch if the ticket's updatedAt moved since the last load — the
+  // rollup row gets refreshed live on SSE-driven refresh(), so the
+  // breakdown shouldn't lag behind.
+  const currentUpdatedAt = parent.dataset.updatedAt ?? "";
+  const loadedAt = breakdownRow.dataset.loadedAt ?? "";
+  const needsLoad = breakdownRow.dataset.loaded !== "true" || loadedAt !== currentUpdatedAt;
+  if (needsLoad === true) {
+    await loadBreakdown(breakdownRow, issueId);
+  }
+}
+
+function findParentRow(issueId: string): HTMLTableRowElement | null {
+  return qs<HTMLTableRowElement>(`tr.cost-row[data-issue-id="${cssEscape(issueId)}"]`);
+}
+
+function findBreakdownRow(issueId: string): HTMLTableRowElement | null {
+  return qs<HTMLTableRowElement>(`tr.cost-breakdown[data-issue-id="${cssEscape(issueId)}"]`);
+}
+
+function setExpandedState(
+  parent: HTMLTableRowElement,
+  breakdownRow: HTMLTableRowElement,
+  expanded: boolean,
+): void {
+  breakdownRow.style.display = expanded === true ? "" : "none";
+  parent.setAttribute("aria-expanded", expanded === true ? "true" : "false");
+  const chevron = parent.querySelector<HTMLElement>(".cost-chevron");
   if (chevron !== null) {
-    chevron.textContent = "▸";
+    chevron.textContent = expanded === true ? "▾" : "▸";
   }
 }
 
@@ -166,6 +215,12 @@ async function loadBreakdown(row: HTMLTableRowElement, issueId: string): Promise
     body.className = "cost-breakdown-body";
     body.innerHTML = renderBreakdownTable(payload.breakdown);
     row.dataset.loaded = "true";
+    // Stamp the parent's updatedAt onto the breakdown row so the next
+    // apply() can decide whether the cached breakdown is still current.
+    const parent = findParentRow(issueId);
+    if (parent !== null) {
+      row.dataset.loadedAt = parent.dataset.updatedAt ?? "";
+    }
   } catch (err) {
     body.className = "cost-breakdown-body err";
     body.textContent = `error: ${err instanceof Error ? err.message : String(err)}`;
@@ -199,11 +254,34 @@ function handleClick(evt: Event): void {
   void toggleRow(issueId);
 }
 
+function handleKeydown(evt: KeyboardEvent): void {
+  if (evt.key !== "Enter" && evt.key !== " ") {
+    return;
+  }
+  const target = evt.target;
+  if (target === null || !(target instanceof Element)) {
+    return;
+  }
+  const row = target.closest<HTMLTableRowElement>("tr.cost-row");
+  if (row === null) {
+    return;
+  }
+  const issueId = row.dataset.issueId;
+  if (issueId === undefined) {
+    return;
+  }
+  // Space otherwise scrolls the page; Enter is the default activation key
+  // so keeping the same behavior here avoids surprising keyboard users.
+  evt.preventDefault();
+  void toggleRow(issueId);
+}
+
 export function init(): void {
   const table = qs<HTMLElement>("#cost-table");
   if (table !== null && table.dataset.rqClickBound !== "true") {
     table.dataset.rqClickBound = "true";
     table.addEventListener("click", handleClick);
+    table.addEventListener("keydown", handleKeydown);
   }
   void refresh();
 }

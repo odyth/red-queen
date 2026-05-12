@@ -1,8 +1,6 @@
 import type { CostBreakdown, PhaseCostRow } from "./types.js";
 import { formatTokens, formatUsd } from "./cost-format.js";
 
-export { formatUsd, formatTokens };
-
 export function renderBreakdownMarkdown(breakdown: CostBreakdown): string {
   const lines: string[] = [];
   lines.push(`**Cost summary** (model: ${breakdown.model})`);
