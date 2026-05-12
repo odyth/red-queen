@@ -66,8 +66,17 @@ export { runWorker, resolveClaudeBin } from "./core/worker.js";
 export type { WorkerOptions, WorkerResult, HeartbeatInfo } from "./core/worker.js";
 
 // Skill context
-export { buildSkillContext, renderSkillPrompt, resolveSkillPath } from "./core/skill-context.js";
-export type { SkillContextDeps, ModuleResolver } from "./core/skill-context.js";
+export {
+  buildSkillContext,
+  buildSkillSearchDirs,
+  renderSkillPrompt,
+  resolveSkillPath,
+} from "./core/skill-context.js";
+export type {
+  SkillContextDeps,
+  ModuleResolver,
+  SkillSearchDirsArgs,
+} from "./core/skill-context.js";
 export { createModuleResolver } from "./core/module-resolver.js";
 export type { ResolveModuleOptions } from "./core/module-resolver.js";
 

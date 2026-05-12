@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { homedir } from "node:os";
+import { isAbsolute, join, resolve } from "node:path";
 import { stringify as stringifyYaml } from "yaml";
 import type { ProjectModule } from "./config.js";
 import type { RuntimeState } from "./runtime-state.js";
@@ -115,23 +116,51 @@ function stripFrontmatter(markdown: string): string {
   return markdown.slice(end).replace(/^\r?\n+/, "");
 }
 
+export interface SkillSearchDirsArgs {
+  userSkillsDir: string;
+  projectRoot?: string;
+  builtInSkillsDir?: string;
+  homeDir?: string;
+}
+
+// Ordered list of directories scanned for a skill, highest priority first.
+// Matches the agentskills.io implementation guide: project-level wins over
+// user-level, configured client dir wins over the cross-client .agents/skills/
+// convention within the same scope, bundled built-ins are the final fallback.
+//
+// 1. <projectRoot>/<userSkillsDir>   — configured override (default .redqueen/skills)
+// 2. <projectRoot>/.agents/skills    — cross-client interop, project-level
+// 3. <homeDir>/.agents/skills        — cross-client interop, user-level
+// 4. <builtInSkillsDir>              — bundled fallback
+export function buildSkillSearchDirs(args: SkillSearchDirsArgs): string[] {
+  const projectRoot = args.projectRoot ?? process.cwd();
+  const home = args.homeDir ?? homedir();
+  const configured = isAbsolute(args.userSkillsDir)
+    ? args.userSkillsDir
+    : resolve(projectRoot, args.userSkillsDir);
+
+  const dirs: string[] = [configured, resolve(projectRoot, ".agents", "skills")];
+  if (home !== "") {
+    dirs.push(join(home, ".agents", "skills"));
+  }
+  if (args.builtInSkillsDir !== undefined) {
+    dirs.push(args.builtInSkillsDir);
+  }
+  return dirs;
+}
+
 export function resolveSkillPath(
-  userSkillsDir: string,
+  searchDirs: readonly string[],
   skillName: string,
   disabled: readonly string[],
-  builtInSkillsDir?: string,
 ): string | null {
   if (disabled.includes(skillName)) {
     return null;
   }
-  const userCandidate = join(userSkillsDir, skillName, "SKILL.md");
-  if (existsSync(userCandidate)) {
-    return userCandidate;
-  }
-  if (builtInSkillsDir !== undefined) {
-    const builtInCandidate = join(builtInSkillsDir, skillName, "SKILL.md");
-    if (existsSync(builtInCandidate)) {
-      return builtInCandidate;
+  for (const dir of searchDirs) {
+    const candidate = join(dir, skillName, "SKILL.md");
+    if (existsSync(candidate)) {
+      return candidate;
     }
   }
   return null;

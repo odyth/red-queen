@@ -8,6 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import type { RuntimeState } from "../../core/runtime-state.js";
 
@@ -54,6 +55,18 @@ function userSkillsDir(deps: SkillsApiDeps): string {
   return resolve(deps.projectRoot, ".redqueen", "skills");
 }
 
+// Cross-client interop locations defined by the agentskills.io implementation
+// guide. The project-level path travels with the repo; the user-level path is
+// shared across all projects on the machine.
+function agentsSkillsDirs(deps: SkillsApiDeps): string[] {
+  const dirs = [resolve(deps.projectRoot, ".agents", "skills")];
+  const home = homedir();
+  if (home !== "") {
+    dirs.push(join(home, ".agents", "skills"));
+  }
+  return dirs;
+}
+
 function listSkillNames(dir: string): string[] {
   if (existsSync(dir) === false) {
     return [];
@@ -82,15 +95,26 @@ interface SkillEntry {
 
 function buildSkillList(deps: SkillsApiDeps): SkillEntry[] {
   const bundled = new Set(listSkillNames(deps.builtInSkillsDir));
-  const user = new Set(listSkillNames(userSkillsDir(deps)));
+  const userNames = new Set(listSkillNames(userSkillsDir(deps)));
+  const agentsNames = new Set<string>();
+  for (const dir of agentsSkillsDirs(deps)) {
+    for (const name of listSkillNames(dir)) {
+      agentsNames.add(name);
+    }
+  }
+  // .agents/skills/ entries are treated as user-side for origin labeling — the
+  // dashboard's edit/delete operations target the configured user dir, so any
+  // change to an agents-skills entry creates an override there.
+  const nonBundled = new Set([...userNames, ...agentsNames]);
   const disabled = new Set(deps.runtime.config.skills.disabled);
-  const all = new Set([...bundled, ...user]);
+  const all = new Set([...bundled, ...nonBundled]);
   const phases = deps.runtime.config.phases;
   const entries: SkillEntry[] = [];
   for (const name of [...all].sort()) {
     const inBundled = bundled.has(name);
-    const inUser = user.has(name);
-    const origin: SkillEntry["origin"] = inBundled && inUser ? "both" : inUser ? "user" : "bundled";
+    const inNonBundled = nonBundled.has(name);
+    const origin: SkillEntry["origin"] =
+      inBundled && inNonBundled ? "both" : inNonBundled ? "user" : "bundled";
     const referencedBy = phases.filter((p) => p.skill === name).map((p) => p.name);
     entries.push({
       name,
@@ -133,13 +157,12 @@ function extractSkillNameFromPath(pathname: string): string | null {
 }
 
 function readSkillContent(deps: SkillsApiDeps, name: string): string | null {
-  const userPath = join(userSkillsDir(deps), name, "SKILL.md");
-  if (existsSync(userPath)) {
-    return readFileSync(userPath, "utf8");
-  }
-  const bundledPath = join(deps.builtInSkillsDir, name, "SKILL.md");
-  if (existsSync(bundledPath)) {
-    return readFileSync(bundledPath, "utf8");
+  const searchDirs = [userSkillsDir(deps), ...agentsSkillsDirs(deps), deps.builtInSkillsDir];
+  for (const dir of searchDirs) {
+    const candidate = join(dir, name, "SKILL.md");
+    if (existsSync(candidate)) {
+      return readFileSync(candidate, "utf8");
+    }
   }
   return null;
 }
@@ -233,11 +256,19 @@ export function handleSkillDelete(
   const userPath = join(userSkillsDir(deps), name);
   const hasUserOverride = existsSync(join(userPath, "SKILL.md"));
   const hasBundled = existsSync(join(deps.builtInSkillsDir, name, "SKILL.md"));
+  const hasAgents = agentsSkillsDirs(deps).some((dir) => existsSync(join(dir, name, "SKILL.md")));
 
   if (hasUserOverride === false) {
     if (hasBundled) {
       sendJson(res, 409, {
         message: "Built-in skill cannot be deleted. Add its name to skills.disabled to disable.",
+      });
+      return;
+    }
+    if (hasAgents) {
+      sendJson(res, 409, {
+        message:
+          "Skill is provided by .agents/skills/. Remove it from that location directly, or add its name to skills.disabled to disable.",
       });
       return;
     }

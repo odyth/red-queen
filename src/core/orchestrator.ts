@@ -13,7 +13,12 @@ import { reconcile } from "./reconciler.js";
 import { createModuleResolver } from "./module-resolver.js";
 import type { RuntimeState } from "./runtime-state.js";
 import type { ServiceInstallContext, ServiceManager } from "./service/index.js";
-import { buildSkillContext, renderSkillPrompt, resolveSkillPath } from "./skill-context.js";
+import {
+  buildSkillContext,
+  buildSkillSearchDirs,
+  renderSkillPrompt,
+  resolveSkillPath,
+} from "./skill-context.js";
 import type { ModuleResolver } from "./skill-context.js";
 import type { PhaseDefinition, Task } from "./types.js";
 import type { OrchestratorState } from "./types.js";
@@ -653,11 +658,15 @@ export class RedQueen {
       return;
     }
 
+    const searchDirs = buildSkillSearchDirs({
+      userSkillsDir: this.deps.runtime.config.skills.directory,
+      projectRoot: this.deps.projectRoot,
+      builtInSkillsDir: this.deps.builtInSkillsDir,
+    });
     const skillPath = resolveSkillPath(
-      this.deps.runtime.config.skills.directory,
+      searchDirs,
       skillName,
       this.deps.runtime.config.skills.disabled,
-      this.deps.builtInSkillsDir,
     );
     if (skillPath === null) {
       this.deps.queue.markWorking(task.id);
@@ -666,7 +675,7 @@ export class RedQueen {
         component: "orchestrator",
         issueId,
         message: `Skill file not found for ${skillName}`,
-        metadata: { taskId: task.id, skillsDir: this.deps.runtime.config.skills.directory },
+        metadata: { taskId: task.id, searchDirs },
       });
       return;
     }

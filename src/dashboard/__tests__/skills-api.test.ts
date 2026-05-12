@@ -180,4 +180,42 @@ describe("Dashboard skills API", () => {
     expect(res.status).toBe(200);
     expect(existsSync(join(tempDir, ".redqueen", "skills", "custom"))).toBe(false);
   });
+
+  it("GET /api/skills includes .agents/skills/ entries (cross-client interop)", async () => {
+    const agentsDir = join(tempDir, ".agents", "skills");
+    writeSkill(agentsDir, "from-agents", "# agents skill\n");
+    const res = await fetch(`http://127.0.0.1:${String(port)}/api/skills`);
+    const body = (await res.json()) as { name: string; origin: string }[];
+    const entry = body.find((b) => b.name === "from-agents");
+    expect(entry).toBeDefined();
+    expect(entry?.origin).toBe("user");
+  });
+
+  it("GET /api/skills/:name reads from .agents/skills/ when no override exists", async () => {
+    const agentsDir = join(tempDir, ".agents", "skills");
+    writeSkill(agentsDir, "from-agents", "# agents skill content\n");
+    const res = await fetch(`http://127.0.0.1:${String(port)}/api/skills/from-agents`);
+    const body = (await res.json()) as { content: string };
+    expect(body.content).toBe("# agents skill content\n");
+  });
+
+  it("GET /api/skills/:name still prefers configured user dir over .agents/skills/", async () => {
+    const agentsDir = join(tempDir, ".agents", "skills");
+    writeSkill(agentsDir, "coder", "# agents coder\n");
+    // coder already has a user override from beforeEach
+    const res = await fetch(`http://127.0.0.1:${String(port)}/api/skills/coder`);
+    const body = (await res.json()) as { content: string };
+    expect(body.content).toBe("# user coder override\n");
+  });
+
+  it("DELETE /api/skills/:name on an agents-skills-only entry returns 409 with guidance", async () => {
+    const agentsDir = join(tempDir, ".agents", "skills");
+    writeSkill(agentsDir, "from-agents", "# agents skill\n");
+    const res = await fetch(`http://127.0.0.1:${String(port)}/api/skills/from-agents`, {
+      method: "DELETE",
+    });
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { message: string };
+    expect(body.message).toContain(".agents/skills");
+  });
 });

@@ -2,7 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildSkillContext, renderSkillPrompt, resolveSkillPath } from "../skill-context.js";
+import {
+  buildSkillContext,
+  buildSkillSearchDirs,
+  renderSkillPrompt,
+  resolveSkillPath,
+} from "../skill-context.js";
 import { buildPhaseGraph } from "../config.js";
 import type { RedQueenConfig } from "../config.js";
 import { DEFAULT_PHASES } from "../defaults.js";
@@ -268,43 +273,107 @@ describe("resolveSkillPath", () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it("returns user skill path when present", () => {
-    const userDir = join(tempDir, "user");
-    const skillDir = join(userDir, "coder");
+  function writeSkill(dir: string, name: string): string {
+    const skillDir = join(dir, name);
     mkdirSync(skillDir, { recursive: true });
     const filePath = join(skillDir, "SKILL.md");
-    writeFileSync(filePath, "# Coder");
-    expect(resolveSkillPath(userDir, "coder", [])).toBe(filePath);
+    writeFileSync(filePath, `# ${name}`);
+    return filePath;
+  }
+
+  it("returns the first matching skill in the search dirs", () => {
+    const userDir = join(tempDir, "user");
+    const filePath = writeSkill(userDir, "coder");
+    expect(resolveSkillPath([userDir], "coder", [])).toBe(filePath);
   });
 
-  it("falls back to built-in when user skill missing", () => {
+  it("falls through earlier dirs to find the skill in a later dir", () => {
+    const userDir = join(tempDir, "user");
+    const agentsDir = join(tempDir, "agents");
+    const filePath = writeSkill(agentsDir, "coder");
+    expect(resolveSkillPath([userDir, agentsDir], "coder", [])).toBe(filePath);
+  });
+
+  it("respects priority order — earlier dir wins over later", () => {
     const userDir = join(tempDir, "user");
     const builtIn = join(tempDir, "builtin");
-    const skillDir = join(builtIn, "coder");
-    mkdirSync(skillDir, { recursive: true });
-    const filePath = join(skillDir, "SKILL.md");
-    writeFileSync(filePath, "# Coder");
-    expect(resolveSkillPath(userDir, "coder", [], builtIn)).toBe(filePath);
+    const userFile = writeSkill(userDir, "coder");
+    writeSkill(builtIn, "coder");
+    expect(resolveSkillPath([userDir, builtIn], "coder", [])).toBe(userFile);
   });
 
-  it("returns null when neither exists", () => {
-    expect(resolveSkillPath(join(tempDir, "user"), "coder", [])).toBeNull();
+  it("returns null when no dir contains the skill", () => {
+    expect(resolveSkillPath([join(tempDir, "user")], "coder", [])).toBeNull();
   });
 
   it("returns null when the skill is in the disabled list, even if the file exists", () => {
     const userDir = join(tempDir, "user");
-    const skillDir = join(userDir, "coder");
-    mkdirSync(skillDir, { recursive: true });
-    writeFileSync(join(skillDir, "SKILL.md"), "# Coder");
-    expect(resolveSkillPath(userDir, "coder", ["coder"])).toBeNull();
+    writeSkill(userDir, "coder");
+    expect(resolveSkillPath([userDir], "coder", ["coder"])).toBeNull();
   });
 
   it("does not disable unrelated skills when disabled list has entries", () => {
     const userDir = join(tempDir, "user");
-    const skillDir = join(userDir, "coder");
-    mkdirSync(skillDir, { recursive: true });
-    const filePath = join(skillDir, "SKILL.md");
-    writeFileSync(filePath, "# Coder");
-    expect(resolveSkillPath(userDir, "coder", ["tester"])).toBe(filePath);
+    const filePath = writeSkill(userDir, "coder");
+    expect(resolveSkillPath([userDir], "coder", ["tester"])).toBe(filePath);
+  });
+
+  it("loads a skill from .agents/skills/ (project-level interop)", () => {
+    const projectRoot = tempDir;
+    const agentsDir = join(projectRoot, ".agents", "skills");
+    const filePath = writeSkill(agentsDir, "interop-skill");
+    const dirs = buildSkillSearchDirs({
+      userSkillsDir: ".redqueen/skills",
+      projectRoot,
+      homeDir: "",
+    });
+    expect(resolveSkillPath(dirs, "interop-skill", [])).toBe(filePath);
+  });
+});
+
+describe("buildSkillSearchDirs", () => {
+  it("orders configured user dir > project .agents/skills > home .agents/skills > built-in", () => {
+    const dirs = buildSkillSearchDirs({
+      userSkillsDir: ".redqueen/skills",
+      projectRoot: "/proj",
+      builtInSkillsDir: "/builtin",
+      homeDir: "/home/user",
+    });
+    expect(dirs).toEqual([
+      join("/proj", ".redqueen", "skills"),
+      join("/proj", ".agents", "skills"),
+      join("/home/user", ".agents", "skills"),
+      "/builtin",
+    ]);
+  });
+
+  it("preserves an absolute userSkillsDir without re-rooting it", () => {
+    const dirs = buildSkillSearchDirs({
+      userSkillsDir: "/abs/skills",
+      projectRoot: "/proj",
+      homeDir: "/home/user",
+    });
+    expect(dirs[0]).toBe("/abs/skills");
+  });
+
+  it("omits built-in when not provided", () => {
+    const dirs = buildSkillSearchDirs({
+      userSkillsDir: ".redqueen/skills",
+      projectRoot: "/proj",
+      homeDir: "/home/user",
+    });
+    expect(dirs).toHaveLength(3);
+  });
+
+  it("omits home .agents/skills when homeDir is empty", () => {
+    const dirs = buildSkillSearchDirs({
+      userSkillsDir: ".redqueen/skills",
+      projectRoot: "/proj",
+      homeDir: "",
+    });
+    expect(dirs).toEqual([
+      join("/proj", ".redqueen", "skills"),
+      join("/proj", ".agents", "skills"),
+    ]);
   });
 });
