@@ -34,6 +34,7 @@ const QUOTE_RE = /^>\s?(.*)$/;
 const BULLET_RE = /^(\s*)([-*+])\s+(.*)$/;
 const ORDERED_RE = /^(\s*)\d+\.\s+(.*)$/;
 const TASK_RE = /^(\s*)[-*+]\s+\[([ xX])\]\s+(.*)$/;
+const LEADING_WS_RE = /^\s*/;
 
 type ListKind = "bullet" | "ordered" | "task";
 
@@ -357,6 +358,27 @@ function parseList(
   let i = start;
   while (i < end) {
     const line = lines[i] ?? "";
+
+    // A blank line between items doesn't end the list as long as another
+    // item at this indent follows (loose lists). Without this, each item
+    // becomes its own single-item list, and Atlassian's ADF→wiki converter
+    // emits `# foo\n\n# bar`, which the wiki renderer parses as two
+    // separate lists — every number renders as "1.".
+    if (line.trim().length === 0) {
+      let lookahead = i + 1;
+      while (lookahead < end && (lines[lookahead] ?? "").trim().length === 0) {
+        lookahead++;
+      }
+      if (lookahead >= end) {
+        break;
+      }
+      if (matchListItem(lines[lookahead] ?? "", kind, indent) === null) {
+        break;
+      }
+      i = lookahead;
+      continue;
+    }
+
     const item = matchListItem(line, kind, indent);
     if (item === null) {
       break;
@@ -375,7 +397,51 @@ function parseList(
       continue;
     }
 
-    const itemContent: AdfNode[] = [{ type: "paragraph", content: buildInline(item.text) }];
+    // Collect continuation lines — indented text that belongs to this list
+    // item. We fold them into the same paragraph (joined with hardBreaks)
+    // instead of emitting separate paragraph children, because Atlassian's
+    // ADF→wiki converter inserts blank lines between paragraph siblings,
+    // which the wiki parser then sees as a list break.
+    const segments: string[] = [item.text];
+    while (i < end) {
+      const next = lines[i] ?? "";
+      if (next.trim().length === 0) {
+        let peek = i + 1;
+        while (peek < end && (lines[peek] ?? "").trim().length === 0) {
+          peek++;
+        }
+        if (peek >= end) {
+          break;
+        }
+        const peekLine = lines[peek] ?? "";
+        const peekIndent = LEADING_WS_RE.exec(peekLine)?.[0].length ?? 0;
+        if (peekIndent <= indent) {
+          break;
+        }
+        const nestedKind = detectListKind(peekLine, indent + 1);
+        if (nestedKind !== null && nestedKind.indent > indent) {
+          break;
+        }
+        // Indented non-list content after blank lines is still part of this
+        // item. Consume the blanks and keep scanning.
+        i = peek;
+        continue;
+      }
+      const nextIndent = LEADING_WS_RE.exec(next)?.[0].length ?? 0;
+      if (nextIndent <= indent) {
+        break;
+      }
+      const nestedKind = detectListKind(next, indent + 1);
+      if (nestedKind !== null && nestedKind.indent > indent) {
+        break;
+      }
+      segments.push(next.replace(/^\s+/, ""));
+      i++;
+    }
+
+    const itemContent: AdfNode[] = [
+      { type: "paragraph", content: buildInlineWithBreaks(segments.join("\n")) },
+    ];
 
     // A nested list is a list whose indent is strictly greater than the
     // current one. Blank lines before the nested block are allowed.
@@ -412,20 +478,23 @@ interface InlineToken {
 }
 
 function buildParagraph(text: string): AdfNode | null {
-  const lines = text.split(/\r?\n/);
-  const content: AdfNode[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] ?? "";
-    const inline = buildInline(line);
-    content.push(...inline);
-    if (i < lines.length - 1) {
-      content.push({ type: "hardBreak" });
-    }
-  }
+  const content = buildInlineWithBreaks(text);
   if (content.length === 0) {
     return null;
   }
   return { type: "paragraph", content };
+}
+
+function buildInlineWithBreaks(text: string): AdfNode[] {
+  const lines = text.split(/\r?\n/);
+  const content: AdfNode[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    content.push(...buildInline(lines[i] ?? ""));
+    if (i < lines.length - 1) {
+      content.push({ type: "hardBreak" });
+    }
+  }
+  return content;
 }
 
 function collectTokens(
@@ -442,81 +511,196 @@ function collectTokens(
   return out;
 }
 
-function markedText(text: string, mark: AdfMark): AdfNode {
-  return { type: "text", text, marks: [mark] };
+interface OuterToken {
+  start: number;
+  end: number;
+  // Containers (strong/em/strike/link) recurse into their inner text to pick
+  // up nested code/mention leaves with the container's mark stacked on. Leaves
+  // (code/mention outside any container) emit directly.
+  container?: { innerText: string; mark: AdfMark };
+  leaf?: AdfNode;
 }
 
 function buildInline(text: string): AdfNode[] {
-  // Order matters: stronger/longer delimiters first so overlap filtering drops
-  // the weaker match (e.g. `**bold**` beats the inner `*bold*`).
-  const tokens: InlineToken[] = [
-    ...collectTokens(text, INLINE_CODE_RE, (match) => ({
-      start: match.index,
-      end: match.index + match[0].length,
-      node: markedText(match[1] ?? "", { type: "code" }),
-    })),
-    ...collectTokens(text, STRONG_RE, (match) => ({
-      start: match.index,
-      end: match.index + match[0].length,
-      node: markedText(match[1] ?? match[2] ?? "", { type: "strong" }),
-    })),
-    ...collectTokens(text, STRIKE_RE, (match) => ({
-      start: match.index,
-      end: match.index + match[0].length,
-      node: markedText(match[1] ?? "", { type: "strike" }),
-    })),
-    ...collectTokens(text, LINK_RE, (match) => ({
-      start: match.index,
-      end: match.index + match[0].length,
-      node: markedText(match[1] ?? "", { type: "link", attrs: { href: match[2] ?? "" } }),
-    })),
-    ...collectTokens(text, EM_STAR_RE, (match) => ({
-      start: match.index,
-      end: match.index + match[0].length,
-      node: markedText(match[1] ?? "", { type: "em" }),
-    })),
-    ...collectTokens(text, EM_UNDER_RE, (match) => ({
-      start: match.index,
-      end: match.index + match[0].length,
-      node: markedText(match[1] ?? "", { type: "em" }),
-    })),
-    ...collectTokens(text, MENTION_RE, (match) => ({
-      start: match.index,
-      end: match.index + match[0].length,
-      node: { type: "mention", attrs: { id: match[1] } },
-    })),
-  ];
+  // Collect containers and leaves at the same level. Overlap rejection by
+  // earliest-start-then-longest then decides who wins. When a container is
+  // kept, recurse into its captured inner text for nested code/mention so
+  // `**\`code\`**` becomes a single text node with marks [code, strong]
+  // instead of strong with literal backticks. A leaf that starts before the
+  // container wins (correctly preserving inline code that wraps stray `*`s).
+  const tokens: OuterToken[] = [];
+
+  pushContainerToken(text, STRONG_RE, tokens, (m) => ({
+    innerText: m[1] ?? m[2] ?? "",
+    mark: { type: "strong" },
+  }));
+  pushContainerToken(text, STRIKE_RE, tokens, (m) => ({
+    innerText: m[1] ?? "",
+    mark: { type: "strike" },
+  }));
+  pushContainerToken(text, LINK_RE, tokens, (m) => ({
+    innerText: m[1] ?? "",
+    mark: { type: "link", attrs: { href: m[2] ?? "" } },
+  }));
+  pushContainerToken(text, EM_STAR_RE, tokens, (m) => ({
+    innerText: m[1] ?? "",
+    mark: { type: "em" },
+  }));
+  pushContainerToken(text, EM_UNDER_RE, tokens, (m) => ({
+    innerText: m[1] ?? "",
+    mark: { type: "em" },
+  }));
+  pushLeafToken(text, INLINE_CODE_RE, tokens, (m) => ({
+    type: "text",
+    text: m[1] ?? "",
+    marks: [{ type: "code" }],
+  }));
+  pushLeafToken(text, MENTION_RE, tokens, (m) => ({
+    type: "mention",
+    attrs: { id: m[1] },
+  }));
+
   tokens.sort((a, b) => {
     if (a.start !== b.start) {
       return a.start - b.start;
     }
     return b.end - b.start - (a.end - a.start);
   });
-  const nonOverlapping: InlineToken[] = [];
+
+  const nonOverlapping: OuterToken[] = [];
   let cursor = 0;
-  for (const token of tokens) {
-    if (token.start < cursor) {
+  for (const t of tokens) {
+    if (t.start < cursor) {
       continue;
     }
-    nonOverlapping.push(token);
-    cursor = token.end;
+    nonOverlapping.push(t);
+    cursor = t.end;
   }
+
   const result: AdfNode[] = [];
   cursor = 0;
-  for (const token of nonOverlapping) {
-    if (token.start > cursor) {
-      const plain = text.slice(cursor, token.start);
+  for (const t of nonOverlapping) {
+    if (t.start > cursor) {
+      const plain = text.slice(cursor, t.start);
       if (plain.length > 0) {
         result.push({ type: "text", text: plain });
       }
     }
-    result.push(token.node);
-    cursor = token.end;
+    if (t.container !== undefined) {
+      result.push(...emitLeafs(t.container.innerText, [t.container.mark]));
+    } else if (t.leaf !== undefined) {
+      result.push(t.leaf);
+    }
+    cursor = t.end;
   }
   if (cursor < text.length) {
     const trailing = text.slice(cursor);
     if (trailing.length > 0) {
       result.push({ type: "text", text: trailing });
+    }
+  }
+  return result;
+}
+
+function pushContainerToken(
+  text: string,
+  re: RegExp,
+  out: OuterToken[],
+  build: (m: RegExpExecArray) => { innerText: string; mark: AdfMark },
+): void {
+  const globalRe = new RegExp(re, re.flags.includes("g") ? re.flags : `${re.flags}g`);
+  let match: RegExpExecArray | null;
+  while ((match = globalRe.exec(text)) !== null) {
+    out.push({
+      start: match.index,
+      end: match.index + match[0].length,
+      container: build(match),
+    });
+  }
+}
+
+function pushLeafToken(
+  text: string,
+  re: RegExp,
+  out: OuterToken[],
+  build: (m: RegExpExecArray) => AdfNode,
+): void {
+  const globalRe = new RegExp(re, re.flags.includes("g") ? re.flags : `${re.flags}g`);
+  let match: RegExpExecArray | null;
+  while ((match = globalRe.exec(text)) !== null) {
+    out.push({
+      start: match.index,
+      end: match.index + match[0].length,
+      leaf: build(match),
+    });
+  }
+}
+
+// Emit the leaf-level pass over `text`: inline code and mentions. Both are
+// leaves (no further inline marks can nest inside them), and any plain regions
+// between them inherit `parentMarks` from the surrounding container.
+function emitLeafs(text: string, parentMarks: AdfMark[]): AdfNode[] {
+  interface Leaf {
+    start: number;
+    end: number;
+    node: AdfNode;
+  }
+  const leaves: Leaf[] = [
+    ...collectTokens(text, INLINE_CODE_RE, (match) => ({
+      start: match.index,
+      end: match.index + match[0].length,
+      node: {
+        type: "text",
+        text: match[1] ?? "",
+        marks: [{ type: "code" }, ...parentMarks],
+      },
+    })),
+    ...collectTokens(text, MENTION_RE, (match) => ({
+      start: match.index,
+      end: match.index + match[0].length,
+      // Mentions are their own node type and don't carry text marks in ADF;
+      // dropping parentMarks here matches Atlassian's schema.
+      node: { type: "mention", attrs: { id: match[1] } },
+    })),
+  ];
+  leaves.sort((a, b) => {
+    if (a.start !== b.start) {
+      return a.start - b.start;
+    }
+    return b.end - b.start - (a.end - a.start);
+  });
+
+  const nonOverlapping: Leaf[] = [];
+  let cursor = 0;
+  for (const leaf of leaves) {
+    if (leaf.start < cursor) {
+      continue;
+    }
+    nonOverlapping.push(leaf);
+    cursor = leaf.end;
+  }
+
+  const result: AdfNode[] = [];
+  cursor = 0;
+  const wrap = (plain: string): AdfNode => {
+    return parentMarks.length === 0
+      ? { type: "text", text: plain }
+      : { type: "text", text: plain, marks: parentMarks };
+  };
+  for (const leaf of nonOverlapping) {
+    if (leaf.start > cursor) {
+      const plain = text.slice(cursor, leaf.start);
+      if (plain.length > 0) {
+        result.push(wrap(plain));
+      }
+    }
+    result.push(leaf.node);
+    cursor = leaf.end;
+  }
+  if (cursor < text.length) {
+    const trailing = text.slice(cursor);
+    if (trailing.length > 0) {
+      result.push(wrap(trailing));
     }
   }
   return result;

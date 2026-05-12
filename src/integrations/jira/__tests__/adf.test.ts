@@ -2,6 +2,11 @@ import { describe, it, expect } from "vitest";
 import { fromAdf, toAdf } from "../adf.js";
 import type { AdfNode } from "../adf.js";
 
+function hasMarks(node: AdfNode, ...types: string[]): boolean {
+  const marks = node.marks ?? [];
+  return types.every((t) => marks.some((m) => m.type === t));
+}
+
 describe("toAdf", () => {
   it("creates a doc with an empty paragraph for empty input", () => {
     const doc = toAdf("");
@@ -322,6 +327,82 @@ describe("toAdf", () => {
     expect(codeMark?.text).toBe("Views/Reservations/Index.cshtml");
     const strongMark = para?.content?.find((n) => n.marks?.some((m) => m.type === "strong"));
     expect(strongMark?.text).toBe("In Progress");
+  });
+
+  it("nests inline code inside bold as a single text node with both marks", () => {
+    // Regression: a round-tripped spec with wiki `*{{filename}}*` (bold
+    // containing wiki monospace) used to flatten to bold-with-literal-backticks
+    // because buildInline didn't support nested marks. Now the code mark and
+    // strong mark stack on the same text node.
+    const doc = toAdf("Has **`func()`** code.");
+    const para = doc.content?.[0];
+    const nested = para?.content?.find((n) => hasMarks(n, "code", "strong"));
+    expect(nested?.text).toBe("func()");
+  });
+
+  it("nests inline code inside italic with both marks", () => {
+    const doc = toAdf("Has *`x()`* code.");
+    const para = doc.content?.[0];
+    const nested = para?.content?.find((n) => hasMarks(n, "code", "em"));
+    expect(nested?.text).toBe("x()");
+  });
+
+  it("nests inline code inside a link with both marks", () => {
+    const doc = toAdf("See [the `foo` doc](https://example.com).");
+    const para = doc.content?.[0];
+    const nested = para?.content?.find((n) => hasMarks(n, "code", "link"));
+    expect(nested?.text).toBe("foo");
+  });
+
+  it("preserves backtick-wrapped content even when it spans an italic boundary", () => {
+    // Inline code starts before the inner asterisks, so it should win the
+    // overlap resolution and the inner `*foo*` stays literal inside the code.
+    const doc = toAdf("Use `*foo*` literally.");
+    const para = doc.content?.[0];
+    const code = para?.content?.find((n) => n.marks?.some((m) => m.type === "code"));
+    expect(code?.text).toBe("*foo*");
+  });
+
+  it("groups a loose ordered list (blank lines between items) as a single list", () => {
+    // Atlassian's ADF→wiki converter emits a blank line between sibling
+    // orderedList nodes, which the wiki renderer parses as two separate
+    // single-item lists. Coalescing blank-line-separated items into one
+    // orderedList preserves correct numbering.
+    const input = "1. first item\n\n2. second item\n\n3. third item";
+    const doc = toAdf(input);
+    const lists = (doc.content ?? []).filter((n) => n.type === "orderedList");
+    expect(lists).toHaveLength(1);
+    expect(lists[0]?.content).toHaveLength(3);
+  });
+
+  it("folds indented continuation lines into the same list item with hardBreaks", () => {
+    // Continuation lines (indented to the item's content column) used to be
+    // dropped on the floor — parseList only consumed the first line. They
+    // now merge into the same paragraph with hardBreaks so Atlassian's
+    // converter emits the list as one block instead of breaking it.
+    const input = "1. first line\n   continuation\n2. second item";
+    const doc = toAdf(input);
+    const list = doc.content?.[0];
+    expect(list?.type).toBe("orderedList");
+    expect(list?.content).toHaveLength(2);
+    const firstPara = list?.content?.[0]?.content?.[0];
+    const hb = firstPara?.content?.find((n) => n.type === "hardBreak");
+    expect(hb).toBeDefined();
+    const texts = (firstPara?.content ?? []).filter((n) => n.type === "text").map((n) => n.text);
+    expect(texts).toEqual(expect.arrayContaining(["first line", "continuation"]));
+  });
+
+  it("handles blank-line-separated continuation paragraphs in a list item", () => {
+    // The pattern that broke RSRV-3762: an LLM-emitted list with continuation
+    // separated by blank lines. Old behavior emitted these as siblings of the
+    // list, producing two single-item lists in wiki output.
+    const input = ["1. first item", "", "   continuation paragraph", "", "2. second item"].join(
+      "\n",
+    );
+    const doc = toAdf(input);
+    const lists = (doc.content ?? []).filter((n) => n.type === "orderedList");
+    expect(lists).toHaveLength(1);
+    expect(lists[0]?.content).toHaveLength(2);
   });
 });
 
