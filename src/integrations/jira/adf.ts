@@ -55,12 +55,107 @@ type ListKind = "bullet" | "ordered" | "task";
  * setext headings, HTML passthrough, reference-style links, tables.
  */
 export function toAdf(markdown: string): AdfDocument {
-  const lines = markdown.split(/\r?\n/);
+  const normalized = normalizeWikiToMarkdown(markdown);
+  const lines = normalized.split(/\r?\n/);
   const content = parseBlocks(lines, 0, lines.length);
   if (content.length === 0) {
     content.push({ type: "paragraph", content: [] });
   }
   return { type: "doc", version: 1, content };
+}
+
+const WIKI_HEADING_RE = /^h[1-6]\.\s+\S/m;
+const WIKI_BLOCKQUOTE_LINE_RE = /^bq\.\s+\S/m;
+const WIKI_INLINE_CODE_RE = /\{\{[^}\n]+\}\}/;
+const WIKI_BLOCK_OPENER_RE = /\{(?:code|noformat|quote)(?:[:}|\s])/;
+const WIKI_PIPE_LINK_RE = /\[[^\]\n|]+\|[^\]\n]+\]/;
+const PLACEHOLDER_RE = /_PRES_(\d+)_/g;
+
+/**
+ * Normalizes Jira wiki-style tokens (h2., {{x}}, *bold*, {code}, bq., [t|u]) to
+ * their markdown equivalents so toAdf can render them as rich text. Skill
+ * prompts forbid wiki syntax but LLM training data leaks it constantly — this
+ * runs as a safety net so the spec/comment field doesn't show literal `h2.` and
+ * `{{...}}` in Jira.
+ *
+ * Conservative by design: returns the input untouched unless at least one
+ * unambiguous wiki indicator is present, so legitimate markdown is never
+ * mangled (e.g. multiplication `5 * 3 * 2` won't be bolded).
+ */
+function normalizeWikiToMarkdown(input: string): string {
+  if (hasWikiContext(input) === false) {
+    return input;
+  }
+
+  const preserved: string[] = [];
+  const stash = (chunk: string): string => {
+    preserved.push(chunk);
+    return `_PRES_${String(preserved.length - 1)}_`;
+  };
+
+  let out = input;
+
+  // Stash markdown fences first — LLMs sometimes mix syntaxes in one doc.
+  out = out.replace(/```[\s\S]*?```/g, stash);
+
+  // Convert {code:lang}...{code} and {noformat}...{noformat} to fenced
+  // markdown and stash so later inline transforms don't touch their bodies.
+  out = out.replace(
+    /\{code(?::([^}]*))?\}([\s\S]*?)\{code\}/g,
+    (_match, lang: string | undefined, body: string) => {
+      const cleaned = body.replace(/^\n|\n$/g, "");
+      const langPart = lang ?? "";
+      return stash(`\`\`\`${langPart}\n${cleaned}\n\`\`\``);
+    },
+  );
+  out = out.replace(/\{noformat\}([\s\S]*?)\{noformat\}/g, (_match, body: string) => {
+    const cleaned = body.replace(/^\n|\n$/g, "");
+    return stash(`\`\`\`\n${cleaned}\n\`\`\``);
+  });
+
+  // Stash inline markdown code too, so {{x}} inside backticks stays literal.
+  out = out.replace(/`[^`\n]+`/g, stash);
+
+  // Inline wiki tokens.
+  out = out.replace(/\{\{([^}\n]+)\}\}/g, "`$1`");
+  out = out.replace(/\[([^\]\n|]+)\|([^\]\n]+)\]/g, "[$1]($2)");
+  // Wiki single-asterisk bold → markdown double-asterisk bold. The leading
+  // group ensures we don't match the inner `*` of an existing `**bold**`.
+  out = out.replace(/(^|[^*\\])\*([^*\n]+?)\*(?!\*)/g, "$1**$2**");
+
+  // Block-level wiki tokens.
+  out = out.replace(/^h([1-6])\.\s+(.+)$/gm, (_match, level: string, text: string) => {
+    return `${"#".repeat(Number(level))} ${text}`;
+  });
+  out = out.replace(/^bq\.\s+(.+)$/gm, "> $1");
+  out = out.replace(/\{quote\}([\s\S]*?)\{quote\}/g, (_match, body: string) => {
+    return body
+      .split("\n")
+      .map((line) => (line.trim().length > 0 ? `> ${line}` : ">"))
+      .join("\n");
+  });
+
+  out = out.replace(PLACEHOLDER_RE, (_match, idx: string) => preserved[Number(idx)] ?? "");
+  return out;
+}
+
+function hasWikiContext(input: string): boolean {
+  if (WIKI_HEADING_RE.test(input)) {
+    return true;
+  }
+  if (WIKI_INLINE_CODE_RE.test(input)) {
+    return true;
+  }
+  if (WIKI_BLOCK_OPENER_RE.test(input)) {
+    return true;
+  }
+  if (WIKI_BLOCKQUOTE_LINE_RE.test(input)) {
+    return true;
+  }
+  if (WIKI_PIPE_LINK_RE.test(input)) {
+    return true;
+  }
+  return false;
 }
 
 function parseBlocks(lines: string[], start: number, end: number): AdfNode[] {

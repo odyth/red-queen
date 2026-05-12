@@ -170,13 +170,95 @@ describe("toAdf", () => {
     expect(marks[0]?.type).toBe("strong");
   });
 
-  it("passes Jira wiki syntax through as literal text (not special-cased)", () => {
-    // Skill prompts forbid {{ }} — this test documents that the parser
-    // does not quietly rescue it.
+  it("rescues Jira wiki monospace {{x}} as inline code", () => {
+    // Skill prompts forbid wiki syntax, but LLMs leak it from training data.
+    // The normalizer treats {{x}} as a wiki context indicator and rewrites
+    // to backticks so Jira renders rich text instead of literal `{{x}}`.
     const doc = toAdf("The {{OnPostAsync}} method.");
     const para = doc.content?.[0];
-    expect(para?.content?.[0]?.text).toBe("The {{OnPostAsync}} method.");
-    expect(para?.content?.[0]?.marks).toBeUndefined();
+    const code = para?.content?.find((n) => n.marks?.some((m) => m.type === "code"));
+    expect(code?.text).toBe("OnPostAsync");
+  });
+
+  it("rescues Jira wiki headings (h2.) as markdown headings", () => {
+    const doc = toAdf("h2. Problem\n\nBody text.");
+    expect(doc.content?.[0]?.type).toBe("heading");
+    expect(doc.content?.[0]?.attrs?.level).toBe(2);
+  });
+
+  it("rescues Jira wiki bold *X* when wiki context is present", () => {
+    const doc = toAdf("h2. Title\n\nThe *In Progress* badge.");
+    const para = doc.content?.[1];
+    const strong = para?.content?.find((n) => n.marks?.some((m) => m.type === "strong"));
+    expect(strong?.text).toBe("In Progress");
+  });
+
+  it("leaves *X* as italic when there is no wiki context", () => {
+    // Pure markdown input — must not accidentally promote italic to bold.
+    const doc = toAdf("Plain prose with *emphasis* here.");
+    const para = doc.content?.[0];
+    const em = para?.content?.find((n) => n.marks?.some((m) => m.type === "em"));
+    expect(em?.text).toBe("emphasis");
+  });
+
+  it("does not touch existing **bold** when wiki context is present", () => {
+    const doc = toAdf("h2. Title\n\nAlready **bold** here.");
+    const para = doc.content?.[1];
+    const strong = para?.content?.find((n) => n.marks?.some((m) => m.type === "strong"));
+    expect(strong?.text).toBe("bold");
+  });
+
+  it("rescues {code:lang}…{code} blocks as fenced code", () => {
+    const doc = toAdf("{code:ts}\nconst x = 1;\n{code}");
+    const code = doc.content?.[0];
+    expect(code?.type).toBe("codeBlock");
+    expect(code?.attrs?.language).toBe("ts");
+    expect(code?.content?.[0]?.text).toBe("const x = 1;");
+  });
+
+  it("rescues {noformat}…{noformat} blocks", () => {
+    const doc = toAdf("{noformat}\nplain text\n{noformat}");
+    const code = doc.content?.[0];
+    expect(code?.type).toBe("codeBlock");
+  });
+
+  it("does not transform {{x}} inside backticked inline code", () => {
+    // The literal text inside `…` must survive — toAdf treats inline code
+    // bodies as raw, but the normalizer would otherwise rewrite {{x}}.
+    const doc = toAdf("Use `{{template}}` literally and {{wiki}} as code.");
+    const para = doc.content?.[0];
+    const codes = (para?.content ?? []).filter((n) => n.marks?.some((m) => m.type === "code"));
+    expect(codes.map((c) => c.text)).toEqual(["{{template}}", "wiki"]);
+  });
+
+  it("rescues Jira pipe-style links [text|url]", () => {
+    const doc = toAdf("h2. Title\n\nSee [docs|https://example.com] for info.");
+    const para = doc.content?.[1];
+    const link = para?.content?.find((n) => n.marks?.some((m) => m.type === "link"));
+    expect(link?.text).toBe("docs");
+    expect(link?.marks?.[0]?.attrs?.href).toBe("https://example.com");
+  });
+
+  it("rescues bq. blockquotes", () => {
+    const doc = toAdf("h2. Title\n\nbq. quoted line");
+    expect(doc.content?.[1]?.type).toBe("blockquote");
+  });
+
+  it("rescues the realistic wiki-leaked spec from production", () => {
+    // This is the exact pattern that broke in Jira: heading, monospace, and
+    // wiki bold all mixed. Without the normalizer they showed as literal text.
+    const input = [
+      "h2. Problem",
+      "",
+      "In ({{Views/Reservations/Index.cshtml}}), when *In Progress*, the dropdown collapses.",
+    ].join("\n");
+    const doc = toAdf(input);
+    expect(doc.content?.[0]?.type).toBe("heading");
+    const para = doc.content?.[1];
+    const codeMark = para?.content?.find((n) => n.marks?.some((m) => m.type === "code"));
+    expect(codeMark?.text).toBe("Views/Reservations/Index.cshtml");
+    const strongMark = para?.content?.find((n) => n.marks?.some((m) => m.type === "strong"));
+    expect(strongMark?.text).toBe("In Progress");
   });
 });
 
