@@ -170,14 +170,26 @@ describe("toAdf", () => {
     expect(marks[0]?.type).toBe("strong");
   });
 
-  it("rescues Jira wiki monospace {{x}} as inline code", () => {
+  it("rescues Jira wiki monospace {{x}} as inline code when wiki context is present", () => {
     // Skill prompts forbid wiki syntax, but LLMs leak it from training data.
-    // The normalizer treats {{x}} as a wiki context indicator and rewrites
-    // to backticks so Jira renders rich text instead of literal `{{x}}`.
-    const doc = toAdf("The {{OnPostAsync}} method.");
-    const para = doc.content?.[0];
+    // Activation requires a strong wiki signal (h\d., bq., {code}) so we don't
+    // false-positive on template syntax (Vue/Mustache/Jinja/Handlebars/GitHub
+    // Actions) that uses {{x}} for variable interpolation.
+    const doc = toAdf("h2. Heading\n\nThe {{OnPostAsync}} method.");
+    const para = doc.content?.[1];
     const code = para?.content?.find((n) => n.marks?.some((m) => m.type === "code"));
     expect(code?.text).toBe("OnPostAsync");
+  });
+
+  it("leaves {{x}} alone without a strong wiki signal", () => {
+    // {{x}} is ambiguous with template languages. Without h\d., bq., or
+    // {code}/{noformat}/{quote} elsewhere in the doc, the normalizer must not
+    // activate — otherwise template-engine documentation gets mangled.
+    const doc = toAdf("Use {{variable}} for substitution.");
+    const para = doc.content?.[0];
+    const code = para?.content?.find((n) => n.marks?.some((m) => m.type === "code"));
+    expect(code).toBeUndefined();
+    expect(para?.content?.[0]?.text).toBe("Use {{variable}} for substitution.");
   });
 
   it("rescues Jira wiki headings (h2.) as markdown headings", () => {
@@ -224,11 +236,62 @@ describe("toAdf", () => {
 
   it("does not transform {{x}} inside backticked inline code", () => {
     // The literal text inside `…` must survive — toAdf treats inline code
-    // bodies as raw, but the normalizer would otherwise rewrite {{x}}.
-    const doc = toAdf("Use `{{template}}` literally and {{wiki}} as code.");
-    const para = doc.content?.[0];
+    // bodies as raw, but the normalizer would otherwise rewrite {{x}}. A
+    // strong wiki signal (h2.) is required for the normalizer to activate at
+    // all under the post-review tightening.
+    const doc = toAdf("h2. Title\n\nUse `{{template}}` literally and {{wiki}} as code.");
+    const para = doc.content?.[1];
     const codes = (para?.content ?? []).filter((n) => n.marks?.some((m) => m.type === "code"));
     expect(codes.map((c) => c.text)).toEqual(["{{template}}", "wiki"]);
+  });
+
+  it("preserves literal asterisks inside {{x}}-derived inline code", () => {
+    // Regression guard: if {{x}} → backticks happens before wiki-bold rewrite
+    // and the backtick span isn't re-stashed, `*foo*` inside the new code span
+    // would get promoted to `**foo**` and leak into the code body.
+    const doc = toAdf("h2. T\n\nVar {{*foo*}} here.");
+    const para = doc.content?.[1];
+    const code = para?.content?.find((n) => n.marks?.some((m) => m.type === "code"));
+    expect(code?.text).toBe("*foo*");
+  });
+
+  it("does not bold asterisks embedded in words even with wiki context", () => {
+    // Word-boundary lookarounds keep `a*X*b` from being rewritten as bold
+    // when wiki context is active. The conversion only fires at word
+    // boundaries.
+    const doc = toAdf("h2. T\n\nThe glob a*X*b matches everything.");
+    const para = doc.content?.[1];
+    const strong = para?.content?.find((n) => n.marks?.some((m) => m.type === "strong"));
+    expect(strong).toBeUndefined();
+  });
+
+  it("preserves literal _RQNS_-style text in input (placeholder collision guard)", () => {
+    // The normalizer's internal stash uses a per-call nonce, so a literal
+    // _PRES_... or similar placeholder shape in the input cannot collide.
+    const input = "h2. Title\n\nThe sentinel was __RQNS_aaaaaaaaaaaa_0_ in the log.";
+    const doc = toAdf(input);
+    const rendered = fromAdf(doc);
+    expect(rendered).toContain("__RQNS_aaaaaaaaaaaa_0_");
+  });
+
+  it("rescues a single-line {quote}…{quote} as a blockquote", () => {
+    const doc = toAdf("h2. T\n\n{quote}cited line{quote}");
+    const quote = doc.content?.[1];
+    expect(quote?.type).toBe("blockquote");
+    const para = quote?.content?.[0];
+    expect(para?.content?.[0]?.text).toBe("cited line");
+  });
+
+  it("rescues a multi-line {quote}…{quote} with a blank line in the middle", () => {
+    const doc = toAdf("h2. T\n\n{quote}first\n\nsecond{quote}");
+    const quote = doc.content?.[1];
+    expect(quote?.type).toBe("blockquote");
+    // The combined `> first\n>\n> second` is parsed as a blockquote with a
+    // single paragraph that has a hard break between segments.
+    const para = quote?.content?.[0];
+    expect(para?.type).toBe("paragraph");
+    const texts = (para?.content ?? []).filter((n) => n.type === "text").map((n) => n.text);
+    expect(texts).toEqual(expect.arrayContaining(["first", "second"]));
   });
 
   it("rescues Jira pipe-style links [text|url]", () => {

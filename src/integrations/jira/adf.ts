@@ -66,10 +66,7 @@ export function toAdf(markdown: string): AdfDocument {
 
 const WIKI_HEADING_RE = /^h[1-6]\.\s+\S/m;
 const WIKI_BLOCKQUOTE_LINE_RE = /^bq\.\s+\S/m;
-const WIKI_INLINE_CODE_RE = /\{\{[^}\n]+\}\}/;
 const WIKI_BLOCK_OPENER_RE = /\{(?:code|noformat|quote)(?:[:}|\s])/;
-const WIKI_PIPE_LINK_RE = /\[[^\]\n|]+\|[^\]\n]+\]/;
-const PLACEHOLDER_RE = /_PRES_(\d+)_/g;
 
 /**
  * Normalizes Jira wiki-style tokens (h2., {{x}}, *bold*, {code}, bq., [t|u]) to
@@ -78,19 +75,29 @@ const PLACEHOLDER_RE = /_PRES_(\d+)_/g;
  * runs as a safety net so the spec/comment field doesn't show literal `h2.` and
  * `{{...}}` in Jira.
  *
- * Conservative by design: returns the input untouched unless at least one
- * unambiguous wiki indicator is present, so legitimate markdown is never
- * mangled (e.g. multiplication `5 * 3 * 2` won't be bolded).
+ * Conservative by design: only activates on a strong wiki indicator (h\d.,
+ * bq., {code}/{noformat}/{quote}). Weak indicators like {{x}} and [t|u] are
+ * genuinely ambiguous with template syntax (Vue/Mustache/Jinja/Handlebars) and
+ * grammar/config docs, so they don't activate on their own. This avoids
+ * silently promoting *italic* to **bold** in template-heavy specs.
  */
 function normalizeWikiToMarkdown(input: string): string {
   if (hasWikiContext(input) === false) {
     return input;
   }
 
+  // Per-call nonce so a literal `_PRES_<n>_` in the input can't collide with
+  // our stash slot. A deterministic placeholder would silently rewrite user
+  // content to whatever lives at that index; the nonce makes that statistically
+  // impossible.
+  const nonce = randomUUID().replace(/-/g, "").slice(0, 12);
+  const stashTag = `__RQNS_${nonce}_`;
+  const placeholderRe = new RegExp(`${stashTag}(\\d+)_`, "g");
+
   const preserved: string[] = [];
   const stash = (chunk: string): string => {
     preserved.push(chunk);
-    return `_PRES_${String(preserved.length - 1)}_`;
+    return `${stashTag}${String(preserved.length - 1)}_`;
   };
 
   let out = input;
@@ -116,12 +123,19 @@ function normalizeWikiToMarkdown(input: string): string {
   // Stash inline markdown code too, so {{x}} inside backticks stays literal.
   out = out.replace(/`[^`\n]+`/g, stash);
 
-  // Inline wiki tokens.
+  // Convert {{x}} to inline code, then re-stash those new backtick spans
+  // before the wiki-bold pass below. Without this, `{{*foo*}}` would become
+  // `*foo*`, then get bolded to `**foo**`, then parse as inline code
+  // containing literal **foo** — the asterisks would leak into the code span.
   out = out.replace(/\{\{([^}\n]+)\}\}/g, "`$1`");
+  out = out.replace(/`[^`\n]+`/g, stash);
+
   out = out.replace(/\[([^\]\n|]+)\|([^\]\n]+)\]/g, "[$1]($2)");
-  // Wiki single-asterisk bold → markdown double-asterisk bold. The leading
-  // group ensures we don't match the inner `*` of an existing `**bold**`.
-  out = out.replace(/(^|[^*\\])\*([^*\n]+?)\*(?!\*)/g, "$1**$2**");
+  // Wiki single-asterisk bold → markdown double-asterisk bold. Lookarounds
+  // enforce word boundaries: not preceded by alphanumeric/`*`/`\` and not
+  // followed by alphanumeric/`*`. Keeps `a*X*b` (no boundary), embedded
+  // asterisks (`file*.txt`), and existing `**bold**` from being rewritten.
+  out = out.replace(/(?<![A-Za-z0-9*\\])\*([^*\n]+?)\*(?![A-Za-z0-9*])/g, "**$1**");
 
   // Block-level wiki tokens.
   out = out.replace(/^h([1-6])\.\s+(.+)$/gm, (_match, level: string, text: string) => {
@@ -135,24 +149,23 @@ function normalizeWikiToMarkdown(input: string): string {
       .join("\n");
   });
 
-  out = out.replace(PLACEHOLDER_RE, (_match, idx: string) => preserved[Number(idx)] ?? "");
+  out = out.replace(placeholderRe, (_match, idx: string) => preserved[Number(idx)] ?? "");
   return out;
 }
 
 function hasWikiContext(input: string): boolean {
+  // Strong indicators only — these tokens don't appear in normal markdown or
+  // technical text, so any one of them is enough to activate the normalizer.
+  // Weak indicators ({{x}}, [t|u]) are deliberately excluded: they're
+  // ambiguous with templates and grammar notation, and activating on them
+  // alone would silently change italic→bold in template-heavy specs.
   if (WIKI_HEADING_RE.test(input)) {
-    return true;
-  }
-  if (WIKI_INLINE_CODE_RE.test(input)) {
-    return true;
-  }
-  if (WIKI_BLOCK_OPENER_RE.test(input)) {
     return true;
   }
   if (WIKI_BLOCKQUOTE_LINE_RE.test(input)) {
     return true;
   }
-  if (WIKI_PIPE_LINK_RE.test(input)) {
+  if (WIKI_BLOCK_OPENER_RE.test(input)) {
     return true;
   }
   return false;
