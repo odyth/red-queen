@@ -354,6 +354,20 @@ describe("toAdf", () => {
     expect(nested?.text).toBe("foo");
   });
 
+  it("nests inline code inside strikethrough with both marks", () => {
+    const doc = toAdf("Removed ~~`oldFn()`~~ from API.");
+    const para = doc.content?.[0];
+    const nested = para?.content?.find((n) => hasMarks(n, "code", "strike"));
+    expect(nested?.text).toBe("oldFn()");
+  });
+
+  it("nests inline code inside underscore-style bold with both marks", () => {
+    const doc = toAdf("Has __`func()`__ code.");
+    const para = doc.content?.[0];
+    const nested = para?.content?.find((n) => hasMarks(n, "code", "strong"));
+    expect(nested?.text).toBe("func()");
+  });
+
   it("preserves backtick-wrapped content even when it spans an italic boundary", () => {
     // Inline code starts before the inner asterisks, so it should win the
     // overlap resolution and the inner `*foo*` stays literal inside the code.

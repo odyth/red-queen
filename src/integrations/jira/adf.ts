@@ -51,9 +51,14 @@ type ListKind = "bullet" | "ordered" | "task";
  * - Inline links ([text](url))
  * - Mentions (@accountId:<id>)
  * - Hard line breaks (\n inside a paragraph)
+ * - Inline code or mentions nested inside strong/em/strike/link (the code/mention
+ *   leaf and the outer mark stack on the same text node). Mentions inside a
+ *   container drop the parent mark because ADF mention nodes don't carry text
+ *   marks.
  *
- * Deliberately NOT supported: nested emphasis / marks inside other marks,
- * setext headings, HTML passthrough, reference-style links, tables.
+ * Deliberately NOT supported: other mark-in-mark combinations (bold-in-italic,
+ * link-in-bold) still flatten to the outer mark. Setext headings, HTML
+ * passthrough, reference-style links, and tables are also unsupported.
  */
 export function toAdf(markdown: string): AdfDocument {
   const normalized = normalizeWikiToMarkdown(markdown);
