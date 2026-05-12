@@ -1225,6 +1225,12 @@ export class RedQueen {
           phaseUsage: this.deps.phaseUsage,
           enabled: pipeline.cost.enabled,
           model: pipeline.model,
+          buildBreakdown: (issueId: string) =>
+            this.deps.phaseUsage.buildBreakdown(
+              issueId,
+              this.deps.runtime.phaseGraph,
+              this.deps.runtime.config.pipeline.model,
+            ),
         },
       },
       {

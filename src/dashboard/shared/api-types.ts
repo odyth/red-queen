@@ -7,7 +7,7 @@
 // dependency-free (no Node imports, no core/* imports) so it can be
 // bundled for the browser.
 
-import type { PhaseDefinition } from "../../core/types.js";
+import type { CostBreakdown, PhaseDefinition } from "../../core/types.js";
 
 export type { PhaseDefinition };
 
@@ -148,6 +148,7 @@ export interface CostTicketRow {
   totalCostUsd: number;
   runCount: number;
   updatedAt: string;
+  currentPhase: string | null;
 }
 
 export interface CostSummaryPayload {
@@ -157,6 +158,20 @@ export interface CostSummaryPayload {
   tickets: CostTicketRow[];
   updatedAt: string;
 }
+
+export interface CostBreakdownOkPayload {
+  ok: true;
+  issueId: string;
+  breakdown: CostBreakdown;
+}
+
+export interface CostBreakdownErrPayload {
+  ok: false;
+  issueId: string;
+  error: string;
+}
+
+export type CostBreakdownPayload = CostBreakdownOkPayload | CostBreakdownErrPayload;
 
 // --- SSE events ---
 //

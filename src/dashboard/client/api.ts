@@ -3,6 +3,7 @@ import type {
   ConfigGetResponse,
   ConfigPutResponse,
   ConfigValidateResponse,
+  CostBreakdownPayload,
   CostSummaryPayload,
   PhaseDefinition,
   SkillEntry,
@@ -86,4 +87,6 @@ export const api = {
   serviceStop: () => fetch("/api/service/stop", { method: "POST" }),
 
   getCostSummary: () => getJson<CostSummaryPayload>("/api/cost"),
+  getCostBreakdown: (issueId: string) =>
+    getJson<CostBreakdownPayload>(`/api/cost/breakdown?issueId=${encodeURIComponent(issueId)}`),
 };

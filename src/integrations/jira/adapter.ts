@@ -5,10 +5,10 @@ import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { z } from "zod";
 import type { Comment, CostBreakdown, PipelineEvent, ValidationResult } from "../../core/types.js";
-import { renderBreakdownMarkdown } from "../../core/cost-markdown.js";
 import type { Attachment, Issue, IssueTracker } from "../issue-tracker.js";
 import { fromAdf, toAdf } from "./adf.js";
 import type { AdfNode } from "./adf.js";
+import { renderBreakdownAdf } from "./cost-adf.js";
 import { JiraClient } from "./client.js";
 import { parseJiraWebhookEvent, validateJiraWebhook } from "./webhook.js";
 
@@ -294,11 +294,10 @@ export class JiraIssueTrackerAdapter implements IssueTracker {
         "Jira setCostBreakdown: customFields.totalCost and customFields.costBreakdown must be configured when pipeline.cost.enabled is true",
       );
     }
-    const markdown = renderBreakdownMarkdown(breakdown);
     await this.client.request("PUT", `/rest/api/3/issue/${encodeURIComponent(issueId)}`, {
       fields: {
         [totalField]: Number(breakdown.totalCostUsd.toFixed(4)),
-        [breakdownField]: toAdf(markdown),
+        [breakdownField]: renderBreakdownAdf(breakdown),
       },
     });
   }

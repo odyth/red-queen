@@ -19,6 +19,7 @@ interface TicketSummaryRow {
   total_cost: number;
   total_iterations: number;
   updated_at: string;
+  current_phase: string | null;
 }
 
 export interface CostTicketSummary {
@@ -26,6 +27,7 @@ export interface CostTicketSummary {
   totalCostUsd: number;
   runCount: number;
   updatedAt: string;
+  currentPhase: string | null;
 }
 
 export class PhaseUsageStore {
@@ -109,12 +111,14 @@ export class PhaseUsageStore {
     const rows = this.db
       .prepare(
         `SELECT
-           issue_id,
-           SUM(cost_usd) AS total_cost,
-           SUM(iterations) AS total_iterations,
-           MAX(updated_at) AS updated_at
-         FROM phase_usage
-         GROUP BY issue_id
+           u.issue_id AS issue_id,
+           SUM(u.cost_usd) AS total_cost,
+           SUM(u.iterations) AS total_iterations,
+           MAX(u.updated_at) AS updated_at,
+           ps.current_phase AS current_phase
+         FROM phase_usage u
+         LEFT JOIN pipeline_state ps ON ps.issue_id = u.issue_id
+         GROUP BY u.issue_id
          ORDER BY updated_at DESC
          LIMIT ?`,
       )
@@ -124,6 +128,7 @@ export class PhaseUsageStore {
       totalCostUsd: r.total_cost,
       runCount: r.total_iterations,
       updatedAt: r.updated_at,
+      currentPhase: r.current_phase,
     }));
   }
 
@@ -132,11 +137,6 @@ export class PhaseUsageStore {
       .prepare("SELECT COALESCE(SUM(cost_usd), 0) AS total FROM phase_usage")
       .get() as { total: number };
     return row.total;
-  }
-
-  delete(issueId: string): number {
-    const result = this.db.prepare("DELETE FROM phase_usage WHERE issue_id = ?").run(issueId);
-    return result.changes;
   }
 }
 

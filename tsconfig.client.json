@@ -15,6 +15,11 @@
     "allowImportingTsExtensions": false,
     "composite": true
   },
-  "include": ["src/dashboard/client/**/*", "src/dashboard/shared/**/*", "src/core/types.ts"],
+  "include": [
+    "src/dashboard/client/**/*",
+    "src/dashboard/shared/**/*",
+    "src/core/types.ts",
+    "src/core/cost-format.ts"
+  ],
   "exclude": ["node_modules", "dist", "src/**/__tests__/**"]
 }

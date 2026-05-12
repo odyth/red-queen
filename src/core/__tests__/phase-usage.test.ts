@@ -81,8 +81,20 @@ describe("PhaseUsageStore", () => {
     expect(first.issueId).toBe("ISSUE-A");
     expect(first.totalCostUsd).toBeCloseTo(0.11, 6);
     expect(first.runCount).toBe(2);
+    expect(first.currentPhase).toBeNull();
     expect(second.issueId).toBe("ISSUE-B");
     expect(second.runCount).toBe(2);
+  });
+
+  it("listTicketSummaries joins pipeline_state for currentPhase when present", () => {
+    store.recordRun("ISSUE-C", "coding", usage(10), 0.1);
+    db.prepare(
+      "INSERT INTO pipeline_state (issue_id, current_phase, created_at, updated_at) VALUES (?, ?, ?, ?)",
+    ).run("ISSUE-C", "code-review", "2026-01-01", "2026-01-02");
+
+    const list = store.listTicketSummaries();
+    const entry = list.find((r) => r.issueId === "ISSUE-C");
+    expect(entry?.currentPhase).toBe("code-review");
   });
 
   it("totalCostAcrossTickets sums every row", () => {

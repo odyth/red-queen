@@ -14,12 +14,13 @@ export function renderCostPartial(): string {
         <thead>
           <tr style="text-align:left;border-bottom:1px solid var(--border)">
             <th style="padding:6px 8px">Issue</th>
+            <th style="padding:6px 8px">Current phase</th>
             <th style="padding:6px 8px;text-align:right">Runs</th>
             <th style="padding:6px 8px;text-align:right">Total cost</th>
             <th style="padding:6px 8px">Updated</th>
           </tr>
         </thead>
-        <tbody id="cost-rows"><tr><td colspan="4" class="empty">loading…</td></tr></tbody>
+        <tbody id="cost-rows"><tr><td colspan="5" class="empty">loading…</td></tr></tbody>
       </table>
     </div>
   </section>`;

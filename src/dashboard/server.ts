@@ -9,6 +9,7 @@ import type { TaskQueue } from "../core/queue.js";
 import type { OrchestratorStateStore } from "../core/pipeline-state.js";
 import type { PhaseUsageStore } from "../core/phase-usage.js";
 import type { RuntimeState } from "../core/runtime-state.js";
+import type { CostBreakdown } from "../core/types.js";
 import { packageVersion } from "../core/version.js";
 import type {
   ServiceInstallContext,
@@ -17,7 +18,7 @@ import type {
 } from "../core/service/index.js";
 import type { Task } from "../core/types.js";
 import { handleConfigGet, handleConfigPut, handleConfigValidate } from "./api/config.js";
-import { handleCostSummary } from "./api/cost.js";
+import { handleCostBreakdown, handleCostSummary } from "./api/cost.js";
 import {
   handleServicePartial,
   handleServiceRestart,
@@ -113,6 +114,9 @@ export interface DashboardCostDeps {
   phaseUsage: PhaseUsageStore;
   enabled: boolean;
   model: string;
+  // Thunk so the dashboard module doesn't need to know about PhaseGraph. The
+  // orchestrator closes over its own runtime.phaseGraph when wiring this.
+  buildBreakdown: (issueId: string) => CostBreakdown;
 }
 
 export interface DashboardDeps {
@@ -412,6 +416,31 @@ export class DashboardServer {
           phaseUsage: cost.phaseUsage,
           costEnabled: cost.enabled,
           model: cost.model,
+          buildBreakdown: cost.buildBreakdown,
+        });
+      },
+    });
+    routes.push({
+      method: "GET",
+      path: "/api/cost/breakdown",
+      handler: (req, res) => {
+        const cost = this.deps.cost;
+        if (cost === undefined) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              ok: false,
+              issueId: "",
+              error: "cost tracking is disabled",
+            }),
+          );
+          return;
+        }
+        handleCostBreakdown(req, res, {
+          phaseUsage: cost.phaseUsage,
+          costEnabled: cost.enabled,
+          model: cost.model,
+          buildBreakdown: cost.buildBreakdown,
         });
       },
     });

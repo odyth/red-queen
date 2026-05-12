@@ -1,4 +1,7 @@
 import type { CostBreakdown, PhaseCostRow } from "./types.js";
+import { formatTokens, formatUsd } from "./cost-format.js";
+
+export { formatUsd, formatTokens };
 
 export function renderBreakdownMarkdown(breakdown: CostBreakdown): string {
   const lines: string[] = [];
@@ -20,7 +23,7 @@ export function renderBreakdownMarkdown(breakdown: CostBreakdown): string {
 }
 
 function renderRow(row: PhaseCostRow): string {
-  return [
+  const cells = [
     row.phase,
     String(row.iterations),
     formatTokens(row.usage.inputTokens),
@@ -28,29 +31,6 @@ function renderRow(row: PhaseCostRow): string {
     formatTokens(row.usage.cacheReadTokens),
     formatTokens(row.usage.cacheCreationTokens),
     formatUsd(row.costUsd),
-  ]
-    .map((cell) => ` ${cell} `)
-    .join("|")
-    .replace(/^/, "|")
-    .concat("|");
-}
-
-function formatTokens(n: number): string {
-  if (n === 0) {
-    return "0";
-  }
-  if (n >= 1_000_000) {
-    return `${(n / 1_000_000).toFixed(2)}M`;
-  }
-  if (n >= 1_000) {
-    return `${(n / 1_000).toFixed(1)}k`;
-  }
-  return String(n);
-}
-
-export function formatUsd(n: number): string {
-  if (n < 0.01 && n > 0) {
-    return `<$0.01`;
-  }
-  return `$${n.toFixed(2)}`;
+  ];
+  return `| ${cells.join(" | ")} |`;
 }
