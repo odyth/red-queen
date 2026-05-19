@@ -194,6 +194,12 @@ describe("cmdSubIter complete", () => {
   });
 
   it("errors when no open sub-iteration exists", async () => {
+    await cmdPipeline(["update", "SUB-NONE"]);
+    const { loadCliContext } = await import("../context.js");
+    const ctx = loadCliContext();
+    ctx.pipelineState.updatePhase("SUB-NONE", "spec-writing");
+    ctx.cleanup();
+
     await expect(cmdSubIter(["complete", "SUB-NONE", "--summary", "x"])).rejects.toThrow(
       /no open sub-iteration/,
     );

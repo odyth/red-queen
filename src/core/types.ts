@@ -19,6 +19,10 @@ export interface PhaseDefinition {
   // true  → phase consumes PR-level feedback (e.g. code-feedback); skip when no PR.
   // false → phase consumes tracker-level feedback pre-PR (e.g. spec-feedback); skip when a PR exists.
   requiresPr?: boolean;
+  // When true, a successful run of this phase resets review_iterations to 0.
+  // Used by code-review and any custom reviewer phase that closes a review loop:
+  // a downstream failure (e.g. testing) should re-enter the loop with a fresh budget.
+  resetReviewIterationsOnPass?: boolean;
 }
 
 export class PhaseGraph {

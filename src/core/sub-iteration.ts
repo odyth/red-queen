@@ -1,6 +1,6 @@
 import type BetterSqlite3 from "better-sqlite3";
 
-export type SubIterationStatus = "in-progress" | "completed" | "failed";
+export type SubIterationStatus = "in-progress" | "completed";
 
 export interface SubIterationRecord {
   id: number;
@@ -35,8 +35,27 @@ export interface StartOptions {
 
 export interface CompleteOptions {
   issueId: string;
+  phaseName: string;
   summary: string;
   now?: string;
+}
+
+export class StaleSubIterationError extends Error {
+  readonly issueId: string;
+  readonly expectedPhase: string;
+  readonly actualPhase: string;
+  readonly subIterIndex: number;
+
+  constructor(issueId: string, expectedPhase: string, actualPhase: string, subIterIndex: number) {
+    super(
+      `sub-iteration zombie detected for ${issueId}: open entry from phase "${actualPhase}" (iter ${String(subIterIndex)}) but current phase is "${expectedPhase}". A prior skill likely crashed before completing its sub-iteration. Resolve the stale entry before continuing.`,
+    );
+    this.name = "StaleSubIterationError";
+    this.issueId = issueId;
+    this.expectedPhase = expectedPhase;
+    this.actualPhase = actualPhase;
+    this.subIterIndex = subIterIndex;
+  }
 }
 
 export class SubIterationStore {
@@ -72,6 +91,14 @@ export class SubIterationStore {
     const open = this.latestOpen(options.issueId);
     if (open === null) {
       return null;
+    }
+    if (open.phaseName !== options.phaseName) {
+      throw new StaleSubIterationError(
+        options.issueId,
+        options.phaseName,
+        open.phaseName,
+        open.subIterIndex,
+      );
     }
     this.db
       .prepare(
@@ -130,7 +157,7 @@ export class SubIterationStore {
 }
 
 function toRecord(row: SubIterationRow): SubIterationRecord {
-  if (row.status !== "in-progress" && row.status !== "completed" && row.status !== "failed") {
+  if (row.status !== "in-progress" && row.status !== "completed") {
     throw new Error(
       `phase_sub_iterations row ${String(row.id)} has invalid status "${row.status}"`,
     );

@@ -5,6 +5,22 @@ All notable changes to Red Queen are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Data loss on first boot of v6 builds**: the `plan-review` phase
+  was removed from the default pipeline. On first start of any v6
+  build, an irreversible migration drops these columns from
+  `pipeline_state`:
+  `plan_review_verdict`, `plan_review_rating`, `plan_review_blockers`,
+  `plan_review_open_questions`, `plan_review_recorded_at`. Existing
+  data in these columns is permanently lost. If you need it,
+  snapshot the SQLite DB at `.redqueen/redqueen.db` before upgrading.
+- `pipeline.skipSpecReviewIfReady` is currently a no-op and now logs a
+  deprecation warning when set to `true`. It will be re-wired when
+  the v6 spec-review fast-path lands.
+
 ## [0.4.0] - 2026-05-08
 
 ### Changed

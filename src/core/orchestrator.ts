@@ -823,11 +823,11 @@ export class RedQueen {
     });
 
     // Alice parity: review_iterations measures pressure within a single
-    // review loop. Once code-review passes, that loop is closed — a downstream
-    // testing failure should re-enter code-review with a fresh budget, not
-    // the count accumulated from this round. Leave feedback_iterations alone:
-    // it tracks the orthogonal spec-rework loop.
-    if (phase.name === "code-review") {
+    // review loop. Once the reviewer phase passes, that loop is closed —
+    // a downstream testing failure should re-enter the loop with a fresh
+    // budget, not the count accumulated from this round. Leave
+    // feedback_iterations alone: it tracks the orthogonal spec-rework loop.
+    if (phase.resetReviewIterationsOnPass === true) {
       this.deps.pipelineState.resetReviewIterations(issueId);
     }
 

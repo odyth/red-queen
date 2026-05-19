@@ -54,6 +54,7 @@ export const DEFAULT_PHASES: PhaseDefinition[] = [
     maxIterations: 3,
     escalateTo: "human-review",
     assignTo: "ai",
+    resetReviewIterationsOnPass: true,
   },
   {
     name: "testing",

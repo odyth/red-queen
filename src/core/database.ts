@@ -81,7 +81,10 @@ export const SCHEMA_SQL = `
     completed_at TEXT
   );
 
-  CREATE INDEX IF NOT EXISTS idx_phase_sub_iterations_lookup
+  -- UNIQUE index doubles as the (issue_id, phase_name, sub_iter_index)
+  -- lookup index and enforces the constraint against concurrent inserts
+  -- racing on max(sub_iter_index)+1.
+  CREATE UNIQUE INDEX IF NOT EXISTS uq_phase_sub_iterations_issue_phase_index
     ON phase_sub_iterations(issue_id, phase_name, sub_iter_index);
 `;
 
@@ -132,6 +135,12 @@ export class RedQueenDatabase {
         throw err;
       }
     }
+    // Phase 8 (v6): replace the non-unique idx_phase_sub_iterations_lookup
+    // with a UNIQUE INDEX that enforces (issue_id, phase_name, sub_iter_index).
+    // The new index is created by SCHEMA_SQL; here we just drop the old one
+    // on already-migrated DBs so duplicate indexes don't accumulate.
+    this.db.exec("DROP INDEX IF EXISTS idx_phase_sub_iterations_lookup");
+
     // Phase 7 (v6): drop plan-review verdict columns. The plan-review phase
     // was removed entirely; existing databases keep the column data until this
     // migration runs, at which point it's permanently gone.

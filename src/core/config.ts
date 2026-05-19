@@ -33,6 +33,7 @@ const PhaseDefinitionSchema = z
     escalateTo: z.string().optional(),
     assignTo: z.enum(["ai", "human"]),
     requiresPr: z.boolean().optional(),
+    resetReviewIterationsOnPass: z.boolean().optional(),
   })
   .strict();
 
@@ -305,6 +306,7 @@ export function loadConfig(filePath: string): RedQueenConfig {
   const parsed: unknown = parseYaml(interpolated);
   const config = ConfigSchema.parse(parsed);
   checkDisabledSkills(config);
+  warnDeprecatedFields(config);
   return config;
 }
 
@@ -313,7 +315,16 @@ export function parseConfig(yamlContent: string): RedQueenConfig {
   const parsed: unknown = parseYaml(interpolated);
   const config = ConfigSchema.parse(parsed);
   checkDisabledSkills(config);
+  warnDeprecatedFields(config);
   return config;
+}
+
+function warnDeprecatedFields(config: RedQueenConfig): void {
+  if (config.pipeline.skipSpecReviewIfReady === true) {
+    console.warn(
+      "[config] pipeline.skipSpecReviewIfReady is currently a no-op — the plan-review phase was removed in v6. The knob will be re-wired when the v6 spec-review fast-path lands.",
+    );
+  }
 }
 
 function checkDisabledSkills(config: RedQueenConfig): void {

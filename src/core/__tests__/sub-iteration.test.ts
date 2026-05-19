@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import type BetterSqlite3 from "better-sqlite3";
 import { SCHEMA_SQL } from "../database.js";
-import { SubIterationStore } from "../sub-iteration.js";
+import { StaleSubIterationError, SubIterationStore } from "../sub-iteration.js";
 
 let db: BetterSqlite3.Database;
 let store: SubIterationStore;
@@ -72,6 +72,7 @@ describe("SubIterationStore", () => {
     });
     const closed = store.completeLatestOpen({
       issueId: "PROJ-1",
+      phaseName: "spec-writing",
       summary: "Picked module X",
       now: "2026-05-19T00:00:02.000Z",
     });
@@ -88,15 +89,47 @@ describe("SubIterationStore", () => {
   });
 
   it("completeLatestOpen returns null when no open entry exists", () => {
-    const result = store.completeLatestOpen({ issueId: "PROJ-MISSING", summary: "..." });
+    const result = store.completeLatestOpen({
+      issueId: "PROJ-MISSING",
+      phaseName: "spec-writing",
+      summary: "...",
+    });
     expect(result).toBeNull();
   });
 
   it("completeLatestOpen skips already-completed entries", () => {
     store.start({ issueId: "PROJ-1", phaseName: "spec-writing", label: "research" });
-    store.completeLatestOpen({ issueId: "PROJ-1", summary: "done" });
-    const second = store.completeLatestOpen({ issueId: "PROJ-1", summary: "another" });
+    store.completeLatestOpen({
+      issueId: "PROJ-1",
+      phaseName: "spec-writing",
+      summary: "done",
+    });
+    const second = store.completeLatestOpen({
+      issueId: "PROJ-1",
+      phaseName: "spec-writing",
+      summary: "another",
+    });
     expect(second).toBeNull();
+  });
+
+  it("completeLatestOpen throws StaleSubIterationError when latest open belongs to a different phase", () => {
+    // Simulate a crashed spec-writing skill leaving a zombie open entry, then
+    // a later coding phase trying to complete its own sub-iteration. The
+    // store must refuse to silently close the zombie.
+    store.start({
+      issueId: "PROJ-1",
+      phaseName: "spec-writing",
+      label: "abandoned research",
+      now: "2026-05-19T00:00:00.000Z",
+    });
+    expect(() =>
+      store.completeLatestOpen({
+        issueId: "PROJ-1",
+        phaseName: "coding",
+        summary: "implementation done",
+        now: "2026-05-19T01:00:00.000Z",
+      }),
+    ).toThrow(StaleSubIterationError);
   });
 
   it("listByIssue returns rows ordered by started_at ascending", () => {

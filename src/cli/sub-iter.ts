@@ -85,7 +85,21 @@ function cmdSubIterComplete(args: string[]): Promise<void> {
 
   const ctx = loadCliContext();
   try {
-    const sub = ctx.subIteration.completeLatestOpen({ issueId, summary: values.summary });
+    const record = ctx.pipelineState.get(issueId);
+    if (record === null) {
+      throw new CliError(
+        `sub-iter complete: no pipeline record for ${issueId} — run new-ticket first`,
+      );
+    }
+    const phaseName = record.currentPhase;
+    if (phaseName === null) {
+      throw new CliError(`sub-iter complete: pipeline record for ${issueId} has no current phase`);
+    }
+    const sub = ctx.subIteration.completeLatestOpen({
+      issueId,
+      phaseName,
+      summary: values.summary,
+    });
     if (sub === null) {
       throw new CliError(`sub-iter complete: no open sub-iteration for ${issueId}`);
     }

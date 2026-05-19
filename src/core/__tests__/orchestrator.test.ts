@@ -941,6 +941,55 @@ describe("RedQueen orchestrator", () => {
     expect(record?.reviewIterations).toBe(2);
   });
 
+  it("Alice parity: coding pass does NOT reset reviewIterations on entry to code-review", async () => {
+    // Only resetReviewIterationsOnPass=true on a SUCCESSFUL run should clear
+    // the counter. Entering code-review from a coding pass must preserve the
+    // count so the next review attempt is the (N+1)th.
+    //
+    // Strategy: coding succeeds → enters code-review with reviewIterations=3;
+    // code-review then exhausts its retry budget and fails → handleFailure
+    // increments to 4 → 4 > maxIterations=3 → escalates to human-review.
+    // If entry-to-code-review had reset to 0, the failure increment would
+    // land at 1, escalation wouldn't fire, and the pipeline would fall back
+    // to coding (which has no onFail) and stall.
+    let runCount = 0;
+    const h = setupHarness(() => {
+      runCount += 1;
+      if (runCount === 1) {
+        return Promise.resolve({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "code written",
+          error: null,
+        });
+      }
+      return Promise.resolve({
+        success: false,
+        exitCode: 1,
+        elapsed: 1,
+        summary: "review failed",
+        error: "blockers found",
+      });
+    });
+    h.pipelineState.create("PROJ-304", "coding");
+    h.pipelineState.incrementReviewIterations("PROJ-304");
+    h.pipelineState.incrementReviewIterations("PROJ-304");
+    h.pipelineState.incrementReviewIterations("PROJ-304");
+    h.issueTracker.phases.set("PROJ-304", "coding");
+    h.queue.enqueue({ type: "coding", issueId: "PROJ-304" });
+
+    await runUntil(
+      h,
+      () => h.pipelineState.get("PROJ-304")?.currentPhase === "human-review",
+      { maxMs: 5000 },
+    );
+
+    const record = h.pipelineState.get("PROJ-304");
+    expect(record?.currentPhase).toBe("human-review");
+    expect(record?.reviewIterations).toBe(4);
+  });
+
   it("Alice parity: code-review pass resets reviewIterations but not feedbackIterations", async () => {
     const h = setupHarness(() =>
       Promise.resolve({
