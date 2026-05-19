@@ -68,6 +68,21 @@ export const SCHEMA_SQL = `
   );
 
   CREATE INDEX IF NOT EXISTS idx_phase_usage_updated_at ON phase_usage(updated_at DESC);
+
+  CREATE TABLE IF NOT EXISTS phase_sub_iterations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue_id TEXT NOT NULL,
+    phase_name TEXT NOT NULL,
+    sub_iter_index INTEGER NOT NULL,
+    label TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'in-progress',
+    summary TEXT,
+    started_at TEXT NOT NULL,
+    completed_at TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_phase_sub_iterations_lookup
+    ON phase_sub_iterations(issue_id, phase_name, sub_iter_index);
 `;
 
 export class RedQueenDatabase {

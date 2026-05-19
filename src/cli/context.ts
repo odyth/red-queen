@@ -4,6 +4,7 @@ import type { AuditLogger } from "../core/audit.js";
 import type { RedQueenConfig } from "../core/config.js";
 import { RedQueenDatabase } from "../core/database.js";
 import { PipelineStateStore } from "../core/pipeline-state.js";
+import { SubIterationStore } from "../core/sub-iteration.js";
 import type { IssueTracker } from "../integrations/issue-tracker.js";
 import type { SourceControl } from "../integrations/source-control.js";
 import { buildAdapterPair } from "./adapters.js";
@@ -16,6 +17,7 @@ export interface CliContext {
   issueTracker: IssueTracker;
   sourceControl: SourceControl;
   pipelineState: PipelineStateStore;
+  subIteration: SubIterationStore;
   audit: AuditLogger;
   cleanup: () => void;
 }
@@ -30,6 +32,7 @@ export function loadCliContext(): CliContext {
 
   const database = new RedQueenDatabase(dbPath);
   const pipelineState = new PipelineStateStore(database.db);
+  const subIteration = new SubIterationStore(database.db);
   const audit = new DualWriteAuditLogger(database.db, auditPath);
 
   const pair = buildAdapterPair(
@@ -49,6 +52,7 @@ export function loadCliContext(): CliContext {
     issueTracker: pair.issueTracker,
     sourceControl: pair.sourceControl,
     pipelineState,
+    subIteration,
     audit,
     cleanup: () => {
       database.close();

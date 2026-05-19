@@ -28,6 +28,8 @@ Helper commands (called by skills):
   pr reply <number> <id>      Reply to a review comment (--body or stdin)
   pipeline update <issueId>   Update pipeline state (--branch --pr --worktree --clear-pr)
   pipeline cleanup <issueId>  Remove worktree and clear worktree path (--keep-branch)
+  sub-iter start <id> <label> Open a new in-skill sub-iteration entry
+  sub-iter complete <id>      Close the most recent open sub-iteration (--summary "...")
 
 Global flags:
   -h, --help                  Print this message

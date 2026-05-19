@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { cmdIssue } from "../issue.js";
 import { cmdPipeline } from "../pipeline.js";
 import { cmdPr } from "../pr.js";
+import { cmdSubIter } from "../sub-iter.js";
 
 let tmp: string;
 let originalCwd: string;
@@ -121,6 +122,86 @@ describe("cmdPr review via --body", () => {
     await expect(cmdPr(["review", "1", "--verdict", "hmm", "--body", "x"])).rejects.toThrow(
       /verdict/,
     );
+  });
+});
+
+describe("cmdSubIter start", () => {
+  it("opens a new sub-iteration entry against the current phase", async () => {
+    await cmdPipeline(["update", "SUB-1"]);
+    stdoutCapture = [];
+    // Seed currentPhase via the pipeline_state row — the CLI doesn't accept
+    // it as a flag (it reads from pipeline state to keep the skill ergonomic).
+    const { loadCliContext } = await import("../context.js");
+    const ctx = loadCliContext();
+    ctx.pipelineState.updatePhase("SUB-1", "spec-writing");
+    ctx.cleanup();
+
+    await cmdSubIter(["start", "SUB-1", "Codebase research"]);
+    const parsed = JSON.parse(stdoutCapture.join("")) as {
+      issueId: string;
+      phaseName: string;
+      subIterIndex: number;
+      label: string;
+      status: string;
+    };
+    expect(parsed.issueId).toBe("SUB-1");
+    expect(parsed.phaseName).toBe("spec-writing");
+    expect(parsed.subIterIndex).toBe(0);
+    expect(parsed.label).toBe("Codebase research");
+    expect(parsed.status).toBe("in-progress");
+  });
+
+  it("errors when no pipeline record exists", async () => {
+    await expect(cmdSubIter(["start", "SUB-MISSING", "label"])).rejects.toThrow(
+      /no pipeline record/,
+    );
+  });
+
+  it("errors when the pipeline record has no current phase", async () => {
+    await cmdPipeline(["update", "SUB-NOPHASE"]);
+    await expect(cmdSubIter(["start", "SUB-NOPHASE", "label"])).rejects.toThrow(/no current phase/);
+  });
+
+  it("errors without an issueId", async () => {
+    await expect(cmdSubIter(["start"])).rejects.toThrow(/issueId/);
+  });
+
+  it("errors without a label", async () => {
+    await cmdPipeline(["update", "SUB-2"]);
+    await expect(cmdSubIter(["start", "SUB-2"])).rejects.toThrow(/label/);
+  });
+});
+
+describe("cmdSubIter complete", () => {
+  it("closes the most recent open sub-iteration with a summary", async () => {
+    await cmdPipeline(["update", "SUB-3"]);
+    const { loadCliContext } = await import("../context.js");
+    const ctx = loadCliContext();
+    ctx.pipelineState.updatePhase("SUB-3", "spec-writing");
+    ctx.cleanup();
+
+    await cmdSubIter(["start", "SUB-3", "Codebase research"]);
+    stdoutCapture = [];
+    await cmdSubIter(["complete", "SUB-3", "--summary", "Picked module X"]);
+    const parsed = JSON.parse(stdoutCapture.join("")) as {
+      status: string;
+      summary: string;
+      label: string;
+    };
+    expect(parsed.status).toBe("completed");
+    expect(parsed.summary).toBe("Picked module X");
+    expect(parsed.label).toBe("Codebase research");
+  });
+
+  it("errors when no open sub-iteration exists", async () => {
+    await expect(cmdSubIter(["complete", "SUB-NONE", "--summary", "x"])).rejects.toThrow(
+      /no open sub-iteration/,
+    );
+  });
+
+  it("errors without --summary", async () => {
+    await cmdPipeline(["update", "SUB-4"]);
+    await expect(cmdSubIter(["complete", "SUB-4"])).rejects.toThrow(/summary/);
   });
 });
 
