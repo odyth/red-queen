@@ -136,23 +136,20 @@ interface TaskQueue {
 Phases are **dynamic** — defined in `redqueen.yaml`, not hardcoded. The default SDLC flow:
 
 ```
-spec-writing → plan-review → spec-review (HUMAN GATE) → coding → code-review → testing → human-review (HUMAN GATE)
-                 ↓ onFail       ↓ rework                            ↓ onFail                ↓ onFail     ↓ rework
-              spec-feedback  spec-feedback                          coding                  coding     code-feedback
+spec-writing → spec-review (HUMAN GATE) → coding → code-review → testing → human-review (HUMAN GATE)
+                 ↓ rework                            ↓ onFail                ↓ onFail     ↓ rework
+              spec-feedback                          coding                  coding     code-feedback
 ```
 
 Feedback loops:
-- `plan-review` fail → `spec-feedback` → back to `plan-review` (scored re-review)
-- `spec-review` rework → `spec-feedback` → back to `plan-review`
+- `spec-review` rework → `spec-feedback` → back to `spec-review`
 - `code-feedback` ↔ `code-review`
 
 Escalation: `blocked` (human gate) after max iterations.
 
-`pipeline.skipSpecReviewIfReady` (default `false`): when `plan-review` returns rating ≥ 8, 0 blockers, 0 open questions, advance straight to `coding` and skip the human `spec-review`.
-
 - Max 3 iterations on any rework loop before escalating to human
 - Failed phases re-enter from Coding, not from the beginning
-- Human gates cannot be skipped programmatically (except the `skipSpecReviewIfReady` path above, which requires explicit opt-in)
+- Human gates cannot be skipped programmatically
 
 ## Testing
 

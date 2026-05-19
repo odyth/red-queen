@@ -37,7 +37,6 @@ interface Harness {
 
 interface HarnessOptions {
   extra?: Partial<RedQueenDeps>;
-  skipSpecReviewIfReady?: boolean;
 }
 
 function setupHarness(
@@ -74,7 +73,7 @@ function setupHarness(
       stallThresholdMs: 60_000,
       reconcileInterval: 0,
       claudeBin: "/bin/sh",
-      skipSpecReviewIfReady: options.skipSpecReviewIfReady ?? false,
+      skipSpecReviewIfReady: false,
     },
   });
   const runtime = new RuntimeState(phaseGraph, config);
@@ -123,20 +122,6 @@ function writeSkill(name: string): void {
   writeFileSync(join(dir, "SKILL.md"), `# ${name}\n`);
 }
 
-// Worker prompt is "Read and follow <tempPath> exactly." — pull the rendered
-// skill body out of that temp file so tests can branch on YAML context fields.
-function readPromptBody(prompt: string): string {
-  const match = /^Read and follow (.+) exactly\.$/.exec(prompt.trim());
-  if (match === null) {
-    return prompt;
-  }
-  try {
-    return readFileSync(match[1] ?? "", "utf8");
-  } catch {
-    return prompt;
-  }
-}
-
 async function runUntil(
   h: Harness,
   predicate: () => boolean,
@@ -172,7 +157,6 @@ describe("RedQueen orchestrator", () => {
     mkdirSync(skillsDir, { recursive: true });
     // Write SKILL.md for every skill referenced by default phases
     writeSkill("prompt-writer");
-    writeSkill("planning-review");
     writeSkill("coder");
     writeSkill("reviewer");
     writeSkill("tester");
@@ -310,8 +294,7 @@ describe("RedQueen orchestrator", () => {
   it("processes new-ticket tasks without a worker", async () => {
     // Snapshot tracker state on the FIRST worker invocation — at that point
     // new-ticket is complete and we're still at spec-writing+ai (the worker
-    // hasn't advanced the phase yet). With plan-review now sitting between
-    // spec-writing and spec-review, subsequent worker runs would overwrite
+    // hasn't advanced the phase yet). Subsequent worker runs would overwrite
     // the snapshot, so we freeze it after the first capture.
     const snapshot: { phase: string | null; assignment: string | null } = {
       phase: null,
@@ -367,9 +350,8 @@ describe("RedQueen orchestrator", () => {
   });
 
   it("assigns to human when advancing to human gate", async () => {
-    // spec-writing -> plan-review -> spec-review (human). Both automated
-    // workers succeed; the default config leaves skipSpecReviewIfReady off
-    // so the pipeline parks at the spec-review human gate either way.
+    // spec-writing -> spec-review (human). spec-writing succeeds and the
+    // orchestrator parks the ticket at the spec-review human gate.
     const h = setupHarness(() =>
       Promise.resolve({
         success: true,
@@ -388,179 +370,6 @@ describe("RedQueen orchestrator", () => {
     expect(h.issueTracker.phases.get("PROJ-1")).toBe("spec-review");
     expect(h.issueTracker.assignments.get("PROJ-1")).toBe("human");
     expect(h.queue.hasOpenTask("PROJ-1", "spec-review")).toBe(false);
-  });
-
-  it("plan-review clean pass with skipSpecReviewIfReady=false still parks at spec-review", async () => {
-    const h = setupHarness(
-      (opts) => {
-        // Simulate the planning-review skill writing a clean verdict before exit.
-        if (readPromptBody(opts.prompt).includes("phaseName: plan-review")) {
-          h.pipelineState.setPlanReviewVerdict("PROJ-R1", {
-            verdict: "approve",
-            rating: 9,
-            blockers: 0,
-            openQuestions: 0,
-            recordedAt: "2026-05-07T00:00:00.000Z",
-          });
-        }
-        return Promise.resolve({
-          success: true,
-          exitCode: 0,
-          elapsed: 1,
-          summary: "done",
-          error: null,
-        });
-      },
-      { skipSpecReviewIfReady: false },
-    );
-    h.pipelineState.create("PROJ-R1", "plan-review");
-    h.issueTracker.phases.set("PROJ-R1", "plan-review");
-    h.queue.enqueue({ type: "plan-review", issueId: "PROJ-R1" });
-
-    await runUntil(h, () => h.issueTracker.phases.get("PROJ-R1") === "spec-review");
-
-    expect(h.issueTracker.phases.get("PROJ-R1")).toBe("spec-review");
-    expect(h.issueTracker.assignments.get("PROJ-R1")).toBe("human");
-  });
-
-  it("plan-review clean pass with skipSpecReviewIfReady=true jumps to coding", async () => {
-    // Fail on phases past coding so the harness parks once we've verified the
-    // spec-review human gate was skipped — otherwise the automated tail (code
-    // review → testing → human-review) would chase the ticket past coding.
-    const h = setupHarness(
-      (opts) => {
-        const body = readPromptBody(opts.prompt);
-        if (body.includes("phaseName: plan-review")) {
-          h.pipelineState.setPlanReviewVerdict("PROJ-R2", {
-            verdict: "approve",
-            rating: 9,
-            blockers: 0,
-            openQuestions: 0,
-            recordedAt: "2026-05-07T00:00:00.000Z",
-          });
-        }
-        if (body.includes("phaseName: coding")) {
-          return Promise.resolve({
-            success: false,
-            exitCode: 1,
-            elapsed: 1,
-            summary: "",
-            error: "stop cascade",
-          });
-        }
-        return Promise.resolve({
-          success: true,
-          exitCode: 0,
-          elapsed: 1,
-          summary: "done",
-          error: null,
-        });
-      },
-      { skipSpecReviewIfReady: true },
-    );
-    h.pipelineState.create("PROJ-R2", "plan-review");
-    h.issueTracker.phases.set("PROJ-R2", "plan-review");
-    h.queue.enqueue({ type: "plan-review", issueId: "PROJ-R2" });
-
-    await runUntil(h, () => h.issueTracker.phases.get("PROJ-R2") === "coding");
-
-    expect(h.issueTracker.phases.get("PROJ-R2")).toBe("coding");
-    expect(h.issueTracker.assignments.get("PROJ-R2")).toBe("ai");
-    // Confirm we never reached the spec-review human gate.
-    expect(h.issueTracker.calls).not.toContain("setPhase:PROJ-R2:spec-review");
-  });
-
-  it("plan-review rating below 8 does not auto-skip even when enabled", async () => {
-    const h = setupHarness(
-      (opts) => {
-        if (readPromptBody(opts.prompt).includes("phaseName: plan-review")) {
-          h.pipelineState.setPlanReviewVerdict("PROJ-R3", {
-            verdict: "approve",
-            rating: 7,
-            blockers: 0,
-            openQuestions: 0,
-            recordedAt: "2026-05-07T00:00:00.000Z",
-          });
-        }
-        return Promise.resolve({
-          success: true,
-          exitCode: 0,
-          elapsed: 1,
-          summary: "done",
-          error: null,
-        });
-      },
-      { skipSpecReviewIfReady: true },
-    );
-    h.pipelineState.create("PROJ-R3", "plan-review");
-    h.issueTracker.phases.set("PROJ-R3", "plan-review");
-    h.queue.enqueue({ type: "plan-review", issueId: "PROJ-R3" });
-
-    await runUntil(h, () => h.issueTracker.phases.get("PROJ-R3") === "spec-review");
-
-    expect(h.issueTracker.phases.get("PROJ-R3")).toBe("spec-review");
-    expect(h.issueTracker.assignments.get("PROJ-R3")).toBe("human");
-  });
-
-  it("plan-review with open questions does not auto-skip even when enabled", async () => {
-    const h = setupHarness(
-      (opts) => {
-        if (readPromptBody(opts.prompt).includes("phaseName: plan-review")) {
-          h.pipelineState.setPlanReviewVerdict("PROJ-R4", {
-            verdict: "approve",
-            rating: 9,
-            blockers: 0,
-            openQuestions: 2,
-            recordedAt: "2026-05-07T00:00:00.000Z",
-          });
-        }
-        return Promise.resolve({
-          success: true,
-          exitCode: 0,
-          elapsed: 1,
-          summary: "done",
-          error: null,
-        });
-      },
-      { skipSpecReviewIfReady: true },
-    );
-    h.pipelineState.create("PROJ-R4", "plan-review");
-    h.issueTracker.phases.set("PROJ-R4", "plan-review");
-    h.queue.enqueue({ type: "plan-review", issueId: "PROJ-R4" });
-
-    await runUntil(h, () => h.issueTracker.phases.get("PROJ-R4") === "spec-review");
-
-    expect(h.issueTracker.phases.get("PROJ-R4")).toBe("spec-review");
-    expect(h.issueTracker.assignments.get("PROJ-R4")).toBe("human");
-  });
-
-  it("plan-review clears any stale verdict before dispatching the skill", async () => {
-    const h = setupHarness(() =>
-      Promise.resolve({
-        success: false,
-        exitCode: 1,
-        elapsed: 1,
-        summary: "",
-        error: "no verdict recorded",
-      }),
-    );
-    h.pipelineState.create("PROJ-R5", "plan-review");
-    h.issueTracker.phases.set("PROJ-R5", "plan-review");
-    // Pretend a previous run left a stale clean verdict behind. The dispatch
-    // cycle must wipe it before running the worker so a crashed skill can't
-    // coast through on stale state.
-    h.pipelineState.setPlanReviewVerdict("PROJ-R5", {
-      verdict: "approve",
-      rating: 10,
-      blockers: 0,
-      openQuestions: 0,
-      recordedAt: "2026-05-07T00:00:00.000Z",
-    });
-    h.queue.enqueue({ type: "plan-review", issueId: "PROJ-R5" });
-
-    await runUntilAfterRuns(h, 1);
-
-    expect(h.pipelineState.get("PROJ-R5")?.planReviewVerdict).toBeNull();
   });
 
   it("fails gracefully when skill file is missing", async () => {

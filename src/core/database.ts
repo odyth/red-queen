@@ -33,11 +33,6 @@ export const SCHEMA_SQL = `
     spec_content TEXT,
     prior_context TEXT,
     delegator_account_id TEXT,
-    plan_review_verdict TEXT,
-    plan_review_rating INTEGER,
-    plan_review_blockers INTEGER,
-    plan_review_open_questions INTEGER,
-    plan_review_recorded_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -122,20 +117,22 @@ export class RedQueenDatabase {
         throw err;
       }
     }
-    // Phase 6: plan-review verdict columns on pipeline_state.
-    const planReviewColumns: string[] = [
-      "ALTER TABLE pipeline_state ADD COLUMN plan_review_verdict TEXT",
-      "ALTER TABLE pipeline_state ADD COLUMN plan_review_rating INTEGER",
-      "ALTER TABLE pipeline_state ADD COLUMN plan_review_blockers INTEGER",
-      "ALTER TABLE pipeline_state ADD COLUMN plan_review_open_questions INTEGER",
-      "ALTER TABLE pipeline_state ADD COLUMN plan_review_recorded_at TEXT",
+    // Phase 7 (v6): drop plan-review verdict columns. The plan-review phase
+    // was removed entirely; existing databases keep the column data until this
+    // migration runs, at which point it's permanently gone.
+    const droppedPlanReviewColumns: string[] = [
+      "ALTER TABLE pipeline_state DROP COLUMN plan_review_verdict",
+      "ALTER TABLE pipeline_state DROP COLUMN plan_review_rating",
+      "ALTER TABLE pipeline_state DROP COLUMN plan_review_blockers",
+      "ALTER TABLE pipeline_state DROP COLUMN plan_review_open_questions",
+      "ALTER TABLE pipeline_state DROP COLUMN plan_review_recorded_at",
     ];
-    for (const stmt of planReviewColumns) {
+    for (const stmt of droppedPlanReviewColumns) {
       try {
         this.db.exec(stmt);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        if (msg.includes("duplicate column") === false) {
+        if (msg.includes("no such column") === false) {
           throw err;
         }
       }

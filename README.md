@@ -17,16 +17,14 @@ and stops at the gates you configure.
 
 ## TL;DR
 
-You assign a ticket. Claude writes a spec. An automated plan-review scores
-it for blockers and ambiguity (and loops back for rework if it's weak). You
-approve at the human gate. Claude writes the code and opens a PR. Another
-Claude reviews it. Another tests it. You review the final PR and merge. Step
-in at any gate, or remove them entirely.
+You assign a ticket. Claude writes a spec. You approve at the human gate.
+Claude writes the code and opens a PR. Another Claude reviews it. Another
+tests it. You review the final PR and merge. Step in at any gate, or remove
+them entirely.
 
 Phases, skills, and gates are all declared in `redqueen.yaml` — add a
-`security-review` phase, skip the human spec-review when plan-review scores
-clean, override a skill prompt by dropping a file into `.redqueen/skills/`.
-The graph is yours to shape.
+`security-review` phase, override a skill prompt by dropping a file into
+`.redqueen/skills/`. The graph is yours to shape.
 
 ## Install
 
@@ -113,11 +111,9 @@ Open <http://127.0.0.1:4400>. Five tabs:
 In Jira, set the **AI Phase** field on a ticket to `Spec Writing` and
 assign it to the AI bot account. The orchestrator polls every 30
 seconds (or reacts to a webhook if configured). You'll see it move:
-`Spec Writing` → `Plan Review` → `Spec Review` (human gate) → `Coding`
-→ `Code Review` → `Testing` → `Human Review` → merged. A weak plan
-loops back through `Spec Feedback` up to three times before
-escalating; set `pipeline.skipSpecReviewIfReady: true` to auto-promote
-clean plans straight into `Coding` and skip the human gate.
+`Spec Writing` → `Spec Review` (human gate) → `Coding` → `Code Review`
+→ `Testing` → `Human Review` → merged. Spec rework loops back through
+`Spec Feedback` up to three times before escalating.
 
 ## Alternative: GitHub Issues
 
