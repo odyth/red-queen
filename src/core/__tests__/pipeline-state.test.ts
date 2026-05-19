@@ -128,6 +128,21 @@ describe("PipelineStateStore", () => {
     expect(store.resetIterations("PROJ-NOBODY")).toBe(false);
   });
 
+  it("resetReviewIterations zeros review counter only, leaving feedback intact", () => {
+    store.create("PROJ-1");
+    store.incrementReviewIterations("PROJ-1");
+    store.incrementReviewIterations("PROJ-1");
+    store.incrementFeedbackIterations("PROJ-1");
+    expect(store.resetReviewIterations("PROJ-1")).toBe(true);
+    const record = store.get("PROJ-1");
+    expect(record?.reviewIterations).toBe(0);
+    expect(record?.feedbackIterations).toBe(1);
+  });
+
+  it("resetReviewIterations returns false when no record exists", () => {
+    expect(store.resetReviewIterations("PROJ-NOBODY")).toBe(false);
+  });
+
   it("updates spec content", () => {
     store.create("PROJ-1");
     store.updateSpec("PROJ-1", "# Login Feature Spec\n\nRequirements...");

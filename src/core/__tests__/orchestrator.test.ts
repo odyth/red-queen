@@ -916,6 +916,10 @@ describe("RedQueen orchestrator", () => {
   });
 
   it("Gap 3: does not reset when leaving an automated phase", async () => {
+    // Use code-review → testing pairing (both automated) with a passing
+    // worker on testing. Gate-leave reset must not fire (prior phase is
+    // automated) and the Alice-parity code-review-pass reset isn't in scope
+    // either (the worker isn't running code-review here).
     const h = setupHarness(() =>
       Promise.resolve({
         success: true,
@@ -925,17 +929,42 @@ describe("RedQueen orchestrator", () => {
         error: null,
       }),
     );
-    // Automated → automated (coding → code-review). Seed counters; they must NOT reset.
-    h.pipelineState.create("PROJ-302", "coding");
+    h.pipelineState.create("PROJ-302", "code-review");
     h.pipelineState.incrementReviewIterations("PROJ-302");
     h.pipelineState.incrementReviewIterations("PROJ-302");
-    h.issueTracker.phases.set("PROJ-302", "code-review");
-    h.queue.enqueue({ type: "code-review", issueId: "PROJ-302" });
+    h.issueTracker.phases.set("PROJ-302", "testing");
+    h.queue.enqueue({ type: "testing", issueId: "PROJ-302" });
 
     await runUntilAfterRuns(h, 1);
 
     const record = h.pipelineState.get("PROJ-302");
     expect(record?.reviewIterations).toBe(2);
+  });
+
+  it("Alice parity: code-review pass resets reviewIterations but not feedbackIterations", async () => {
+    const h = setupHarness(() =>
+      Promise.resolve({
+        success: true,
+        exitCode: 0,
+        elapsed: 1,
+        summary: "approved",
+        error: null,
+      }),
+    );
+    h.pipelineState.create("PROJ-303", "code-review");
+    h.pipelineState.incrementReviewIterations("PROJ-303");
+    h.pipelineState.incrementReviewIterations("PROJ-303");
+    h.pipelineState.incrementFeedbackIterations("PROJ-303");
+    h.pipelineState.incrementFeedbackIterations("PROJ-303");
+    h.issueTracker.phases.set("PROJ-303", "code-review");
+    h.queue.enqueue({ type: "code-review", issueId: "PROJ-303" });
+
+    await runUntilAfterRuns(h, 1);
+
+    const record = h.pipelineState.get("PROJ-303");
+    expect(record?.reviewIterations).toBe(0);
+    // feedback_iterations is for spec rework — unrelated to code-review pass.
+    expect(record?.feedbackIterations).toBe(2);
   });
 
   it("Gap 4: respectAgentPhaseChange to human-gate calls assignToHuman", async () => {

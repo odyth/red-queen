@@ -822,6 +822,15 @@ export class RedQueen {
       metadata: { taskId: task.id, elapsed: result.elapsed },
     });
 
+    // Alice parity: review_iterations measures pressure within a single
+    // review loop. Once code-review passes, that loop is closed — a downstream
+    // testing failure should re-enter code-review with a fresh budget, not
+    // the count accumulated from this round. Leave feedback_iterations alone:
+    // it tracks the orthogonal spec-rework loop.
+    if (phase.name === "code-review") {
+      this.deps.pipelineState.resetReviewIterations(issueId);
+    }
+
     if (phase.requiresPr === true) {
       const record = this.deps.pipelineState.get(issueId);
       const prNumber = record?.prNumber ?? null;
