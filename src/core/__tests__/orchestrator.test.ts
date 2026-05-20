@@ -979,11 +979,9 @@ describe("RedQueen orchestrator", () => {
     h.issueTracker.phases.set("PROJ-304", "coding");
     h.queue.enqueue({ type: "coding", issueId: "PROJ-304" });
 
-    await runUntil(
-      h,
-      () => h.pipelineState.get("PROJ-304")?.currentPhase === "human-review",
-      { maxMs: 5000 },
-    );
+    await runUntil(h, () => h.pipelineState.get("PROJ-304")?.currentPhase === "human-review", {
+      maxMs: 5000,
+    });
 
     const record = h.pipelineState.get("PROJ-304");
     expect(record?.currentPhase).toBe("human-review");
