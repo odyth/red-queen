@@ -699,22 +699,17 @@ describe("buildPhaseGraph", () => {
   it("getEntryPhases returns phases never referenced as targets", () => {
     const graph = buildPhaseGraph(DEFAULT_PHASES);
     const entryNames = graph.getEntryPhases().map((p) => p.name);
-    expect(entryNames).toContain("spec-research");
-    expect(entryNames).not.toContain("spec-writing");
+    expect(entryNames).toContain("spec-writing");
     expect(entryNames).not.toContain("coding");
     expect(entryNames).not.toContain("code-review");
     expect(entryNames).not.toContain("spec-review");
   });
 
-  it("spec-research is the first phase (new-ticket entry point)", () => {
-    expect(DEFAULT_PHASES[0]?.name).toBe("spec-research");
-  });
-
-  it("DEFAULT_PHASES includes spec-awaiting-info as a human-gate that exits to spec-research", () => {
+  it("DEFAULT_PHASES includes spec-awaiting-info as a human-gate that exits to spec-writing", () => {
     const phase = DEFAULT_PHASES.find((p) => p.name === "spec-awaiting-info");
     expect(phase).toBeDefined();
     expect(phase?.type).toBe("human-gate");
-    expect(phase?.next).toBe("spec-research");
+    expect(phase?.next).toBe("spec-writing");
     expect(phase?.assignTo).toBe("human");
   });
 
@@ -727,43 +722,6 @@ describe("buildPhaseGraph", () => {
     const graph = buildPhaseGraph(DEFAULT_PHASES);
     const entryNames = graph.getEntryPhases().map((p) => p.name);
     expect(entryNames).not.toContain("spec-awaiting-info");
-  });
-});
-
-describe("v6 multi-phase spec pipeline (DEFAULT_PHASES)", () => {
-  const byName = (name: string) => DEFAULT_PHASES.find((p) => p.name === name);
-
-  it("removes spec-feedback and adds spec-research + spec-design", () => {
-    expect(byName("spec-feedback")).toBeUndefined();
-    expect(byName("spec-research")?.skill).toBe("spec-researcher");
-    expect(byName("spec-design")?.skill).toBe("spec-designer");
-  });
-
-  it("spec-research → spec-design → spec-writing chain", () => {
-    expect(byName("spec-research")?.next).toBe("spec-design");
-    expect(byName("spec-design")?.next).toBe("spec-writing");
-    expect(byName("spec-writing")?.next).toBe("spec-review");
-  });
-
-  it("spec-writing dispatches spec-writer with the feedback counter and a cap", () => {
-    const phase = byName("spec-writing");
-    expect(phase?.skill).toBe("spec-writer");
-    expect(phase?.iterationCounter).toBe("feedback");
-    expect(phase?.maxIterations).toBe(3);
-    expect(phase?.escalateTo).toBe("blocked");
-  });
-
-  it("spec-review reworks back to spec-writing", () => {
-    expect(byName("spec-review")?.rework).toBe("spec-writing");
-  });
-
-  it("code-review uses the review counter, code-feedback uses the feedback counter", () => {
-    expect(byName("code-review")?.iterationCounter).toBe("review");
-    expect(byName("code-feedback")?.iterationCounter).toBe("feedback");
-  });
-
-  it("builds a valid graph with no errors", () => {
-    expect(() => buildPhaseGraph(DEFAULT_PHASES)).not.toThrow();
   });
 });
 

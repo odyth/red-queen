@@ -1,7 +1,7 @@
 import { parseArgs } from "node:util";
 import { loadCliContext } from "./context.js";
 import { CliError } from "./errors.js";
-import { readBodyFromStdinOrFlag, writeJson } from "./io.js";
+import { writeJson } from "./io.js";
 
 export async function cmdSubIter(args: string[]): Promise<void> {
   const [subcommand, ...rest] = args;
@@ -12,12 +12,9 @@ export async function cmdSubIter(args: string[]): Promise<void> {
     case "complete":
       await cmdSubIterComplete(rest);
       return;
-    case "latest":
-      await cmdSubIterLatest(rest);
-      return;
     default:
       throw new CliError(
-        `Unknown 'sub-iter' subcommand: ${subcommand ?? "(missing)"}. Valid: start, complete, latest.`,
+        `Unknown 'sub-iter' subcommand: ${subcommand ?? "(missing)"}. Valid: start, complete.`,
       );
   }
 }
@@ -69,12 +66,11 @@ function cmdSubIterStart(args: string[]): Promise<void> {
   return Promise.resolve();
 }
 
-async function cmdSubIterComplete(args: string[]): Promise<void> {
+function cmdSubIterComplete(args: string[]): Promise<void> {
   const { positionals, values } = parseArgs({
     args,
     options: {
       summary: { type: "string" },
-      "summary-stdin": { type: "boolean", default: false },
       pretty: { type: "boolean", default: false },
     },
     allowPositionals: true,
@@ -83,15 +79,8 @@ async function cmdSubIterComplete(args: string[]): Promise<void> {
   if (issueId === undefined) {
     throw new CliError("sub-iter complete: <issueId> is required");
   }
-  // Research/design summaries can be multi-KB — stdin avoids argv length
-  // limits. Either --summary "..." or --summary-stdin must be present.
-  let summary: string;
-  if (values["summary-stdin"] === true) {
-    summary = await readBodyFromStdinOrFlag(undefined, "summary");
-  } else if (values.summary !== undefined && values.summary.length > 0) {
-    summary = values.summary;
-  } else {
-    throw new CliError("sub-iter complete: --summary or --summary-stdin is required");
+  if (values.summary === undefined || values.summary.length === 0) {
+    throw new CliError("sub-iter complete: --summary is required");
   }
 
   const ctx = loadCliContext();
@@ -109,7 +98,7 @@ async function cmdSubIterComplete(args: string[]): Promise<void> {
     const sub = ctx.subIteration.completeLatestOpen({
       issueId,
       phaseName,
-      summary,
+      summary: values.summary,
     });
     if (sub === null) {
       throw new CliError(`sub-iter complete: no open sub-iteration for ${issueId}`);
@@ -122,37 +111,9 @@ async function cmdSubIterComplete(args: string[]): Promise<void> {
         phase: sub.phaseName,
         subIterIndex: sub.subIterIndex,
         label: sub.label,
-        summary,
+        summary: values.summary,
       },
     });
-    writeJson(sub, values.pretty === true);
-  } finally {
-    ctx.cleanup();
-  }
-}
-
-function cmdSubIterLatest(args: string[]): Promise<void> {
-  const { positionals, values } = parseArgs({
-    args,
-    options: {
-      phase: { type: "string" },
-      pretty: { type: "boolean", default: false },
-    },
-    allowPositionals: true,
-  });
-  const issueId = positionals[0];
-  if (issueId === undefined) {
-    throw new CliError("sub-iter latest: <issueId> is required");
-  }
-  if (values.phase === undefined || values.phase.length === 0) {
-    throw new CliError("sub-iter latest: --phase <name> is required");
-  }
-
-  const ctx = loadCliContext();
-  try {
-    // Writes `null` (and exits 0) when no completed sub-iteration exists, so
-    // callers can branch on JSON null instead of a non-zero exit.
-    const sub = ctx.subIteration.latestCompleted(issueId, values.phase);
     writeJson(sub, values.pretty === true);
   } finally {
     ctx.cleanup();

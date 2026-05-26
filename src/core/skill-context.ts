@@ -3,15 +3,8 @@ import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { stringify as stringifyYaml } from "yaml";
 import type { ProjectModule } from "./config.js";
-import { computeHumanModifiedSpec } from "./strings.js";
 import type { RuntimeState } from "./runtime-state.js";
-import type {
-  PhaseDefinition,
-  PipelineRecord,
-  SkillContext,
-  SkillModuleContext,
-  Task,
-} from "./types.js";
+import type { PipelineRecord, SkillContext, SkillModuleContext, Task } from "./types.js";
 
 export type ModuleResolver = (
   worktreePath: string | null,
@@ -70,13 +63,8 @@ export function buildSkillContext(deps: SkillContextDeps): SkillContext {
     prNumber: pipelineRecord.prNumber,
     specContent: pipelineRecord.specContent,
     priorContext: pipelineRecord.priorContext,
-    iterationCount: relevantIterationCount(phase, pipelineRecord),
+    iterationCount: relevantIterationCount(phaseName, pipelineRecord),
     maxIterations,
-    humanModifiedSpec: computeHumanModifiedSpec(
-      pipelineRecord.specContent,
-      pipelineRecord.lastAiSpecHash,
-    ),
-    lastAiSpecAt: pipelineRecord.lastAiSpecAt,
     codebaseMapPath: deps.codebaseMapPath ?? null,
     projectDir: resolve(config.project.directory),
   };
@@ -101,16 +89,14 @@ function defaultResolveModule(): SkillModuleContext | null {
   return null;
 }
 
-function relevantIterationCount(phase: PhaseDefinition, record: PipelineRecord): number {
-  switch (phase.iterationCounter) {
-    case "review":
-      return record.reviewIterations;
-    case "feedback":
-      return record.feedbackIterations;
-    case "none":
-    case undefined:
-      return 0;
+function relevantIterationCount(phaseName: string, record: PipelineRecord): number {
+  if (phaseName.includes("feedback")) {
+    return record.feedbackIterations;
   }
+  if (phaseName.includes("review")) {
+    return record.reviewIterations;
+  }
+  return 0;
 }
 
 export function renderSkillPrompt(context: SkillContext, skillMarkdown: string): string {

@@ -4,11 +4,6 @@ export type PhaseType = "automated" | "human-gate";
 
 export type AssignTo = "ai" | "human";
 
-// Which pipeline_state counter feeds SkillContext.iterationCount for a phase.
-// Replaces the old string-matching on phase names (a phase named "spec-writing"
-// needs the feedback counter despite "review" not appearing in its name).
-export type IterationCounterKind = "review" | "feedback" | "none";
-
 export interface PhaseDefinition {
   name: string;
   label: string;
@@ -20,9 +15,6 @@ export interface PhaseDefinition {
   maxIterations?: number;
   escalateTo?: string;
   assignTo: AssignTo;
-  // Selects which iteration counter is injected as SkillContext.iterationCount
-  // and (for rework targets) which cap maxIterations applies to. Default "none".
-  iterationCounter?: IterationCounterKind;
   // When set, the phase is only executed if a PR's presence matches this value.
   // true  → phase consumes PR-level feedback (e.g. code-feedback); skip when no PR.
   // false → phase consumes tracker-level feedback pre-PR (e.g. spec-feedback); skip when a PR exists.
@@ -151,11 +143,6 @@ export interface PipelineRecord {
   specContent: string | null;
   priorContext: string | null;
   delegatorAccountId: string | null;
-  openQuestionCount: number | null;
-  parsedOpenQuestionCount: number | null;
-  filesAffectedCount: number | null;
-  lastAiSpecHash: string | null;
-  lastAiSpecAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -199,14 +186,6 @@ export interface SkillContext {
   priorContext: string | null;
   iterationCount: number;
   maxIterations: number;
-  // Pre-computed by the orchestrator: true when the current spec body differs
-  // from what the AI last wrote (normalized hash compare), or when a human
-  // pre-populated the spec before any AI write. The writer reads this from the
-  // YAML context and never recomputes hashes itself.
-  humanModifiedSpec: boolean;
-  // ISO timestamp of the last AI `spec set`, or null. Lets the writer filter
-  // "comments newer than the last AI write" without a separate CLI call.
-  lastAiSpecAt: string | null;
   codebaseMapPath: string | null;
   projectDir: string;
 }

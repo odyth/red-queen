@@ -147,7 +147,7 @@ describe("Orchestrator.reload", () => {
         name: "spec-writing",
         label: "Spec",
         type: "automated",
-        skill: "spec-writer",
+        skill: "prompt-writer",
         next: "does-not-exist",
         assignTo: "ai",
       },

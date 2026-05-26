@@ -14,11 +14,6 @@ interface PipelineRow {
   spec_content: string | null;
   prior_context: string | null;
   delegator_account_id: string | null;
-  open_question_count: number | null;
-  parsed_open_question_count: number | null;
-  files_affected_count: number | null;
-  last_ai_spec_hash: string | null;
-  last_ai_spec_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -196,63 +191,6 @@ export class PipelineStateStore {
     return result.changes > 0;
   }
 
-  // Atomic spec write: spec_content plus the server-side audit columns parsed
-  // out of the body, in a single UPDATE so a reader never sees a spec whose
-  // hash/parsed-count belong to a prior write. Called by `redqueen spec set`.
-  recordSpecWrite(
-    issueId: string,
-    fields: {
-      specContent: string;
-      parsedOpenQuestionCount: number | null;
-      lastAiSpecHash: string;
-      lastAiSpecAt: string;
-    },
-  ): boolean {
-    const now = new Date().toISOString();
-    const result = this.db
-      .prepare(
-        `UPDATE pipeline_state SET
-           spec_content = ?,
-           parsed_open_question_count = ?,
-           last_ai_spec_hash = ?,
-           last_ai_spec_at = ?,
-           updated_at = ?
-         WHERE issue_id = ?`,
-      )
-      .run(
-        fields.specContent,
-        fields.parsedOpenQuestionCount,
-        fields.lastAiSpecHash,
-        fields.lastAiSpecAt,
-        now,
-        issueId,
-      );
-    return result.changes > 0;
-  }
-
-  // Declared open-question count from `redqueen spec meta --open-questions N`.
-  setOpenQuestionCount(issueId: string, count: number | null): boolean {
-    const now = new Date().toISOString();
-    const result = this.db
-      .prepare(
-        "UPDATE pipeline_state SET open_question_count = ?, updated_at = ? WHERE issue_id = ?",
-      )
-      .run(count, now, issueId);
-    return result.changes > 0;
-  }
-
-  // Declared files-affected count from `redqueen spec meta --files-affected N`.
-  // Recorded for future routing; no consumer reads it yet.
-  setFilesAffectedCount(issueId: string, count: number | null): boolean {
-    const now = new Date().toISOString();
-    const result = this.db
-      .prepare(
-        "UPDATE pipeline_state SET files_affected_count = ?, updated_at = ? WHERE issue_id = ?",
-      )
-      .run(count, now, issueId);
-    return result.changes > 0;
-  }
-
   updatePriorContext(issueId: string, priorContext: string): boolean {
     const now = new Date().toISOString();
     const result = this.db
@@ -393,11 +331,6 @@ function toPipelineRecord(row: PipelineRow): PipelineRecord {
     specContent: row.spec_content,
     priorContext: row.prior_context,
     delegatorAccountId: row.delegator_account_id,
-    openQuestionCount: row.open_question_count,
-    parsedOpenQuestionCount: row.parsed_open_question_count,
-    filesAffectedCount: row.files_affected_count,
-    lastAiSpecHash: row.last_ai_spec_hash,
-    lastAiSpecAt: row.last_ai_spec_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

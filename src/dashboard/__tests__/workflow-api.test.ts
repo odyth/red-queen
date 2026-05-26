@@ -199,7 +199,7 @@ describe("Dashboard workflow API", () => {
       humanGates: string[];
     };
     expect(body.phases.length).toBe(DEFAULT_PHASES.length);
-    expect(body.entryPhases).toContain("spec-research");
+    expect(body.entryPhases).toContain("spec-writing");
     expect(body.humanGates).toContain("spec-review");
   });
 });

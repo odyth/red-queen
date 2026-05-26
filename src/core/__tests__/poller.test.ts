@@ -39,10 +39,10 @@ describe("Poller", () => {
   it("tick() creates tasks for new work", async () => {
     const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
     const issueTracker = new MockIssueTracker();
-    issueTracker.listByPhaseResults.set("spec-research", [makeIssue("PROJ-1")]);
+    issueTracker.listByPhaseResults.set("spec-writing", [makeIssue("PROJ-1")]);
     const poller = new Poller({ issueTracker, queue, runtime, pipelineState, audit }, 1_000_000);
     await poller.tick();
-    expect(queue.hasOpenTask("PROJ-1", "spec-research")).toBe(true);
+    expect(queue.hasOpenTask("PROJ-1", "spec-writing")).toBe(true);
   });
 
   it("start/stop schedule and cancel the interval", () => {

@@ -33,11 +33,6 @@ export const SCHEMA_SQL = `
     spec_content TEXT,
     prior_context TEXT,
     delegator_account_id TEXT,
-    open_question_count INTEGER,
-    parsed_open_question_count INTEGER,
-    files_affected_count INTEGER,
-    last_ai_spec_hash TEXT,
-    last_ai_spec_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -162,30 +157,6 @@ export class RedQueenDatabase {
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         if (msg.includes("no such column") === false) {
-          throw err;
-        }
-      }
-    }
-
-    // Phase 2 (v6 multi-phase prompt-writer): spec-writer metadata columns.
-    // open_question_count / files_affected_count are the writer's declared
-    // counts; parsed_open_question_count is the server-side cross-check parsed
-    // out of `spec set`; last_ai_spec_hash / last_ai_spec_at let the
-    // orchestrator detect human inline edits between writer dispatches.
-    // ALTER fails with a duplicate-column error on already-migrated DBs — swallow it.
-    const addedSpecWriterColumns: string[] = [
-      "ALTER TABLE pipeline_state ADD COLUMN open_question_count INTEGER",
-      "ALTER TABLE pipeline_state ADD COLUMN parsed_open_question_count INTEGER",
-      "ALTER TABLE pipeline_state ADD COLUMN files_affected_count INTEGER",
-      "ALTER TABLE pipeline_state ADD COLUMN last_ai_spec_hash TEXT",
-      "ALTER TABLE pipeline_state ADD COLUMN last_ai_spec_at TEXT",
-    ];
-    for (const stmt of addedSpecWriterColumns) {
-      try {
-        this.db.exec(stmt);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (msg.includes("duplicate column") === false) {
           throw err;
         }
       }

@@ -293,32 +293,25 @@ export class RedQueen {
       return;
     }
 
-    // Leaving a human gate? Reset semantics depend on the exit path (Decision 9):
-    //  - advance via .next, or any other non-rework gate-leave → reset BOTH
-    //    counters here so the next loop starts with a fresh budget.
-    //  - rework via .rework (kick-back) → do NOT reset here; tryAutoTransitionRework
-    //    resets review_iterations only and increments feedback_iterations (so the
-    //    bump lands on a confirmed transition and the cap can actually fire).
-    // Read from pipeline_state (which lags at the gate until the worker advances)
-    // so this fires once per gate-leave regardless of source (webhook / poller /
-    // reconciler) — none of those mutate current_phase before enqueueing.
+    // If pipeline_state's last phase was a human-gate, we're leaving it now.
+    // Reset iteration counters so reopens/reworks start fresh. Lives at the
+    // top of processTask so it fires once per gate-leave regardless of source
+    // (webhook phase-change / pr-feedback / assignment-change / new-ticket,
+    // poller, reconciler) — none of those paths mutate current_phase before
+    // enqueueing, so reading the record here still sees the gate.
     const gateLeavePhase = this.deps.pipelineState.get(task.issueId)?.currentPhase ?? null;
     if (gateLeavePhase !== null && this.deps.runtime.phaseGraph.isHumanGate(gateLeavePhase)) {
-      const gate = this.deps.runtime.phaseGraph.getPhase(gateLeavePhase);
-      const isReworkLeave = gate?.rework !== undefined && gate.rework === task.type;
-      if (isReworkLeave === false) {
-        this.deps.pipelineState.resetIterations(task.issueId);
-        this.deps.audit.log({
-          component: "orchestrator",
-          issueId: task.issueId,
-          message: `Leaving human gate ${gateLeavePhase} via ${task.type} — reset iteration counters`,
-          metadata: {
-            taskId: task.id,
-            fromGate: gateLeavePhase,
-            toPhase: task.type,
-          },
-        });
-      }
+      this.deps.pipelineState.resetIterations(task.issueId);
+      this.deps.audit.log({
+        component: "orchestrator",
+        issueId: task.issueId,
+        message: `Leaving human gate ${gateLeavePhase} — reset iteration counters`,
+        metadata: {
+          taskId: task.id,
+          fromGate: gateLeavePhase,
+          toPhase: task.type,
+        },
+      });
     }
 
     if (task.type === "new-ticket") {
@@ -470,23 +463,6 @@ export class RedQueen {
         await this.syncSpecFromTracker(issueId, phaseName, task.id);
         return "proceed";
       }
-      if (reworkResult === "escalated") {
-        // Rework budget exhausted — tryAutoTransitionRework already routed the
-        // issue to escalateTo. Close this rework task without dispatching it.
-        this.deps.queue.markWorking(task.id);
-        this.deps.queue.markComplete(
-          task.id,
-          `Rework budget exhausted — escalated from ${currentPhase}`,
-        );
-        this.deps.audit.log({
-          component: "orchestrator",
-          issueId,
-          message: `Skipping ${phaseName} dispatch — rework budget exhausted, escalated from ${currentPhase}`,
-          metadata: { taskId: task.id, currentPhase, expectedPhase: phaseName },
-        });
-        this.emitQueueChanged();
-        return "stale";
-      }
       this.deps.queue.markWorking(task.id);
       this.deps.queue.markComplete(task.id, `Stale — issue is in ${currentPhase} (human gate)`);
       this.deps.audit.log({
@@ -526,7 +502,7 @@ export class RedQueen {
     currentPhase: string,
     targetPhase: string,
     task: Task,
-  ): Promise<"transitioned" | "skip" | "escalated"> {
+  ): Promise<"transitioned" | "skip"> {
     const gate = this.deps.runtime.phaseGraph.getPhase(currentPhase);
     if (gate?.rework !== targetPhase) {
       return "skip";
@@ -559,28 +535,6 @@ export class RedQueen {
     // undo the phase change, so we still return "transitioned" and let the user
     // see progress instead of apparent silence.
     this.deps.pipelineState.updatePhase(issueId, targetPhase);
-
-    // Rework kick-back accounting (Decision 9): review_iterations tracks the
-    // code-review loop and resets on each rework; feedback_iterations caps the
-    // rework loop. Increment FIRST, then compare to the rework target's cap — if
-    // exceeded, route to escalateTo instead of dispatching another round. The
-    // cap+1th kick is the one that escalates (e.g. maxIterations=3 allows rework
-    // rounds 1,2,3; the 4th kick escalates).
-    this.deps.pipelineState.resetReviewIterations(issueId);
-    const feedbackCount = this.deps.pipelineState.incrementFeedbackIterations(issueId);
-    const cap = targetPhaseDef?.maxIterations ?? 3;
-    if (feedbackCount > cap) {
-      const escalateTo = targetPhaseDef?.escalateTo ?? "blocked";
-      this.deps.audit.log({
-        component: "orchestrator",
-        issueId,
-        message: `Rework budget exhausted on ${targetPhase} (feedback_iterations=${String(feedbackCount)} > ${String(cap)}) — escalating to ${escalateTo}`,
-        metadata: { taskId: task.id, targetPhase, feedbackCount, cap, escalateTo },
-      });
-      await this.transitionTo(issueId, escalateTo, task);
-      return "escalated";
-    }
-
     try {
       await this.deps.issueTracker.assignToAi(issueId);
     } catch (err) {
@@ -906,58 +860,7 @@ export class RedQueen {
       return;
     }
 
-    // Spec-writing open-question fast-path (Decision 16): a spec with zero open
-    // questions can skip the spec-review gate straight to coding when the
-    // operator opted in. Anything else falls through to advanceNormal → the gate.
-    if (phase.name === "spec-writing" && (await this.maybeSkipSpecReview(issueId, phase, task))) {
-      return;
-    }
-
     await this.advanceNormal(issueId, phase, task);
-  }
-
-  // Returns true when it routed the issue (skipping the review gate); false to
-  // let the caller fall through to advanceNormal (the normal gate path).
-  private async maybeSkipSpecReview(
-    issueId: string,
-    phase: PhaseDefinition,
-    task: Task,
-  ): Promise<boolean> {
-    if (this.deps.runtime.config.pipeline.skipSpecReviewIfReady !== true) {
-      return false;
-    }
-    const state = this.deps.pipelineState.get(issueId);
-    const declared = state?.openQuestionCount ?? null;
-    const parsed = state?.parsedOpenQuestionCount ?? null;
-    // Safer default = gate: when declared and parsed disagree, use the higher
-    // value (never auto-skip on ambiguity) and leave an audit trail.
-    const effective = Math.max(declared ?? 0, parsed ?? 0);
-    if (declared !== null && parsed !== null && declared !== parsed) {
-      this.deps.audit.log({
-        component: "orchestrator",
-        issueId,
-        message: `Open-question count mismatch: declared=${String(declared)} parsed=${String(parsed)}; using max=${String(effective)}`,
-        metadata: { declared, parsed, effective },
-      });
-    }
-    if (effective !== 0) {
-      return false;
-    }
-    // Skip the review gate by jumping to whatever it would advance to (coding
-    // in the default graph). Fall through if the gate or its target is missing.
-    const gate = this.deps.runtime.phaseGraph.getPhase(phase.next);
-    const skipTarget = gate?.next;
-    if (skipTarget === undefined || skipTarget === "done") {
-      return false;
-    }
-    this.deps.audit.log({
-      component: "orchestrator",
-      issueId,
-      message: `Spec ready with 0 open questions — skipping ${phase.next} gate to ${skipTarget}`,
-      metadata: { taskId: task.id, gate: phase.next, skipTarget },
-    });
-    await this.transitionTo(issueId, skipTarget, task);
-    return true;
   }
 
   private respectAgentPhaseChange(issueId: string, task: Task, newPhase: string): void {

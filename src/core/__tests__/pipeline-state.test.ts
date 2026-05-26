@@ -143,69 +143,6 @@ describe("PipelineStateStore", () => {
     expect(store.resetReviewIterations("PROJ-NOBODY")).toBe(false);
   });
 
-  it("create initializes the spec-writer metadata columns to null", () => {
-    const record = store.create("PROJ-1");
-    expect(record.openQuestionCount).toBeNull();
-    expect(record.parsedOpenQuestionCount).toBeNull();
-    expect(record.filesAffectedCount).toBeNull();
-    expect(record.lastAiSpecHash).toBeNull();
-    expect(record.lastAiSpecAt).toBeNull();
-  });
-
-  it("recordSpecWrite sets spec content, parsed count, hash and timestamp atomically", () => {
-    store.create("PROJ-1");
-    store.recordSpecWrite("PROJ-1", {
-      specContent: "# Spec\nbody",
-      parsedOpenQuestionCount: 2,
-      lastAiSpecHash: "deadbeef",
-      lastAiSpecAt: "2026-05-19T12:00:00.000Z",
-    });
-    const record = store.get("PROJ-1");
-    expect(record?.specContent).toBe("# Spec\nbody");
-    expect(record?.parsedOpenQuestionCount).toBe(2);
-    expect(record?.lastAiSpecHash).toBe("deadbeef");
-    expect(record?.lastAiSpecAt).toBe("2026-05-19T12:00:00.000Z");
-  });
-
-  it("setOpenQuestionCount and setFilesAffectedCount write their columns", () => {
-    store.create("PROJ-1");
-    expect(store.setOpenQuestionCount("PROJ-1", 3)).toBe(true);
-    expect(store.setFilesAffectedCount("PROJ-1", 7)).toBe(true);
-    const record = store.get("PROJ-1");
-    expect(record?.openQuestionCount).toBe(3);
-    expect(record?.filesAffectedCount).toBe(7);
-  });
-
-  it("setOpenQuestionCount accepts null to clear", () => {
-    store.create("PROJ-1");
-    store.setOpenQuestionCount("PROJ-1", 4);
-    expect(store.setOpenQuestionCount("PROJ-1", null)).toBe(true);
-    expect(store.get("PROJ-1")?.openQuestionCount).toBeNull();
-  });
-
-  it("resetIterations does NOT touch the spec-writer metadata columns", () => {
-    store.create("PROJ-1");
-    store.incrementReviewIterations("PROJ-1");
-    store.incrementFeedbackIterations("PROJ-1");
-    store.setOpenQuestionCount("PROJ-1", 5);
-    store.setFilesAffectedCount("PROJ-1", 9);
-    store.recordSpecWrite("PROJ-1", {
-      specContent: "# Spec",
-      parsedOpenQuestionCount: 5,
-      lastAiSpecHash: "cafe",
-      lastAiSpecAt: "2026-05-19T12:00:00.000Z",
-    });
-    store.resetIterations("PROJ-1");
-    const record = store.get("PROJ-1");
-    expect(record?.reviewIterations).toBe(0);
-    expect(record?.feedbackIterations).toBe(0);
-    expect(record?.openQuestionCount).toBe(5);
-    expect(record?.filesAffectedCount).toBe(9);
-    expect(record?.parsedOpenQuestionCount).toBe(5);
-    expect(record?.lastAiSpecHash).toBe("cafe");
-    expect(record?.lastAiSpecAt).toBe("2026-05-19T12:00:00.000Z");
-  });
-
   it("updates spec content", () => {
     store.create("PROJ-1");
     store.updateSpec("PROJ-1", "# Login Feature Spec\n\nRequirements...");

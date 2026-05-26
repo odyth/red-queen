@@ -81,86 +81,11 @@ describe("SubIterationStore", () => {
     expect(closed?.summary).toBe("Picked module X");
     expect(closed?.completedAt).toBe("2026-05-19T00:00:02.000Z");
 
-    // The earlier "research" entry was swept to "failed" by the second start().
+    // The earlier "research" entry is still open
     const all = store.listByIssue("PROJ-1");
     expect(all).toHaveLength(2);
-    expect(all[0]?.status).toBe("failed");
+    expect(all[0]?.status).toBe("in-progress");
     expect(all[1]?.status).toBe("completed");
-  });
-
-  it("start sweeps prior in-progress entries for the same issue to failed", () => {
-    const first = store.start({
-      issueId: "PROJ-1",
-      phaseName: "spec-research",
-      label: "research",
-      now: "2026-05-19T00:00:00.000Z",
-    });
-    const second = store.start({
-      issueId: "PROJ-1",
-      phaseName: "spec-design",
-      label: "design",
-      now: "2026-05-19T00:00:01.000Z",
-    });
-    const all = store.listByIssue("PROJ-1");
-    const firstRow = all.find((s) => s.id === first.id);
-    const secondRow = all.find((s) => s.id === second.id);
-    expect(firstRow?.status).toBe("failed");
-    expect(firstRow?.completedAt).toBe("2026-05-19T00:00:01.000Z");
-    expect(firstRow?.summary).toContain("auto-marked failed");
-    expect(secondRow?.status).toBe("in-progress");
-  });
-
-  it("start does not sweep in-progress entries belonging to a different issue", () => {
-    const other = store.start({ issueId: "PROJ-2", phaseName: "spec-research", label: "research" });
-    store.start({ issueId: "PROJ-1", phaseName: "spec-research", label: "research" });
-    const otherRow = store.listByIssue("PROJ-2").find((s) => s.id === other.id);
-    expect(otherRow?.status).toBe("in-progress");
-  });
-
-  it("latestCompleted returns the most recent completed entry for the phase", () => {
-    store.start({
-      issueId: "PROJ-1",
-      phaseName: "spec-research",
-      label: "research v1",
-      now: "2026-05-19T00:00:00.000Z",
-    });
-    store.completeLatestOpen({
-      issueId: "PROJ-1",
-      phaseName: "spec-research",
-      summary: "findings v1",
-      now: "2026-05-19T00:00:01.000Z",
-    });
-    store.start({
-      issueId: "PROJ-1",
-      phaseName: "spec-research",
-      label: "research v2",
-      now: "2026-05-19T00:00:02.000Z",
-    });
-    store.completeLatestOpen({
-      issueId: "PROJ-1",
-      phaseName: "spec-research",
-      summary: "findings v2",
-      now: "2026-05-19T00:00:03.000Z",
-    });
-    const latest = store.latestCompleted("PROJ-1", "spec-research");
-    expect(latest?.summary).toBe("findings v2");
-  });
-
-  it("latestCompleted filters by phase and ignores in-progress entries", () => {
-    store.start({
-      issueId: "PROJ-1",
-      phaseName: "spec-design",
-      label: "design",
-      now: "2026-05-19T00:00:00.000Z",
-    });
-    // open, not completed
-    expect(store.latestCompleted("PROJ-1", "spec-design")).toBeNull();
-    // wrong phase
-    expect(store.latestCompleted("PROJ-1", "spec-research")).toBeNull();
-  });
-
-  it("latestCompleted returns null when no entry exists", () => {
-    expect(store.latestCompleted("PROJ-MISSING", "spec-research")).toBeNull();
   });
 
   it("completeLatestOpen returns null when no open entry exists", () => {

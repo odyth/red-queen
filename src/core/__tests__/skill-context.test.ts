@@ -12,7 +12,6 @@ import { buildPhaseGraph } from "../config.js";
 import type { RedQueenConfig } from "../config.js";
 import { DEFAULT_PHASES } from "../defaults.js";
 import { RuntimeState } from "../runtime-state.js";
-import { normalizeSpec, sha256Hex } from "../strings.js";
 import type { PipelineRecord, Task } from "../types.js";
 import { makeTestConfig } from "./fixtures/test-config.js";
 
@@ -45,11 +44,6 @@ function makeRecord(overrides: Partial<PipelineRecord> = {}): PipelineRecord {
     specContent: null,
     priorContext: null,
     delegatorAccountId: null,
-    openQuestionCount: null,
-    parsedOpenQuestionCount: null,
-    filesAffectedCount: null,
-    lastAiSpecHash: null,
-    lastAiSpecAt: null,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     ...overrides,
@@ -141,7 +135,7 @@ describe("buildSkillContext", () => {
     });
   });
 
-  it("uses feedbackIterations when iterationCounter is 'feedback' (code-feedback)", () => {
+  it("uses feedbackIterations for feedback phases", () => {
     const runtime = makeRuntime();
     const context = buildSkillContext({
       runtime,
@@ -152,87 +146,15 @@ describe("buildSkillContext", () => {
     expect(context.iterationCount).toBe(2);
   });
 
-  it("uses reviewIterations when iterationCounter is 'review' (code-review)", () => {
+  it("uses reviewIterations for review phases", () => {
     const runtime = makeRuntime();
     const context = buildSkillContext({
       runtime,
       task: makeTask({ type: "code-review" }),
-      pipelineRecord: makeRecord({ reviewIterations: 3, feedbackIterations: 9 }),
+      pipelineRecord: makeRecord({ reviewIterations: 3 }),
       phaseName: "code-review",
     });
     expect(context.iterationCount).toBe(3);
-  });
-
-  it("selects the counter by config, not phase name — spec-writing uses feedbackIterations", () => {
-    // The old string-match returned 0 here ("spec-writing" contains neither
-    // "review" nor "feedback"). iterationCounter: "feedback" fixes it.
-    const runtime = makeRuntime();
-    const context = buildSkillContext({
-      runtime,
-      task: makeTask({ type: "spec-writing" }),
-      pipelineRecord: makeRecord({ feedbackIterations: 2, reviewIterations: 5 }),
-      phaseName: "spec-writing",
-    });
-    expect(context.iterationCount).toBe(2);
-  });
-
-  it("returns 0 for a phase with no iterationCounter (coding)", () => {
-    const runtime = makeRuntime();
-    const context = buildSkillContext({
-      runtime,
-      task: makeTask({ type: "coding" }),
-      pipelineRecord: makeRecord({ feedbackIterations: 4, reviewIterations: 5 }),
-      phaseName: "coding",
-    });
-    expect(context.iterationCount).toBe(0);
-  });
-
-  it("injects humanModifiedSpec=false for null spec content", () => {
-    const runtime = makeRuntime();
-    const context = buildSkillContext({
-      runtime,
-      task: makeTask({ type: "spec-writing" }),
-      pipelineRecord: makeRecord({ specContent: null, lastAiSpecHash: "abc" }),
-      phaseName: "spec-writing",
-    });
-    expect(context.humanModifiedSpec).toBe(false);
-  });
-
-  it("injects humanModifiedSpec=true when spec is present but no AI hash exists yet", () => {
-    const runtime = makeRuntime();
-    const context = buildSkillContext({
-      runtime,
-      task: makeTask({ type: "spec-writing" }),
-      pipelineRecord: makeRecord({ specContent: "# Human draft", lastAiSpecHash: null }),
-      phaseName: "spec-writing",
-    });
-    expect(context.humanModifiedSpec).toBe(true);
-  });
-
-  it("injects humanModifiedSpec=false when the spec matches the last AI hash", () => {
-    const runtime = makeRuntime();
-    const body = "# Spec\nbody";
-    const context = buildSkillContext({
-      runtime,
-      task: makeTask({ type: "spec-writing" }),
-      pipelineRecord: makeRecord({
-        specContent: body,
-        lastAiSpecHash: sha256Hex(normalizeSpec(body)),
-      }),
-      phaseName: "spec-writing",
-    });
-    expect(context.humanModifiedSpec).toBe(false);
-  });
-
-  it("passes lastAiSpecAt through to the context", () => {
-    const runtime = makeRuntime();
-    const context = buildSkillContext({
-      runtime,
-      task: makeTask({ type: "spec-writing" }),
-      pipelineRecord: makeRecord({ lastAiSpecAt: "2026-05-19T12:00:00.000Z" }),
-      phaseName: "spec-writing",
-    });
-    expect(context.lastAiSpecAt).toBe("2026-05-19T12:00:00.000Z");
   });
 
   it("throws on unknown phase", () => {
@@ -261,24 +183,6 @@ describe("renderSkillPrompt", () => {
     expect(rendered.startsWith("```yaml context\n")).toBe(true);
     expect(rendered).toContain("issueId: PROJ-1");
     expect(rendered).toContain("# Skill content");
-  });
-
-  it("serializes humanModifiedSpec and lastAiSpecAt into the YAML block", () => {
-    const runtime = makeRuntime();
-    const context = buildSkillContext({
-      runtime,
-      task: makeTask({ type: "spec-writing" }),
-      pipelineRecord: makeRecord({
-        specContent: "# Human draft",
-        lastAiSpecHash: null,
-        lastAiSpecAt: "2026-05-19T12:00:00.000Z",
-      }),
-      phaseName: "spec-writing",
-    });
-    const rendered = renderSkillPrompt(context, "# body");
-    expect(rendered).toContain("humanModifiedSpec: true");
-    expect(rendered).toContain("lastAiSpecAt:");
-    expect(rendered).toContain("2026-05-19T12:00:00.000Z");
   });
 
   it("strips agentskills YAML frontmatter from skill body", () => {
