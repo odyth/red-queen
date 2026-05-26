@@ -143,7 +143,11 @@ describe("WebhookServer", () => {
     expect(issueTracker.calls.some((c) => c.startsWith("assignToAi:"))).toBe(false);
   });
 
-  it("creates spec-feedback task when no PR", async () => {
+  it("drops pr-feedback when no PR and no requiresPr=false rework phase exists", async () => {
+    // spec-feedback was removed in v6 phase 2; the only "-feedback" phase
+    // (code-feedback) requires a PR. A pr-feedback event with no PR therefore
+    // matches no rework phase and is dropped. (Spec rework is driven by the
+    // issue-tracker phase-change webhook, not PR feedback.)
     pipelineState.create("PROJ-1", "spec-review");
     sourceControl.parseResult = {
       source: "webhook",
@@ -154,7 +158,8 @@ describe("WebhookServer", () => {
     };
     await postWebhook("/webhook/source-control", "{}");
     await new Promise((r) => setTimeout(r, 30));
-    expect(queue.hasOpenTask("PROJ-1", "spec-feedback")).toBe(true);
+    expect(queue.hasOpenTask("PROJ-1", "code-feedback")).toBe(false);
+    expect(queue.listByStatus("ready")).toHaveLength(0);
   });
 
   it("creates new-ticket task on assignment-change without phase", async () => {
@@ -242,11 +247,11 @@ describe("WebhookServer", () => {
       type: "phase-change",
       issueId: "PROJ-6",
       timestamp: new Date().toISOString(),
-      payload: { phase: "spec-writing" },
+      payload: { phase: "spec-research" },
     };
     await postWebhook("/webhook/issue-tracker", "{}");
     await new Promise((r) => setTimeout(r, 30));
-    expect(queue.hasOpenTask("PROJ-6", "spec-writing")).toBe(true);
+    expect(queue.hasOpenTask("PROJ-6", "spec-research")).toBe(true);
   });
 
   it("assignment-change on stale non-entry Jira phase logs skip, no enqueue", async () => {
@@ -279,7 +284,7 @@ describe("WebhookServer", () => {
   });
 
   it("assignment-change with entry-phase Jira phase enqueues that phase", async () => {
-    issueTracker.phases.set("PROJ-10", "spec-writing");
+    issueTracker.phases.set("PROJ-10", "spec-research");
     issueTracker.parseResult = {
       source: "webhook",
       type: "assignment-change",
@@ -289,7 +294,7 @@ describe("WebhookServer", () => {
     };
     await postWebhook("/webhook/issue-tracker", "{}");
     await new Promise((r) => setTimeout(r, 30));
-    expect(queue.hasOpenTask("PROJ-10", "spec-writing")).toBe(true);
+    expect(queue.hasOpenTask("PROJ-10", "spec-research")).toBe(true);
     expect(queue.hasOpenTask("PROJ-10", "new-ticket")).toBe(false);
   });
 
@@ -308,7 +313,7 @@ describe("WebhookServer", () => {
   });
 
   it("assignment-change on entry-phase Jira state plumbs delegator into task metadata", async () => {
-    issueTracker.phases.set("PROJ-12", "spec-writing");
+    issueTracker.phases.set("PROJ-12", "spec-research");
     issueTracker.parseResult = {
       source: "webhook",
       type: "assignment-change",
@@ -319,7 +324,7 @@ describe("WebhookServer", () => {
     await postWebhook("/webhook/issue-tracker", "{}");
     await new Promise((r) => setTimeout(r, 30));
     const ready = queue.listByStatus("ready");
-    const task = ready.find((t) => t.issueId === "PROJ-12" && t.type === "spec-writing");
+    const task = ready.find((t) => t.issueId === "PROJ-12" && t.type === "spec-research");
     expect(task?.metadata.delegator).toBe("justin-99");
   });
 

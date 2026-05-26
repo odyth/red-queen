@@ -37,6 +37,7 @@ interface Harness {
 
 interface HarnessOptions {
   extra?: Partial<RedQueenDeps>;
+  skipSpecReviewIfReady?: boolean;
 }
 
 function setupHarness(
@@ -73,7 +74,7 @@ function setupHarness(
       stallThresholdMs: 60_000,
       reconcileInterval: 0,
       claudeBin: "/bin/sh",
-      skipSpecReviewIfReady: false,
+      skipSpecReviewIfReady: options.skipSpecReviewIfReady ?? false,
     },
   });
   const runtime = new RuntimeState(phaseGraph, config);
@@ -156,7 +157,9 @@ describe("RedQueen orchestrator", () => {
     auditPath = join(tempDir, "audit.log");
     mkdirSync(skillsDir, { recursive: true });
     // Write SKILL.md for every skill referenced by default phases
-    writeSkill("prompt-writer");
+    writeSkill("spec-researcher");
+    writeSkill("spec-designer");
+    writeSkill("spec-writer");
     writeSkill("coder");
     writeSkill("reviewer");
     writeSkill("tester");
@@ -293,7 +296,7 @@ describe("RedQueen orchestrator", () => {
 
   it("processes new-ticket tasks without a worker", async () => {
     // Snapshot tracker state on the FIRST worker invocation — at that point
-    // new-ticket is complete and we're still at spec-writing+ai (the worker
+    // new-ticket is complete and we're still at spec-research+ai (the worker
     // hasn't advanced the phase yet). Subsequent worker runs would overwrite
     // the snapshot, so we freeze it after the first capture.
     const snapshot: { phase: string | null; assignment: string | null } = {
@@ -320,7 +323,7 @@ describe("RedQueen orchestrator", () => {
     // Run until the worker ran at least once — that's our snapshot point.
     await runUntil(h, () => h.runs.length >= 1);
 
-    expect(snapshot.phase).toBe("spec-writing");
+    expect(snapshot.phase).toBe("spec-research");
     expect(snapshot.assignment).toBe("ai");
   });
 
@@ -522,7 +525,7 @@ describe("RedQueen orchestrator", () => {
     expect(capturedPrompt).not.toContain("STALE spec body");
   });
 
-  it("skips spec re-fetch for spec-writing phase", async () => {
+  it("skips spec re-fetch for the entry phase (spec-research)", async () => {
     const h = setupHarness(() =>
       Promise.resolve({
         success: false,
@@ -532,11 +535,12 @@ describe("RedQueen orchestrator", () => {
         error: "stop cascade",
       }),
     );
-    h.pipelineState.create("PROJ-71", "spec-writing");
-    h.issueTracker.phases.set("PROJ-71", "spec-writing");
-    // Tracker has a different spec value; orchestrator must not pull it during spec-writing
+    h.pipelineState.create("PROJ-71", "spec-research");
+    h.issueTracker.phases.set("PROJ-71", "spec-research");
+    // Tracker has a spec value; the orchestrator must not pull it for the entry
+    // phase (nothing to sync before the spec is first authored).
     h.issueTracker.specs.set("PROJ-71", "pre-existing");
-    h.queue.enqueue({ type: "spec-writing", issueId: "PROJ-71" });
+    h.queue.enqueue({ type: "spec-research", issueId: "PROJ-71" });
 
     await runUntilAfterRuns(h, 1);
 
@@ -567,7 +571,7 @@ describe("RedQueen orchestrator", () => {
     expect(h.runs.length).toBeGreaterThanOrEqual(1);
   });
 
-  it("auto-transitions spec-review -> spec-feedback when no PR exists", async () => {
+  it("auto-transitions spec-review -> spec-writing on rework", async () => {
     const h = setupHarness(() =>
       Promise.resolve({
         success: false,
@@ -579,11 +583,11 @@ describe("RedQueen orchestrator", () => {
     );
     h.pipelineState.create("PROJ-81", "spec-review");
     h.issueTracker.phases.set("PROJ-81", "spec-review");
-    h.queue.enqueue({ type: "spec-feedback", issueId: "PROJ-81" });
+    h.queue.enqueue({ type: "spec-writing", issueId: "PROJ-81" });
 
     await runUntilAfterRuns(h, 1);
 
-    const transitionIdx = h.issueTracker.calls.indexOf("setPhase:PROJ-81:spec-feedback");
+    const transitionIdx = h.issueTracker.calls.indexOf("setPhase:PROJ-81:spec-writing");
     expect(transitionIdx).toBeGreaterThanOrEqual(0);
     expect(h.issueTracker.calls.indexOf("assignToAi:PROJ-81")).toBeGreaterThan(transitionIdx);
     expect(h.runs.length).toBeGreaterThanOrEqual(1);
@@ -889,30 +893,233 @@ describe("RedQueen orchestrator", () => {
     expect(h.issueTracker.calls).not.toContain("markInProgress:PROJ-203");
   });
 
-  it("Gap 3: resets iteration counters when leaving a human-gate phase", async () => {
+  it("Decision 9: rework via .rework resets review_iterations and increments feedback_iterations", async () => {
+    let snapshot: { review: number; feedback: number } | undefined;
+    const h = setupHarness(() => {
+      const rec = h.pipelineState.get("PROJ-301");
+      snapshot = { review: rec?.reviewIterations ?? -1, feedback: rec?.feedbackIterations ?? -1 };
+      return Promise.resolve({
+        success: false,
+        exitCode: 1,
+        elapsed: 1,
+        summary: "",
+        error: "stop cascade",
+      });
+    });
+    // Real rework flow: issue parked at the human-review gate (pipeline_state AND
+    // tracker), PR present, a code-feedback (rework target) task enqueued.
+    h.pipelineState.create("PROJ-301", "human-review");
+    h.pipelineState.updatePrNumber("PROJ-301", 42);
+    h.pipelineState.incrementReviewIterations("PROJ-301");
+    h.pipelineState.incrementReviewIterations("PROJ-301"); // review=2
+    h.pipelineState.incrementFeedbackIterations("PROJ-301"); // feedback=1
+    h.issueTracker.phases.set("PROJ-301", "human-review");
+    h.queue.enqueue({ type: "code-feedback", issueId: "PROJ-301" });
+
+    await runUntilAfterRuns(h, 1);
+
+    expect(snapshot?.review).toBe(0); // reset on rework
+    expect(snapshot?.feedback).toBe(2); // incremented 1 -> 2
+  });
+
+  it("Decision 9: advance via .next from a gate resets both counters", async () => {
+    let snapshot: { review: number; feedback: number } | undefined;
+    const h = setupHarness(() => {
+      const rec = h.pipelineState.get("PROJ-310");
+      snapshot = { review: rec?.reviewIterations ?? -1, feedback: rec?.feedbackIterations ?? -1 };
+      return Promise.resolve({
+        success: false,
+        exitCode: 1,
+        elapsed: 1,
+        summary: "",
+        error: "stop cascade",
+      });
+    });
+    // Human approved at spec-review → tracker moved to coding (.next); pipeline_state
+    // lags at the gate. coding is NOT the gate's rework target, so reset both.
+    h.pipelineState.create("PROJ-310", "spec-review");
+    h.pipelineState.incrementReviewIterations("PROJ-310");
+    h.pipelineState.incrementFeedbackIterations("PROJ-310");
+    h.pipelineState.incrementFeedbackIterations("PROJ-310"); // feedback=2
+    h.issueTracker.phases.set("PROJ-310", "coding");
+    h.queue.enqueue({ type: "coding", issueId: "PROJ-310" });
+
+    await runUntilAfterRuns(h, 1);
+
+    expect(snapshot?.review).toBe(0);
+    expect(snapshot?.feedback).toBe(0);
+    const audit = readFileSync(auditPath, "utf8");
+    expect(audit).toContain("Leaving human gate spec-review via coding");
+  });
+
+  it("Decision 9: rework over the cap escalates without dispatching the rework target", async () => {
+    const h = setupHarness(() => {
+      throw new Error("worker should not run — rework budget exhausted");
+    });
+    h.pipelineState.create("PROJ-320", "human-review");
+    h.pipelineState.updatePrNumber("PROJ-320", 42);
+    // code-feedback.maxIterations = 3; three prior rework rounds → feedback=3.
+    h.pipelineState.incrementFeedbackIterations("PROJ-320");
+    h.pipelineState.incrementFeedbackIterations("PROJ-320");
+    h.pipelineState.incrementFeedbackIterations("PROJ-320"); // feedback=3
+    h.issueTracker.phases.set("PROJ-320", "human-review");
+    const task = h.queue.enqueue({ type: "code-feedback", issueId: "PROJ-320" });
+
+    await runUntil(h, () => h.queue.getTask(task.id)?.status === "complete");
+
+    expect(h.runs.length).toBe(0);
+    // code-feedback.escalateTo = human-review.
+    expect(h.issueTracker.phases.get("PROJ-320")).toBe("human-review");
+    expect(h.pipelineState.get("PROJ-320")?.feedbackIterations).toBe(4); // 3 -> 4 over-cap bump
+    const stored = h.queue.getTask(task.id);
+    expect(stored?.result).toContain("Rework budget exhausted");
+  });
+
+  it("spec-writing with 0 open questions + skipSpecReviewIfReady skips the gate to coding", async () => {
+    const h = setupHarness(
+      () => {
+        const phase = h.pipelineState.get("PROJ-330")?.currentPhase;
+        if (phase === "spec-writing") {
+          return Promise.resolve({
+            success: true,
+            exitCode: 0,
+            elapsed: 1,
+            summary: "spec ready",
+            error: null,
+          });
+        }
+        return Promise.resolve({
+          success: false,
+          exitCode: 1,
+          elapsed: 1,
+          summary: "",
+          error: "stop cascade",
+        });
+      },
+      { skipSpecReviewIfReady: true },
+    );
+    h.pipelineState.create("PROJ-330", "spec-writing");
+    h.pipelineState.setOpenQuestionCount("PROJ-330", 0);
+    h.issueTracker.phases.set("PROJ-330", "spec-writing");
+    h.queue.enqueue({ type: "spec-writing", issueId: "PROJ-330" });
+
+    await runUntil(h, () => h.issueTracker.calls.includes("setPhase:PROJ-330:coding"));
+
+    expect(h.issueTracker.calls).toContain("setPhase:PROJ-330:coding");
+    expect(h.issueTracker.calls).not.toContain("setPhase:PROJ-330:spec-review");
+  });
+
+  it("spec-writing with 0 open questions but skip disabled advances to the spec-review gate", async () => {
     const h = setupHarness(() =>
       Promise.resolve({
         success: true,
         exitCode: 0,
         elapsed: 1,
-        summary: "done",
+        summary: "spec ready",
         error: null,
       }),
     );
-    h.pipelineState.create("PROJ-301", "human-review");
-    h.pipelineState.incrementReviewIterations("PROJ-301");
-    h.pipelineState.incrementReviewIterations("PROJ-301");
-    h.pipelineState.incrementFeedbackIterations("PROJ-301");
-    h.issueTracker.phases.set("PROJ-301", "code-feedback");
-    h.queue.enqueue({ type: "code-feedback", issueId: "PROJ-301" });
+    h.pipelineState.create("PROJ-331", "spec-writing");
+    h.pipelineState.setOpenQuestionCount("PROJ-331", 0);
+    h.issueTracker.phases.set("PROJ-331", "spec-writing");
+    h.queue.enqueue({ type: "spec-writing", issueId: "PROJ-331" });
 
-    await runUntilAfterRuns(h, 1);
+    await runUntil(h, () => h.issueTracker.calls.includes("setPhase:PROJ-331:spec-review"));
 
-    const record = h.pipelineState.get("PROJ-301");
-    expect(record?.reviewIterations).toBe(0);
-    expect(record?.feedbackIterations).toBe(0);
+    expect(h.issueTracker.calls).toContain("setPhase:PROJ-331:spec-review");
+    expect(h.issueTracker.calls).not.toContain("setPhase:PROJ-331:coding");
+  });
+
+  it("spec-writing with open questions does NOT skip the gate even when skip is enabled", async () => {
+    const h = setupHarness(
+      () =>
+        Promise.resolve({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "spec ready",
+          error: null,
+        }),
+      { skipSpecReviewIfReady: true },
+    );
+    h.pipelineState.create("PROJ-332", "spec-writing");
+    h.pipelineState.setOpenQuestionCount("PROJ-332", 2);
+    h.issueTracker.phases.set("PROJ-332", "spec-writing");
+    h.queue.enqueue({ type: "spec-writing", issueId: "PROJ-332" });
+
+    await runUntil(h, () => h.issueTracker.calls.includes("setPhase:PROJ-332:spec-review"));
+
+    expect(h.issueTracker.calls).toContain("setPhase:PROJ-332:spec-review");
+    expect(h.issueTracker.calls).not.toContain("setPhase:PROJ-332:coding");
+  });
+
+  it("spec-writing routes on max(declared, parsed) and audit-logs the mismatch", async () => {
+    const h = setupHarness(
+      () =>
+        Promise.resolve({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "spec ready",
+          error: null,
+        }),
+      { skipSpecReviewIfReady: true },
+    );
+    h.pipelineState.create("PROJ-333", "spec-writing");
+    // Declared 0 but parser found 2 → effective max=2 → gate, not skip.
+    h.pipelineState.setOpenQuestionCount("PROJ-333", 0);
+    h.pipelineState.recordSpecWrite("PROJ-333", {
+      specContent: "# Spec",
+      parsedOpenQuestionCount: 2,
+      lastAiSpecHash: "x",
+      lastAiSpecAt: "2026-05-19T12:00:00.000Z",
+    });
+    h.issueTracker.phases.set("PROJ-333", "spec-writing");
+    h.queue.enqueue({ type: "spec-writing", issueId: "PROJ-333" });
+
+    await runUntil(h, () => h.issueTracker.calls.includes("setPhase:PROJ-333:spec-review"));
+
+    expect(h.issueTracker.calls).toContain("setPhase:PROJ-333:spec-review");
+    expect(h.issueTracker.calls).not.toContain("setPhase:PROJ-333:coding");
     const audit = readFileSync(auditPath, "utf8");
-    expect(audit).toContain("Leaving human gate human-review");
+    expect(audit).toContain("Open-question count mismatch: declared=0 parsed=2");
+  });
+
+  it("empty-spec restart (agent sets spec-research) does NOT reset feedback_iterations", async () => {
+    let feedbackAtRestart: number | undefined;
+    const h = setupHarness(() => {
+      const phase = h.pipelineState.get("PROJ-340")?.currentPhase;
+      if (phase === "spec-writing") {
+        // Case 5: human cleared the spec; writer routes back to research.
+        void h.issueTracker.setPhase("PROJ-340", "spec-research");
+        return Promise.resolve({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "restart",
+          error: null,
+        });
+      }
+      feedbackAtRestart = h.pipelineState.get("PROJ-340")?.feedbackIterations;
+      return Promise.resolve({
+        success: false,
+        exitCode: 1,
+        elapsed: 1,
+        summary: "",
+        error: "stop cascade",
+      });
+    });
+    h.pipelineState.create("PROJ-340", "spec-writing");
+    h.pipelineState.incrementFeedbackIterations("PROJ-340");
+    h.pipelineState.incrementFeedbackIterations("PROJ-340"); // feedback=2 from prior rework
+    h.issueTracker.phases.set("PROJ-340", "spec-writing");
+    h.queue.enqueue({ type: "spec-writing", issueId: "PROJ-340" });
+
+    await runUntilAfterRuns(h, 2);
+
+    // spec-research was reached via an agent-driven phase change, not a gate-leave,
+    // so the rework budget is preserved (the restart costs one iteration).
+    expect(feedbackAtRestart).toBe(2);
   });
 
   it("Gap 3: does not reset when leaving an automated phase", async () => {

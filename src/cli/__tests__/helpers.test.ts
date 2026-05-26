@@ -3,10 +3,27 @@ import { execSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Readable } from "node:stream";
 import { cmdIssue } from "../issue.js";
 import { cmdPipeline } from "../pipeline.js";
 import { cmdPr } from "../pr.js";
+import { cmdSpec } from "../spec.js";
 import { cmdSubIter } from "../sub-iter.js";
+
+// Run `fn` with process.stdin temporarily replaced by a readable yielding `text`,
+// so we can exercise the `--*-stdin` CLI paths without a real pipe.
+async function withStdin(text: string, fn: () => Promise<void>): Promise<void> {
+  const original = Object.getOwnPropertyDescriptor(process, "stdin");
+  const fake = Readable.from([Buffer.from(text, "utf8")]) as unknown as NodeJS.ReadStream;
+  Object.defineProperty(process, "stdin", { value: fake, configurable: true });
+  try {
+    await fn();
+  } finally {
+    if (original !== undefined) {
+      Object.defineProperty(process, "stdin", original);
+    }
+  }
+}
 
 let tmp: string;
 let originalCwd: string;
@@ -208,6 +225,122 @@ describe("cmdSubIter complete", () => {
   it("errors without --summary", async () => {
     await cmdPipeline(["update", "SUB-4"]);
     await expect(cmdSubIter(["complete", "SUB-4"])).rejects.toThrow(/summary/);
+  });
+
+  it("accepts --summary-stdin", async () => {
+    await cmdPipeline(["update", "SUB-5"]);
+    const { loadCliContext } = await import("../context.js");
+    const ctx = loadCliContext();
+    ctx.pipelineState.updatePhase("SUB-5", "spec-research");
+    ctx.cleanup();
+
+    await cmdSubIter(["start", "SUB-5", "Codebase research"]);
+    stdoutCapture = [];
+    await withStdin("multi\nline\nfindings", () =>
+      cmdSubIter(["complete", "SUB-5", "--summary-stdin"]),
+    );
+    const parsed = JSON.parse(stdoutCapture.join("")) as { status: string; summary: string };
+    expect(parsed.status).toBe("completed");
+    expect(parsed.summary).toBe("multi\nline\nfindings");
+  });
+});
+
+describe("cmdSubIter latest", () => {
+  it("returns the most recent completed entry for a phase", async () => {
+    await cmdPipeline(["update", "LAT-1"]);
+    const { loadCliContext } = await import("../context.js");
+    const ctx = loadCliContext();
+    ctx.pipelineState.updatePhase("LAT-1", "spec-research");
+    ctx.cleanup();
+
+    await cmdSubIter(["start", "LAT-1", "Codebase research"]);
+    await cmdSubIter(["complete", "LAT-1", "--summary", "findings here"]);
+    stdoutCapture = [];
+    await cmdSubIter(["latest", "LAT-1", "--phase", "spec-research"]);
+    const parsed = JSON.parse(stdoutCapture.join("")) as { summary: string; phaseName: string };
+    expect(parsed.summary).toBe("findings here");
+    expect(parsed.phaseName).toBe("spec-research");
+  });
+
+  it("writes null when no completed entry exists", async () => {
+    await cmdPipeline(["update", "LAT-2"]);
+    stdoutCapture = [];
+    await cmdSubIter(["latest", "LAT-2", "--phase", "spec-research"]);
+    expect(stdoutCapture.join("").trim()).toBe("null");
+  });
+
+  it("errors without --phase", async () => {
+    await expect(cmdSubIter(["latest", "LAT-3"])).rejects.toThrow(/phase/);
+  });
+});
+
+describe("cmdPipeline get", () => {
+  it("returns the full record including the new metadata columns", async () => {
+    await cmdPipeline(["update", "GET-1", "--branch", "feature/GET-1"]);
+    stdoutCapture = [];
+    await cmdPipeline(["get", "GET-1"]);
+    const parsed = JSON.parse(stdoutCapture.join("")) as {
+      issueId: string;
+      branchName: string;
+      openQuestionCount: number | null;
+      parsedOpenQuestionCount: number | null;
+      lastAiSpecHash: string | null;
+    };
+    expect(parsed.issueId).toBe("GET-1");
+    expect(parsed.branchName).toBe("feature/GET-1");
+    expect(parsed.openQuestionCount).toBeNull();
+    expect(parsed.parsedOpenQuestionCount).toBeNull();
+    expect(parsed.lastAiSpecHash).toBeNull();
+  });
+
+  it("errors when no record exists", async () => {
+    await expect(cmdPipeline(["get", "NOPE"])).rejects.toThrow(/no pipeline record/);
+  });
+});
+
+describe("cmdSpec meta + set", () => {
+  it("meta writes open_question_count", async () => {
+    await cmdPipeline(["update", "SPEC-1"]);
+    stdoutCapture = [];
+    await cmdSpec(["meta", "SPEC-1", "--open-questions", "3"]);
+    const out = JSON.parse(stdoutCapture.join("")) as { ok: boolean; openQuestionCount: number };
+    expect(out.ok).toBe(true);
+    expect(out.openQuestionCount).toBe(3);
+
+    stdoutCapture = [];
+    await cmdPipeline(["get", "SPEC-1"]);
+    const rec = JSON.parse(stdoutCapture.join("")) as { openQuestionCount: number };
+    expect(rec.openQuestionCount).toBe(3);
+  });
+
+  it("meta requires at least one flag", async () => {
+    await cmdPipeline(["update", "SPEC-2"]);
+    await expect(cmdSpec(["meta", "SPEC-2"])).rejects.toThrow(/at least one/);
+  });
+
+  it("set parses the Open Questions section and records hash + timestamp", async () => {
+    await cmdPipeline(["update", "SPEC-3"]);
+    const body = "# Spec\n\n## Open Questions\n\n- [ ] one\n- [ ] two\n- [x] done\n";
+    stdoutCapture = [];
+    await cmdSpec(["set", "SPEC-3", "--body", body]);
+    const setOut = JSON.parse(stdoutCapture.join("")) as {
+      ok: boolean;
+      parsedOpenQuestionCount: number;
+    };
+    expect(setOut.parsedOpenQuestionCount).toBe(2);
+
+    stdoutCapture = [];
+    await cmdPipeline(["get", "SPEC-3"]);
+    const rec = JSON.parse(stdoutCapture.join("")) as {
+      specContent: string;
+      parsedOpenQuestionCount: number;
+      lastAiSpecHash: string | null;
+      lastAiSpecAt: string | null;
+    };
+    expect(rec.specContent).toBe(body);
+    expect(rec.parsedOpenQuestionCount).toBe(2);
+    expect(rec.lastAiSpecHash).not.toBeNull();
+    expect(rec.lastAiSpecAt).not.toBeNull();
   });
 });
 

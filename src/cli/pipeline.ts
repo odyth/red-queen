@@ -8,6 +8,9 @@ import { writeJson } from "./io.js";
 export async function cmdPipeline(args: string[]): Promise<void> {
   const [subcommand, ...rest] = args;
   switch (subcommand) {
+    case "get":
+      await cmdPipelineGet(rest);
+      return;
     case "update":
       await cmdPipelineUpdate(rest);
       return;
@@ -16,9 +19,33 @@ export async function cmdPipeline(args: string[]): Promise<void> {
       return;
     default:
       throw new CliError(
-        `Unknown 'pipeline' subcommand: ${subcommand ?? "(missing)"}. Valid: update, cleanup.`,
+        `Unknown 'pipeline' subcommand: ${subcommand ?? "(missing)"}. Valid: get, update, cleanup.`,
       );
   }
+}
+
+function cmdPipelineGet(args: string[]): Promise<void> {
+  const { positionals, values } = parseArgs({
+    args,
+    options: { pretty: { type: "boolean", default: false } },
+    allowPositionals: true,
+  });
+  const issueId = positionals[0];
+  if (issueId === undefined) {
+    throw new CliError("pipeline get: <issueId> is required");
+  }
+
+  const ctx = loadCliContext();
+  try {
+    const record = ctx.pipelineState.get(issueId);
+    if (record === null) {
+      throw new CliError(`pipeline get: no pipeline record for ${issueId}`);
+    }
+    writeJson(record, values.pretty === true);
+  } finally {
+    ctx.cleanup();
+  }
+  return Promise.resolve();
 }
 
 function cmdPipelineUpdate(args: string[]): Promise<void> {

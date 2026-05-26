@@ -116,12 +116,12 @@ describe("reconcile", () => {
   it("enqueues entry-phase issue even without a local pipeline record", async () => {
     const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
     const issueTracker = new MockIssueTracker();
-    issueTracker.listByPhaseResults.set("spec-writing", [makeIssue("PROJ-3", "spec-writing")]);
+    issueTracker.listByPhaseResults.set("spec-research", [makeIssue("PROJ-3", "spec-research")]);
 
     const result = await reconcile({ issueTracker, queue, runtime, pipelineState, audit });
 
     expect(result.issuesFound).toBe(1);
     expect(result.tasksCreated).toBe(1);
-    expect(queue.hasOpenTask("PROJ-3", "spec-writing")).toBe(true);
+    expect(queue.hasOpenTask("PROJ-3", "spec-research")).toBe(true);
   });
 });

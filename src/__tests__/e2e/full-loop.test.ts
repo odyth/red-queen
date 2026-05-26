@@ -91,7 +91,9 @@ describe("E2E: orchestrator full pipeline loop", () => {
     auditPath = join(tempDir, "audit.log");
     skillsDir = join(tempDir, "skills");
     mkdirSync(skillsDir, { recursive: true });
-    writeSkill("prompt-writer");
+    writeSkill("spec-researcher");
+    writeSkill("spec-designer");
+    writeSkill("spec-writer");
     writeSkill("coder");
     writeSkill("reviewer");
     writeSkill("tester");
@@ -102,11 +104,11 @@ describe("E2E: orchestrator full pipeline loop", () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it("drives one ticket through spec-writing → ... → human-review → merge", async () => {
+  it("drives one ticket through spec-research → ... → human-review → merge", async () => {
     const seededIssue = makeIssue({
       id: "TEST-1",
       summary: "Add a widget",
-      phase: "spec-writing",
+      phase: "spec-research",
       assignee: "ai-user",
       issueType: "feature",
     });
@@ -129,6 +131,8 @@ describe("E2E: orchestrator full pipeline loop", () => {
         workerCalls.push(call.phaseName);
         return null; // fall through to phaseRule matchers below
       },
+      phaseRule("spec-research", "Codebase researched"),
+      phaseRule("spec-design", "Approach sketched"),
       phaseRule("spec-writing", "Spec drafted"),
       // Coding creates a branch and PR as a simulated side effect of the skill.
       (call) => {
@@ -182,12 +186,15 @@ describe("E2E: orchestrator full pipeline loop", () => {
     const startPromise = rq.start();
 
     try {
-      // Phase 1: spec-writing → spec-review (human gate). The automated
-      // spec-writing pass lands the ticket on the spec-review human gate.
+      // Phase 1: spec-research → spec-design → spec-writing → spec-review
+      // (human gate). The three automated spec sub-phases run in sequence and
+      // land the ticket on the spec-review human gate.
       await waitFor(
         () => issueTracker.phases.get("TEST-1") === "spec-review",
         "issue to advance to spec-review",
       );
+      expect(workerCalls).toContain("spec-research");
+      expect(workerCalls).toContain("spec-design");
       expect(workerCalls).toContain("spec-writing");
       expect(issueTracker.assignments.get("TEST-1")).toBe("human");
 
@@ -224,7 +231,14 @@ describe("E2E: orchestrator full pipeline loop", () => {
 
     // Assertions run while db is still open.
     try {
-      expect(workerCalls).toEqual(["spec-writing", "coding", "code-review", "testing"]);
+      expect(workerCalls).toEqual([
+        "spec-research",
+        "spec-design",
+        "spec-writing",
+        "coding",
+        "code-review",
+        "testing",
+      ]);
       expect(queue.listByStatus("ready")).toHaveLength(0);
       expect(queue.listByStatus("working")).toHaveLength(0);
       expect(pipelineState.get("TEST-1")?.currentPhase).toBe("done");
@@ -237,6 +251,8 @@ describe("E2E: orchestrator full pipeline loop", () => {
       const phaseCompletions = auditEntries
         .filter((e) => e.message.includes(" completed in "))
         .map((e) => e.message);
+      expect(phaseCompletions.some((m) => m.includes("spec-research"))).toBe(true);
+      expect(phaseCompletions.some((m) => m.includes("spec-design"))).toBe(true);
       expect(phaseCompletions.some((m) => m.includes("spec-writing"))).toBe(true);
       expect(phaseCompletions.some((m) => m.includes("coding"))).toBe(true);
       expect(phaseCompletions.some((m) => m.includes("code-review"))).toBe(true);
