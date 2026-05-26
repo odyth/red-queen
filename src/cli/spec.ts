@@ -140,30 +140,38 @@ function parseNonNegativeCount(raw: string | undefined, flag: string): number | 
   if (raw === undefined) {
     return undefined;
   }
-  const n = Number.parseInt(raw, 10);
-  if (Number.isNaN(n) || n < 0) {
+  // Strict: reject "3abc", "3.9", "-1", "" — Number.parseInt would silently
+  // truncate the first two to 3 and accept them.
+  if (/^\d+$/.test(raw.trim()) === false) {
     throw new CliError(`spec meta: ${flag} must be a non-negative integer`);
   }
-  return n;
+  return Number.parseInt(raw, 10);
 }
 
-// Counts unchecked `- [ ]` items inside the `## Open Questions` section.
-// The heading match is intentionally strict (`/^#+\s+open questions\s*$/i`) —
-// the writer skill is told decorated headings ("Open Questions (3)") are
-// silently skipped, so calibration lives in the prompt, not here.
-function countUncheckedOpenQuestions(body: string): number {
+// Counts unchecked `- [ ]` items inside the `## Open Questions` section. Returns
+// null when no `## Open Questions` heading exists at all — the orchestrator
+// treats that as "unknown" (gate), not "zero", so a decorated heading
+// ("Open Questions (3)") that the strict regex skips can't masquerade as a clean
+// spec. The heading match is intentionally strict (`/^#+\s+open questions\s*$/i`);
+// the writer skill is told decorated headings are silently skipped, so
+// calibration lives in the prompt, not here.
+function countUncheckedOpenQuestions(body: string): number | null {
   const lines = body.split("\n");
+  let sectionFound = false;
   let inSection = false;
   let count = 0;
   for (const rawLine of lines) {
     const line = rawLine.trim();
     if (/^#+\s/.test(line)) {
       inSection = /^#+\s+open questions\s*$/i.test(line);
+      if (inSection) {
+        sectionFound = true;
+      }
       continue;
     }
     if (inSection && /^- \[\s\]/.test(line)) {
       count++;
     }
   }
-  return count;
+  return sectionFound ? count : null;
 }

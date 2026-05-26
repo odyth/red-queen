@@ -543,6 +543,30 @@ export class RedQueen {
         return "skip";
       }
     }
+    // Rework kick-back accounting (Decision 9): feedback_iterations caps the
+    // rework loop. Decide escalation BEFORE touching the tracker so an over-cap
+    // kick routes straight to escalateTo instead of first bouncing the issue
+    // through the rework target (a redundant setPhase + a transient wrong
+    // phase). The cap+1th kick escalates (e.g. maxIterations=3 allows rework
+    // rounds 1,2,3; the 4th kick escalates).
+    const cap = targetPhaseDef?.maxIterations ?? 3;
+    const priorFeedback = this.deps.pipelineState.get(issueId)?.feedbackIterations ?? 0;
+    if (priorFeedback + 1 > cap) {
+      // review_iterations resets on every rework; record the kick that tipped
+      // the budget over so persisted counters/audit match the under-cap path.
+      this.deps.pipelineState.resetReviewIterations(issueId);
+      const feedbackCount = this.deps.pipelineState.incrementFeedbackIterations(issueId);
+      const escalateTo = targetPhaseDef?.escalateTo ?? "blocked";
+      this.deps.audit.log({
+        component: "orchestrator",
+        issueId,
+        message: `Rework budget exhausted on ${targetPhase} (feedback_iterations=${String(feedbackCount)} > ${String(cap)}) — escalating to ${escalateTo}`,
+        metadata: { taskId: task.id, targetPhase, feedbackCount, cap, escalateTo },
+      });
+      await this.transitionTo(issueId, escalateTo, task);
+      return "escalated";
+    }
+
     try {
       await this.deps.issueTracker.setPhase(issueId, targetPhase);
     } catch (err) {
@@ -554,32 +578,13 @@ export class RedQueen {
       });
       return "skip";
     }
-    // setPhase succeeded — commit the transition locally. assignToAi below is an
-    // ops signal (ticket assignee in the tracker UI); a failure there does not
-    // undo the phase change, so we still return "transitioned" and let the user
-    // see progress instead of apparent silence.
+    // setPhase succeeded — commit the transition and the rework accounting
+    // locally. assignToAi below is an ops signal (ticket assignee in the
+    // tracker UI); a failure there does not undo the phase change, so we still
+    // return "transitioned" and let the user see progress instead of silence.
     this.deps.pipelineState.updatePhase(issueId, targetPhase);
-
-    // Rework kick-back accounting (Decision 9): review_iterations tracks the
-    // code-review loop and resets on each rework; feedback_iterations caps the
-    // rework loop. Increment FIRST, then compare to the rework target's cap — if
-    // exceeded, route to escalateTo instead of dispatching another round. The
-    // cap+1th kick is the one that escalates (e.g. maxIterations=3 allows rework
-    // rounds 1,2,3; the 4th kick escalates).
     this.deps.pipelineState.resetReviewIterations(issueId);
-    const feedbackCount = this.deps.pipelineState.incrementFeedbackIterations(issueId);
-    const cap = targetPhaseDef?.maxIterations ?? 3;
-    if (feedbackCount > cap) {
-      const escalateTo = targetPhaseDef?.escalateTo ?? "blocked";
-      this.deps.audit.log({
-        component: "orchestrator",
-        issueId,
-        message: `Rework budget exhausted on ${targetPhase} (feedback_iterations=${String(feedbackCount)} > ${String(cap)}) — escalating to ${escalateTo}`,
-        metadata: { taskId: task.id, targetPhase, feedbackCount, cap, escalateTo },
-      });
-      await this.transitionTo(issueId, escalateTo, task);
-      return "escalated";
-    }
+    this.deps.pipelineState.incrementFeedbackIterations(issueId);
 
     try {
       await this.deps.issueTracker.assignToAi(issueId);
@@ -653,14 +658,15 @@ export class RedQueen {
   }
 
   private isPhaseAfterHumanGate(phaseName: string): boolean {
-    // Entry phases (the ones with no inbound `next` edge, i.e. spec-writing)
-    // author the spec fresh, so there's nothing to re-sync on their first
-    // dispatch — skip them regardless of which gate points here. Every other
-    // phase reachable from a gate's `next`/`rework` is a spot a human may
-    // have inline-edited the spec on the tracker, so we re-read it before
-    // dispatch. This keeps blocked → coding covered (humans plausibly edit
-    // the spec there before unblocking) while still short-circuiting
-    // spec-awaiting-info → spec-writing.
+    // Entry phases — those with no inbound forward (`next`) edge, i.e.
+    // `spec-research` in the default graph — have no prior human-gate hand-off,
+    // so there's nothing to re-sync on their first dispatch; skip them
+    // regardless of which gate points here. `spec-writing` is NOT an entry
+    // phase: it's `spec-review`'s rework target, so the human's inline edits
+    // get re-read before a rework dispatch. Every other phase reachable from a
+    // gate's `next`/`rework` is likewise a spot a human may have inline-edited
+    // the spec, so we re-read before dispatch. This keeps blocked → coding
+    // covered while still short-circuiting spec-awaiting-info → spec-research.
     const entryPhaseNames = new Set(
       this.deps.runtime.phaseGraph.getEntryPhases().map((p) => p.name),
     );
@@ -927,20 +933,34 @@ export class RedQueen {
       return false;
     }
     const state = this.deps.pipelineState.get(issueId);
-    const declared = state?.openQuestionCount ?? null;
-    const parsed = state?.parsedOpenQuestionCount ?? null;
-    // Safer default = gate: when declared and parsed disagree, use the higher
-    // value (never auto-skip on ambiguity) and leave an audit trail.
-    const effective = Math.max(declared ?? 0, parsed ?? 0);
+    const declared = state?.openQuestionCount ?? null; // null = writer omitted `spec meta`
+    const parsed = state?.parsedOpenQuestionCount ?? null; // null = no `## Open Questions` section found
     if (declared !== null && parsed !== null && declared !== parsed) {
       this.deps.audit.log({
         component: "orchestrator",
         issueId,
-        message: `Open-question count mismatch: declared=${String(declared)} parsed=${String(parsed)}; using max=${String(effective)}`,
-        metadata: { declared, parsed, effective },
+        message: `Open-question count mismatch: declared=${String(declared)} parsed=${String(parsed)}; gating to be safe`,
+        metadata: { declared, parsed },
       });
     }
-    if (effective !== 0) {
+    // Never skip if either source reports open questions.
+    if ((declared !== null && declared > 0) || (parsed !== null && parsed > 0)) {
+      return false;
+    }
+    // Past the check above, declared and parsed are each null or 0. Skipping the
+    // human gate demands positive evidence the spec is clean: at least one
+    // source must affirmatively report 0. Both null — writer omitted `spec meta`
+    // AND the parser found no Open Questions section (e.g. a decorated heading
+    // the strict regex skipped) — is "unknown", not "zero", so gate. This keeps
+    // heading decoration alone from routing an unresolved-question spec past
+    // review (Decision 6 safety net).
+    if (declared === null && parsed === null) {
+      this.deps.audit.log({
+        component: "orchestrator",
+        issueId,
+        message: `Cannot confirm 0 open questions (declared=${String(declared)}, parsed=${String(parsed)}) — routing to ${phase.next} gate`,
+        metadata: { taskId: task.id, declared, parsed },
+      });
       return false;
     }
     // Skip the review gate by jumping to whatever it would advance to (coding
@@ -950,6 +970,11 @@ export class RedQueen {
     if (skipTarget === undefined || skipTarget === "done") {
       return false;
     }
+    // This skip stands in for the spec-review → coding forward edge, which
+    // normally resets both iteration counters on gate-leave (processTask).
+    // Mirror that reset so a feedback_iterations left from a prior spec rework
+    // doesn't leak into the downstream code-feedback budget.
+    this.deps.pipelineState.resetIterations(issueId);
     this.deps.audit.log({
       component: "orchestrator",
       issueId,

@@ -1085,22 +1085,107 @@ describe("RedQueen orchestrator", () => {
     expect(audit).toContain("Open-question count mismatch: declared=0 parsed=2");
   });
 
-  it("empty-spec restart (agent sets spec-research) does NOT reset feedback_iterations", async () => {
-    let feedbackAtRestart: number | undefined;
+  it("skipping the spec-review gate resets iteration counters (gate-leave parity)", async () => {
+    const h = setupHarness(
+      () => {
+        const phase = h.pipelineState.get("PROJ-334")?.currentPhase;
+        if (phase === "spec-writing") {
+          return Promise.resolve({
+            success: true,
+            exitCode: 0,
+            elapsed: 1,
+            summary: "spec ready",
+            error: null,
+          });
+        }
+        return Promise.resolve({
+          success: false,
+          exitCode: 1,
+          elapsed: 1,
+          summary: "",
+          error: "stop cascade",
+        });
+      },
+      { skipSpecReviewIfReady: true },
+    );
+    h.pipelineState.create("PROJ-334", "spec-writing");
+    h.pipelineState.setOpenQuestionCount("PROJ-334", 0);
+    // A prior spec rework left feedback_iterations non-zero; the skip stands in
+    // for the gate-leave forward edge and must reset it so it doesn't leak into
+    // the downstream code-feedback budget.
+    h.pipelineState.incrementFeedbackIterations("PROJ-334");
+    h.issueTracker.phases.set("PROJ-334", "spec-writing");
+    h.queue.enqueue({ type: "spec-writing", issueId: "PROJ-334" });
+
+    await runUntil(h, () => h.issueTracker.calls.includes("setPhase:PROJ-334:coding"));
+
+    expect(h.pipelineState.get("PROJ-334")?.feedbackIterations).toBe(0);
+  });
+
+  it("does NOT skip the gate when the open-question count is unknown", async () => {
+    const h = setupHarness(
+      () => {
+        const phase = h.pipelineState.get("PROJ-335")?.currentPhase;
+        if (phase === "spec-writing") {
+          return Promise.resolve({
+            success: true,
+            exitCode: 0,
+            elapsed: 1,
+            summary: "spec ready",
+            error: null,
+          });
+        }
+        return Promise.resolve({
+          success: false,
+          exitCode: 1,
+          elapsed: 1,
+          summary: "",
+          error: "stop cascade",
+        });
+      },
+      { skipSpecReviewIfReady: true },
+    );
+    h.pipelineState.create("PROJ-335", "spec-writing");
+    // Writer omitted `spec meta` (declared = null) AND decorated the Open
+    // Questions heading so the parser found no section (parsed = null). Unknown,
+    // not zero → must gate, not skip past the human.
+    h.pipelineState.recordSpecWrite("PROJ-335", {
+      specContent: "# Spec\n\n## Open Questions (2)\n\n- [ ] unresolved",
+      parsedOpenQuestionCount: null,
+      lastAiSpecHash: "x",
+      lastAiSpecAt: "2026-05-19T12:00:00.000Z",
+    });
+    h.issueTracker.phases.set("PROJ-335", "spec-writing");
+    h.queue.enqueue({ type: "spec-writing", issueId: "PROJ-335" });
+
+    await runUntil(h, () => h.issueTracker.calls.includes("setPhase:PROJ-335:spec-review"));
+
+    expect(h.issueTracker.calls).toContain("setPhase:PROJ-335:spec-review");
+    expect(h.issueTracker.calls).not.toContain("setPhase:PROJ-335:coding");
+    const audit = readFileSync(auditPath, "utf8");
+    expect(audit).toContain("Cannot confirm 0 open questions");
+  });
+
+  it("agent-driven backward phase change preserves feedback_iterations (not a gate-leave)", async () => {
+    // A worker can set an earlier phase directly (respectAgentPhaseChange). That
+    // is NOT a human-gate leave, so the rework budget must be preserved — the
+    // gate-leave reset only fires when leaving a human gate. (The spec-writer no
+    // longer does an empty-spec restart, but this orchestrator invariant is
+    // independent of any one skill.)
+    let feedbackAfterHop: number | undefined;
     const h = setupHarness(() => {
       const phase = h.pipelineState.get("PROJ-340")?.currentPhase;
       if (phase === "spec-writing") {
-        // Case 5: human cleared the spec; writer routes back to research.
         void h.issueTracker.setPhase("PROJ-340", "spec-research");
         return Promise.resolve({
           success: true,
           exitCode: 0,
           elapsed: 1,
-          summary: "restart",
+          summary: "backward hop",
           error: null,
         });
       }
-      feedbackAtRestart = h.pipelineState.get("PROJ-340")?.feedbackIterations;
+      feedbackAfterHop = h.pipelineState.get("PROJ-340")?.feedbackIterations;
       return Promise.resolve({
         success: false,
         exitCode: 1,
@@ -1117,9 +1202,7 @@ describe("RedQueen orchestrator", () => {
 
     await runUntilAfterRuns(h, 2);
 
-    // spec-research was reached via an agent-driven phase change, not a gate-leave,
-    // so the rework budget is preserved (the restart costs one iteration).
-    expect(feedbackAtRestart).toBe(2);
+    expect(feedbackAfterHop).toBe(2);
   });
 
   it("Gap 3: does not reset when leaving an automated phase", async () => {

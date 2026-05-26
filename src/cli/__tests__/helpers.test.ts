@@ -342,6 +342,29 @@ describe("cmdSpec meta + set", () => {
     expect(rec.lastAiSpecHash).not.toBeNull();
     expect(rec.lastAiSpecAt).not.toBeNull();
   });
+
+  it("meta rejects non-integer counts", async () => {
+    await cmdPipeline(["update", "SPEC-4"]);
+    await expect(cmdSpec(["meta", "SPEC-4", "--open-questions", "3abc"])).rejects.toThrow(
+      /non-negative integer/,
+    );
+    await expect(cmdSpec(["meta", "SPEC-4", "--open-questions", "3.9"])).rejects.toThrow(
+      /non-negative integer/,
+    );
+  });
+
+  it("set records null parsed count when no Open Questions section is found", async () => {
+    await cmdPipeline(["update", "SPEC-5"]);
+    // Decorated heading the strict regex skips → no section found → null, not 0,
+    // so the orchestrator treats it as "unknown" and won't auto-skip the gate.
+    const body = "# Spec\n\n## Open Questions (2)\n\n- [ ] unresolved\n";
+    stdoutCapture = [];
+    await cmdSpec(["set", "SPEC-5", "--body", body]);
+    const setOut = JSON.parse(stdoutCapture.join("")) as {
+      parsedOpenQuestionCount: number | null;
+    };
+    expect(setOut.parsedOpenQuestionCount).toBeNull();
+  });
 });
 
 describe("cmdPr comments", () => {
