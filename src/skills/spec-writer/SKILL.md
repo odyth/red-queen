@@ -16,7 +16,7 @@ You write the implementation specification. The coder downstream sees only the s
 
 Routine progress goes to the audit log automatically. Only post a tracker comment when:
 
-1. You set the issue to **Awaiting Info** — first dispatch only (iterationCount = 0); never on rework.
+1. You set the issue to **Awaiting Info** — fresh write (Case 1) only; never on rework.
 2. You set the issue to **Blocked** — any case.
 3. You hit the **Noop** case (Case 4) — post "no changes requested, returning to review".
 
@@ -49,14 +49,15 @@ Choose exactly one case before doing anything else:
 
 | Case | iterationCount | spec_empty | humanModifiedSpec | new_comments | Action                                           |
 | ---- | -------------: | ---------- | ----------------- | ------------ | ------------------------------------------------ |
-| 1    |            any | true       | n/a               | n/a          | Fresh write (empty spec — fresh or cleared)      |
+| 1    |              0 | true       | n/a               | n/a          | Fresh write                                      |
 | 2    |             ≥1 | false      | false             | yes          | Refine (fold new comments)                       |
 | 3    |            any | false      | true              | n/a          | Refine (fold inline edits + new comments if any) |
 | 4    |             ≥1 | false      | false             | no           | Noop                                             |
+| 5    |             ≥1 | true       | n/a               | n/a          | Restart through research+design                  |
 
 Case 3 also catches the human-pre-populated case: ticket arrives with `specContent` non-null on a fresh dispatch (iter=0), `humanModifiedSpec` will be `true` because the AI has not yet written (so the human's content does not match the AI's last hash, which is null). Fold the human's content as if it were an inline edit.
 
-## Setup (all cases except Noop)
+## Setup (all cases except Noop and Restart)
 
 1. If `codebaseMapPath` is non-null, read it.
 2. If `.redqueen/references/spec-template.md` exists under `projectDir`, read it. Your spec follows that structure.
@@ -70,9 +71,7 @@ Case 3 also catches the human-pre-populated case: ticket arrives with `specConte
    redqueen sub-iter start "${issueId}" "Writing spec"
    ```
 
-## Case 1: Fresh write (empty spec)
-
-The spec field is empty — either a genuine first dispatch (`iterationCount` = 0) or a human cleared it on rework (`iterationCount` ≥ 1). Both write fresh from the researcher's and designer's sub-iteration outputs; do NOT route back through research or design. If the spec was cleared on rework, also read comments newer than `lastAiSpecAt` from a non-AI author for the stated reason and fold that intent. An empty-spec rework still counts against your budget — if `iterationCount >= maxIterations - 1`, say so in your summary.
+## Case 1: Fresh write
 
 Refresh the worktree at `${projectDir}/.redqueen/worktrees/spec-${issueId}` (researcher created it; refresh if it exists, create if it does not).
 
@@ -204,6 +203,24 @@ Exit 0. Stdout: "Noop — no changes requested".
 
 Do NOT touch the spec content or call `spec meta`. Do NOT clean up or refresh the worktree (it may still be useful next round).
 
+## Case 5: Restart
+
+The human cleared the spec entirely (the tracker field is now empty). Route back to spec-research; the orchestrator's respect-agent-phase-change path picks it up.
+
+```
+if ! redqueen issue set-phase "${issueId}" spec-research; then
+  echo "Could not route to spec-research — summary: phase-change failed"
+  exit 1
+fi
+echo "Restart — spec was cleared by human; re-traversing research+design" | redqueen sub-iter complete "${issueId}" --summary-stdin
+```
+
+Exit 0. Stdout: "Restart — spec cleared, re-running research+design".
+
+Note: `feedback_iterations` is NOT reset by this transition (you are not leaving a human gate). The restart counts against your rework budget.
+
+Do NOT call `spec set`, `spec meta`, or touch the worktree.
+
 ## Open-question accounting
 
 After writing the spec, you state a count via `redqueen spec meta --open-questions N`. The `redqueen spec set` command additionally parses the spec body's `## Open Questions` section and stores a `parsed_open_question_count` for cross-check. The orchestrator routes on `max(declared, parsed)` — safer default = gate.
@@ -227,15 +244,15 @@ If you cannot produce a usable spec (e.g. design and reality contradict in a way
 2. `redqueen issue set-phase "${issueId}" blocked` (exit non-zero on failure).
 3. Exit 0. Stdout: "Blocked — <reason>".
 
-## When to set Awaiting Info (first dispatch only — iterationCount = 0)
+## When to set Awaiting Info (fresh write only — Case 1)
 
-If on the FIRST dispatch (`iterationCount` = 0) the ticket is too vague to scope a spec against and the researcher missed it:
+If on fresh write the ticket is too vague to scope a spec against and the researcher missed it:
 
 1. Post questions via `redqueen issue comment`.
 2. `redqueen issue set-phase "${issueId}" spec-awaiting-info` (exit non-zero on failure).
 3. Exit 0.
 
-On any rework (`iterationCount` ≥ 1) do NOT route to awaiting-info — including when the spec was cleared (Case 1 with `iterationCount` ≥ 1). The input is disagreement or a rewrite request, not absence. If the feedback itself is incoherent or you genuinely cannot proceed, route to Blocked instead.
+On rework (any case ≥1) do NOT route to awaiting-info. The input is disagreement, not absence. Route to Blocked instead if the feedback itself is incoherent.
 
 ## Quality standards
 
