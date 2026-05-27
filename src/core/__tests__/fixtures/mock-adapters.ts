@@ -11,6 +11,7 @@ import type {
   CheckStatus,
   CreatePROptions,
   PullRequest,
+  Review,
   SourceControl,
 } from "../../../integrations/source-control.js";
 
@@ -143,6 +144,8 @@ export class MockSourceControl implements SourceControl {
   branches = new Set<string>();
   prs = new Map<number, PullRequest>();
   reviewThreadsByPr = new Map<number, ReviewThread[]>();
+  reviewsByPr = new Map<number, Review[]>();
+  prComments: { prNumber: number; body: string }[] = [];
   parseResult: PipelineEvent | null = null;
   validateResult = true;
   calls: string[] = [];
@@ -195,6 +198,16 @@ export class MockSourceControl implements SourceControl {
   }
 
   postReview(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  getReviews(prNumber: number): Promise<Review[]> {
+    return Promise.resolve(this.reviewsByPr.get(prNumber) ?? []);
+  }
+
+  postPrComment(prNumber: number, body: string): Promise<void> {
+    this.calls.push(`postPrComment:${String(prNumber)}`);
+    this.prComments.push({ prNumber, body });
     return Promise.resolve();
   }
 

@@ -15,6 +15,11 @@ export interface PhaseDefinition {
   maxIterations?: number;
   escalateTo?: string;
   assignTo: AssignTo;
+  // Selects which counter feeds the skill's `iterationCount`. Replaces the
+  // brittle phase-name string match in skill-context. "review" → review_iterations,
+  // "feedback" → feedback_iterations, "none" → 0. Omitted phases fall back to the
+  // legacy name-based heuristic so existing configs keep working.
+  iterationCounter?: "review" | "feedback" | "none";
   // When set, the phase is only executed if a PR's presence matches this value.
   // true  → phase consumes PR-level feedback (e.g. code-feedback); skip when no PR.
   // false → phase consumes tracker-level feedback pre-PR (e.g. spec-feedback); skip when a PR exists.
@@ -135,6 +140,7 @@ export interface NewTask {
 export interface PipelineRecord {
   issueId: string;
   currentPhase: string | null;
+  priorPhase: string | null;
   branchName: string | null;
   prNumber: number | null;
   worktreePath: string | null;
@@ -184,6 +190,7 @@ export interface SkillContext {
   prNumber: number | null;
   specContent: string | null;
   priorContext: string | null;
+  priorPhase: string | null;
   iterationCount: number;
   maxIterations: number;
   codebaseMapPath: string | null;

@@ -146,6 +146,22 @@ async function runUntilAfterRuns(h: Harness, count: number, maxMs = 2000): Promi
   await runUntil(h, () => h.runs.length >= count, { maxMs });
 }
 
+// The orchestrator writes the rendered skill prompt (the YAML context block) to a
+// temp file and only passes the worker a "Read and follow <path> exactly." string.
+// The file still exists while the worker runs, so read it back to inspect context.
+function readDispatchedPrompt(opts: WorkerOptions): string | null {
+  const match = /Read and follow (.+) exactly\./.exec(opts.prompt);
+  const path = match?.[1];
+  if (path === undefined) {
+    return null;
+  }
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+}
+
 let currentHarness: Harness | null = null;
 
 describe("RedQueen orchestrator", () => {
@@ -209,6 +225,102 @@ describe("RedQueen orchestrator", () => {
     // The first run saw coding phase; orchestrator advanced to code-review after
     expect(phasesSeen[0]).toBe("coding");
     expect(phasesSeen[1]).toBe("code-review");
+  });
+
+  it("dispatches coding as review-rework after code-review fails", async () => {
+    const prompts: string[] = [];
+    const h = setupHarness((opts) => {
+      const content = readDispatchedPrompt(opts);
+      if (content !== null) {
+        prompts.push(content);
+      }
+      return Promise.resolve({
+        success: false,
+        exitCode: 1,
+        elapsed: 0,
+        summary: "",
+        error: "blockers",
+        usage: null,
+      });
+    });
+    h.pipelineState.create("PROJ-RW1", "code-review");
+    h.issueTracker.phases.set("PROJ-RW1", "code-review");
+    h.queue.enqueue({ type: "code-review", issueId: "PROJ-RW1" });
+
+    await runUntil(
+      h,
+      () =>
+        h.pipelineState.get("PROJ-RW1")?.currentPhase === "coding" &&
+        prompts.some((c) => c.includes("phaseName: coding")),
+    );
+
+    const record = h.pipelineState.get("PROJ-RW1");
+    expect(record?.currentPhase).toBe("coding");
+    expect(record?.priorPhase).toBe("code-review");
+    expect(record?.reviewIterations).toBe(1);
+
+    // The coder dispatch must carry the rework signal and the correct round.
+    const codingPrompt = prompts.find((c) => c.includes("phaseName: coding"));
+    expect(codingPrompt).toContain("priorPhase: code-review");
+    expect(codingPrompt).toContain("iterationCount: 1");
+  });
+
+  it("dispatches coding as test-rework after testing fails", async () => {
+    const prompts: string[] = [];
+    const h = setupHarness((opts) => {
+      const content = readDispatchedPrompt(opts);
+      if (content !== null) {
+        prompts.push(content);
+      }
+      return Promise.resolve({
+        success: false,
+        exitCode: 1,
+        elapsed: 0,
+        summary: "",
+        error: "tests failed",
+        usage: null,
+      });
+    });
+    h.pipelineState.create("PROJ-RW2", "testing");
+    h.issueTracker.phases.set("PROJ-RW2", "testing");
+    h.queue.enqueue({ type: "testing", issueId: "PROJ-RW2" });
+
+    await runUntil(
+      h,
+      () =>
+        h.pipelineState.get("PROJ-RW2")?.currentPhase === "coding" &&
+        prompts.some((c) => c.includes("phaseName: coding")),
+    );
+
+    expect(h.pipelineState.get("PROJ-RW2")?.priorPhase).toBe("testing");
+    const codingPrompt = prompts.find((c) => c.includes("phaseName: coding"));
+    expect(codingPrompt).toContain("priorPhase: testing");
+  });
+
+  it("dispatches a fresh coding task with priorPhase null", async () => {
+    const prompts: string[] = [];
+    const h = setupHarness((opts) => {
+      const content = readDispatchedPrompt(opts);
+      if (content !== null) {
+        prompts.push(content);
+      }
+      return Promise.resolve({
+        success: false,
+        exitCode: 1,
+        elapsed: 0,
+        summary: "",
+        error: "stop cascade",
+        usage: null,
+      });
+    });
+    h.pipelineState.create("PROJ-RW3", "coding");
+    h.issueTracker.phases.set("PROJ-RW3", "coding");
+    h.queue.enqueue({ type: "coding", issueId: "PROJ-RW3" });
+
+    await runUntil(h, () => prompts.some((c) => c.includes("phaseName: coding")));
+
+    const codingPrompt = prompts.find((c) => c.includes("phaseName: coding"));
+    expect(codingPrompt).toContain("priorPhase: null");
   });
 
   it("skips stale task when issue is at human gate", async () => {

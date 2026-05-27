@@ -24,7 +24,9 @@ Helper commands (called by skills):
   pr diff <number>            Print the PR diff
   pr checks <number>          Print CI check status (--wait <seconds>)
   pr review <number>          Post a review (--verdict, body via stdin)
+  pr reviews <number>         List reviews as JSON (--latest for the most recent)
   pr comments <number>        List review comments as JSON
+  pr comment <number>         Post a PR-level comment (--body or stdin)
   pr reply <number> <id>      Reply to a review comment (--body or stdin)
   pipeline update <issueId>   Update pipeline state (--branch --pr --worktree --clear-pr)
   pipeline cleanup <issueId>  Remove worktree and clear worktree path (--keep-branch)

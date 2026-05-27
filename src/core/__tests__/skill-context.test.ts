@@ -12,7 +12,7 @@ import { buildPhaseGraph } from "../config.js";
 import type { RedQueenConfig } from "../config.js";
 import { DEFAULT_PHASES } from "../defaults.js";
 import { RuntimeState } from "../runtime-state.js";
-import type { PipelineRecord, Task } from "../types.js";
+import type { PhaseDefinition, PipelineRecord, Task } from "../types.js";
 import { makeTestConfig } from "./fixtures/test-config.js";
 
 function makeTask(overrides: Partial<Task> = {}): Task {
@@ -36,6 +36,7 @@ function makeRecord(overrides: Partial<PipelineRecord> = {}): PipelineRecord {
   return {
     issueId: "PROJ-1",
     currentPhase: "coding",
+    priorPhase: null,
     branchName: null,
     prNumber: null,
     worktreePath: null,
@@ -157,6 +158,53 @@ describe("buildSkillContext", () => {
     expect(context.iterationCount).toBe(3);
   });
 
+  it("uses reviewIterations for coding via the iterationCounter field", () => {
+    // coding's name matches neither "review" nor "feedback", so this relies on
+    // the explicit iterationCounter: "review" rather than the legacy fallback.
+    const runtime = makeRuntime();
+    const context = buildSkillContext({
+      runtime,
+      task: makeTask({ type: "coding" }),
+      pipelineRecord: makeRecord({ reviewIterations: 1, feedbackIterations: 7 }),
+      phaseName: "coding",
+    });
+    expect(context.iterationCount).toBe(1);
+  });
+
+  it("iterationCounter 'none' forces iterationCount to 0", () => {
+    const phases: PhaseDefinition[] = [
+      ...DEFAULT_PHASES,
+      {
+        name: "noner",
+        label: "Noner",
+        type: "automated",
+        skill: "coder",
+        next: "done",
+        assignTo: "ai",
+        iterationCounter: "none",
+      },
+    ];
+    const runtime = new RuntimeState(buildPhaseGraph(phases), makeTestConfig());
+    const context = buildSkillContext({
+      runtime,
+      task: makeTask({ type: "noner" }),
+      pipelineRecord: makeRecord({ reviewIterations: 9, feedbackIterations: 9 }),
+      phaseName: "noner",
+    });
+    expect(context.iterationCount).toBe(0);
+  });
+
+  it("carries priorPhase into the context", () => {
+    const runtime = makeRuntime();
+    const context = buildSkillContext({
+      runtime,
+      task: makeTask(),
+      pipelineRecord: makeRecord({ priorPhase: "code-review" }),
+      phaseName: "coding",
+    });
+    expect(context.priorPhase).toBe("code-review");
+  });
+
   it("throws on unknown phase", () => {
     const runtime = makeRuntime();
     expect(() =>
@@ -183,6 +231,18 @@ describe("renderSkillPrompt", () => {
     expect(rendered.startsWith("```yaml context\n")).toBe(true);
     expect(rendered).toContain("issueId: PROJ-1");
     expect(rendered).toContain("# Skill content");
+  });
+
+  it("serializes priorPhase in the YAML context block", () => {
+    const runtime = makeRuntime();
+    const context = buildSkillContext({
+      runtime,
+      task: makeTask(),
+      pipelineRecord: makeRecord({ priorPhase: "code-review" }),
+      phaseName: "coding",
+    });
+    const rendered = renderSkillPrompt(context, "# Skill");
+    expect(rendered).toContain("priorPhase: code-review");
   });
 
   it("strips agentskills YAML frontmatter from skill body", () => {

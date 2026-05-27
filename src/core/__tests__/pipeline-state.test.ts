@@ -77,6 +77,35 @@ describe("PipelineStateStore", () => {
     expect(store.get("PROJ-1")?.currentPhase).toBe("coding");
   });
 
+  it("create leaves prior_phase null", () => {
+    const record = store.create("PROJ-1", "coding");
+    expect(record.priorPhase).toBeNull();
+  });
+
+  it("updatePhase shifts the outgoing phase into prior_phase", () => {
+    store.create("PROJ-1", "coding");
+
+    store.updatePhase("PROJ-1", "code-review");
+    let record = store.get("PROJ-1");
+    expect(record?.currentPhase).toBe("code-review");
+    expect(record?.priorPhase).toBe("coding");
+
+    store.updatePhase("PROJ-1", "coding");
+    record = store.get("PROJ-1");
+    expect(record?.currentPhase).toBe("coding");
+    expect(record?.priorPhase).toBe("code-review");
+  });
+
+  it("resetIterations leaves prior_phase intact", () => {
+    store.create("PROJ-1", "coding");
+    store.updatePhase("PROJ-1", "code-review");
+    store.incrementReviewIterations("PROJ-1");
+    expect(store.resetIterations("PROJ-1")).toBe(true);
+    const record = store.get("PROJ-1");
+    expect(record?.reviewIterations).toBe(0);
+    expect(record?.priorPhase).toBe("coding");
+  });
+
   it("updates branch name", () => {
     store.create("PROJ-1");
     store.updateBranch("PROJ-1", "feature/PROJ-1-add-login");

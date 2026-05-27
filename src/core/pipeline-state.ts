@@ -6,6 +6,7 @@ import type { OrchestratorState, OrchestratorStatus, PipelineRecord } from "./ty
 interface PipelineRow {
   issue_id: string;
   current_phase: string | null;
+  prior_phase: string | null;
   branch_name: string | null;
   pr_number: number | null;
   worktree_path: string | null;
@@ -58,8 +59,14 @@ export class PipelineStateStore {
 
   updatePhase(issueId: string, phase: string): boolean {
     const now = new Date().toISOString();
+    // Shift the outgoing phase into prior_phase atomically. SQLite evaluates the
+    // RHS against the pre-update row, so prior_phase captures current_phase as it
+    // was before this transition. Every transition path funnels through here, so
+    // a dispatched skill can read prior_phase to know what ran before it.
     const result = this.db
-      .prepare("UPDATE pipeline_state SET current_phase = ?, updated_at = ? WHERE issue_id = ?")
+      .prepare(
+        "UPDATE pipeline_state SET prior_phase = current_phase, current_phase = ?, updated_at = ? WHERE issue_id = ?",
+      )
       .run(phase, now, issueId);
     return result.changes > 0;
   }
@@ -323,6 +330,7 @@ function toPipelineRecord(row: PipelineRow): PipelineRecord {
   return {
     issueId: row.issue_id,
     currentPhase: row.current_phase,
+    priorPhase: row.prior_phase,
     branchName: row.branch_name,
     prNumber: row.pr_number,
     worktreePath: row.worktree_path,

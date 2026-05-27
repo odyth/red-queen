@@ -43,6 +43,9 @@ export const DEFAULT_PHASES: PhaseDefinition[] = [
     skill: "coder",
     next: "code-review",
     assignTo: "ai",
+    // coding re-enters from code-review (and testing) on failure; review_iterations
+    // is bumped before the transition, so the coder sees the correct rework round.
+    iterationCounter: "review",
   },
   {
     name: "code-review",

@@ -11,6 +11,7 @@ import type {
   CheckStatus,
   CreatePROptions,
   PullRequest,
+  Review,
   SourceControl,
 } from "../../integrations/source-control.js";
 
@@ -171,6 +172,7 @@ export class InMemorySourceControl implements SourceControl {
   readonly checks = new Map<number, CheckStatus[]>();
   readonly reviewComments = new Map<number, Comment[]>();
   readonly reviewThreads = new Map<number, ReviewThread[]>();
+  readonly prComments: { prNumber: number; body: string }[] = [];
   readonly calls: string[] = [];
   private prCounter = 0;
 
@@ -245,6 +247,25 @@ export class InMemorySourceControl implements SourceControl {
         reviewDecision: verdict === "approve" ? "APPROVED" : "CHANGES_REQUESTED",
       });
     }
+    return Promise.resolve();
+  }
+
+  getReviews(prNumber: number): Promise<Review[]> {
+    const list = this.reviews.get(prNumber) ?? [];
+    return Promise.resolve(
+      list.map((r, i) => ({
+        id: String(i + 1),
+        author: "bot",
+        body: r.body,
+        state: r.verdict === "approve" ? "APPROVED" : "CHANGES_REQUESTED",
+        submittedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, i)).toISOString(),
+      })),
+    );
+  }
+
+  postPrComment(prNumber: number, body: string): Promise<void> {
+    this.calls.push(`postPrComment:${String(prNumber)}`);
+    this.prComments.push({ prNumber, body });
     return Promise.resolve();
   }
 

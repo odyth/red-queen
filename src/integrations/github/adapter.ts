@@ -12,6 +12,8 @@ import type {
   CheckStatus,
   CreatePROptions,
   PullRequest,
+  Review,
+  ReviewState,
   SourceControl,
 } from "../source-control.js";
 import type { GitHubAuthStrategy, GitHubIdentity } from "./auth.js";
@@ -190,6 +192,41 @@ export class GitHubSourceControlAdapter implements SourceControl {
           pull_number: prNumber,
           body,
           event,
+        }),
+    );
+  }
+
+  async getReviews(prNumber: number): Promise<Review[]> {
+    const reviews = (await this.client.paginate(this.client.rest.pulls.listReviews, {
+      owner: this.owner,
+      repo: this.repo,
+      pull_number: prNumber,
+      per_page: 100,
+    })) as {
+      id: number;
+      user: { login?: string } | null;
+      body?: string;
+      state?: string;
+      submitted_at?: string | null;
+    }[];
+    return reviews.map((r) => ({
+      id: String(r.id),
+      author: r.user?.login ?? "unknown",
+      body: r.body ?? "",
+      state: toReviewState(r.state),
+      submittedAt: r.submitted_at ?? "",
+    }));
+  }
+
+  async postPrComment(prNumber: number, body: string): Promise<void> {
+    await this.client.call(
+      `POST /repos/${this.owner}/${this.repo}/issues/${String(prNumber)}/comments`,
+      () =>
+        this.client.rest.issues.createComment({
+          owner: this.owner,
+          repo: this.repo,
+          issue_number: prNumber,
+          body,
         }),
     );
   }
@@ -469,6 +506,19 @@ function toPullRequest(raw: PullRequestRaw): PullRequest {
 function isNotFound(err: unknown): boolean {
   const status = (err as OctokitRestError).status;
   return status === 404;
+}
+
+function toReviewState(value: string | undefined): ReviewState {
+  switch (value) {
+    case "APPROVED":
+      return "APPROVED";
+    case "CHANGES_REQUESTED":
+      return "CHANGES_REQUESTED";
+    default:
+      // COMMENTED, DISMISSED, PENDING and any future state collapse to COMMENTED —
+      // the coder reads the body regardless of which non-actionable state it carries.
+      return "COMMENTED";
+  }
 }
 
 function toConclusion(value: string | null): CheckConclusion | null {

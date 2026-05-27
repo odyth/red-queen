@@ -25,6 +25,7 @@ export const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS pipeline_state (
     issue_id TEXT PRIMARY KEY,
     current_phase TEXT,
+    prior_phase TEXT,
     branch_name TEXT,
     pr_number INTEGER,
     worktree_path TEXT,
@@ -118,6 +119,17 @@ export class RedQueenDatabase {
     }
     try {
       this.db.exec("ALTER TABLE pipeline_state ADD COLUMN delegator_account_id TEXT");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("duplicate column") === false) {
+        throw err;
+      }
+    }
+    // Phase 4 (v6): prior_phase records the outgoing phase on every transition
+    // so a dispatched skill knows what ran before it (fresh vs review-rework
+    // vs test-rework). updatePhase shifts current_phase into it atomically.
+    try {
+      this.db.exec("ALTER TABLE pipeline_state ADD COLUMN prior_phase TEXT");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes("duplicate column") === false) {
