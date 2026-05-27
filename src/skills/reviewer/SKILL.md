@@ -134,9 +134,6 @@ Structure:
 ## Verdict
 <Pass | Fail>
 
-## Rating
-<1-10>/10 — <one-sentence rationale>
-
 ## Critical Issues (Blockers)
 (one block per blocker)
 - **Issue:** <short title>
@@ -163,31 +160,38 @@ that cannot be verified from the diff, state them explicitly.>
 
 ### Step 6: Decide
 
-Combine code quality and CI status:
+Combine code quality and CI status. **Your process exit code is the only signal
+the orchestrator routes on:** exit non-zero to send the PR back for rework, exit
+zero to advance it. Posting the verdict alone does not route — you must also
+exit with the matching code.
 
 **Blockers exist, iterations remaining:**
-Pipe the report into `redqueen pr review <prNumber> --verdict request-changes`.
+Pipe the report into `redqueen pr review <prNumber> --verdict request-changes`,
+then `exit 1`. The orchestrator routes back to coding for rework.
 Your summary: "Changes requested — iteration N/M, <N> blockers."
 
 **Blockers exist, last iteration:**
-Pipe the report into `redqueen pr review <prNumber> --verdict request-changes`.
-Your summary: "Final iteration — escalating to human." The orchestrator
-will route to the human review gate based on `escalateTo`.
+Pipe the report into `redqueen pr review <prNumber> --verdict request-changes`,
+then `exit 1`. Once iterations are exhausted the orchestrator routes to the
+human review gate based on `escalateTo`.
+Your summary: "Final iteration — escalating to human."
 
 **No blockers, CI green:**
-Pipe the report into `redqueen pr review <prNumber> --verdict approve`.
-Your summary: "Approved — Rating: X/10, CI: pass."
+Pipe the report into `redqueen pr review <prNumber> --verdict approve`, then
+`exit 0`.
+Your summary: "Approved — CI: pass."
 
 **No blockers, CI failing due to PR changes:**
-Treat the CI failure as a blocker — request changes. Include the CI
-failure details in the Critical Issues section.
+Treat the CI failure as a blocker — request changes (post
+`--verdict request-changes`, then `exit 1`). Include the CI failure details in
+the Critical Issues section.
 
 **No blockers, CI failing due to infrastructure (migration, env):**
 Approve the code but set Blocked (see below). Code is fine; humans must
 fix infra.
 
 **No blockers, CI pending after timeout:**
-Approve with a note. The tester phase will re-verify CI.
+Approve with a note, then `exit 0`. The tester phase will re-verify CI.
 
 ## Blocked path
 

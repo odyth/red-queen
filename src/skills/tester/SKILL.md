@@ -89,8 +89,9 @@ cd "${worktree_path}"
 If build fails:
 
 1. Capture the last ~100 lines of output for your summary.
-2. Your stdout: "Build failed — routing to coding. <brief cause>".
-3. Exit. The orchestrator will treat your exit as a failure and route to
+2. Publish the results comment (Step 6) with `Build: fail`.
+3. Your stdout: "Build failed — routing to coding. <brief cause>".
+4. Exit. The orchestrator will treat your exit as a failure and route to
    `phase.onFail` (typically `coding`).
 
 ### Step 3: Run the targeted tests
@@ -136,7 +137,28 @@ Read the JSON output.
 - Still `"pending"` after 5 minutes: print a warning and still advance —
   the next iteration or human review will catch it.
 
-### Step 6: Summary
+### Step 6: Publish results to the PR
+
+On **every** run — pass, route-to-coding, or Blocked — post a results comment
+to the PR before you exit. It is append-only: never edit or delete a prior
+comment, so the PR keeps a per-run history. Fill in only the rows you reached
+(a build failure leaves targeted / full / CI as `n/a`):
+
+```
+cat <<'EOF' | redqueen pr comment "${prNumber}"
+## Test Results — <ISO timestamp>
+- Build: <pass|fail>
+- Targeted: <n/n> <pass|fail>
+- Full: <m/m> <pass|fail>
+- CI: <pass|fail|pending>
+
+<brief failure summary if any>
+EOF
+```
+
+Use a real UTC timestamp, e.g. from `date -u +%Y-%m-%dT%H:%M:%SZ`.
+
+### Step 7: Summary
 
 Print a single-line summary: build status, targeted test status, full
 test status, CI status. This becomes `priorContext`.
