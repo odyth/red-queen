@@ -58,6 +58,10 @@ export const DEFAULT_PHASES: PhaseDefinition[] = [
     escalateTo: "human-review",
     assignTo: "ai",
     resetReviewIterationsOnPass: true,
+    // The reviewer's `exit 1` means "request changes", not "crashed". Skip the
+    // crash-retry gate so a single request-changes routes straight to coding
+    // (one reviewer run, one posted review) instead of retrying maxRetries times.
+    skipRetryOnFailure: true,
   },
   {
     name: "testing",

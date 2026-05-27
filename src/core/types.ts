@@ -28,6 +28,12 @@ export interface PhaseDefinition {
   // Used by code-review and any custom reviewer phase that closes a review loop:
   // a downstream failure (e.g. testing) should re-enter the loop with a fresh budget.
   resetReviewIterationsOnPass?: boolean;
+  // When true, a non-zero worker exit skips the global crash-retry and routes
+  // immediately via onFail/escalateTo. Used by code-review: the reviewer's
+  // `exit 1` is a deliberate "request changes" verdict, not a crash — retrying
+  // it would re-run the reviewer (and re-post the review) maxRetries times on
+  // every rework cycle. The onFail iteration counting + escalation still apply.
+  skipRetryOnFailure?: boolean;
 }
 
 export class PhaseGraph {

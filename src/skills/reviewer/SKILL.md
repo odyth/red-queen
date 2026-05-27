@@ -160,10 +160,11 @@ that cannot be verified from the diff, state them explicitly.>
 
 ### Step 6: Decide
 
-Combine code quality and CI status. **Your process exit code is the only signal
-the orchestrator routes on:** exit non-zero to send the PR back for rework, exit
-zero to advance it. Posting the verdict alone does not route — you must also
-exit with the matching code.
+Combine code quality and CI status. **Your exit code routes the PR:** exit
+non-zero to send it back for rework, exit zero to advance it. Posting the
+verdict alone does not route — you must also exit with the matching code. The
+one exception is the Blocked path below, which routes by setting the phase to
+`blocked` and then exiting zero.
 
 **Blockers exist, iterations remaining:**
 Pipe the report into `redqueen pr review <prNumber> --verdict request-changes`,
@@ -198,16 +199,24 @@ Approve with a note, then `exit 0`. The tester phase will re-verify CI.
 When CI fails for reasons outside the coder's control:
 
 1. Post the review with `--verdict approve` noting that code is fine but CI
-   blocks merge.
+   blocks merge — add a "BLOCKED BY INFRA" line so the human sees it on the PR.
 2. Post a tracker comment explaining the infra issue and what the human
    needs to do:
    ```
    echo "Code review passed but CI is blocked by infrastructure: <cause>. Human action: <what to do>" | redqueen issue comment <issueId>
    ```
-3. Post a PR comment with the same text so the human sees it from either
-   place: pipe the text into `redqueen pr review <prNumber> --verdict approve`
-   with an additional "BLOCKED BY INFRA" note.
-4. Your summary: "Blocked on infrastructure — <cause>."
+3. Move the issue into the Blocked human-gate so the orchestrator stops
+   advancing the pipeline. This phase change is what routes the issue — a
+   non-zero exit would instead route to coding and ping-pong the infra failure
+   back to the coder:
+   ```
+   if ! redqueen issue set-phase <issueId> blocked; then
+     echo "Could not route to blocked — summary: phase-change failed"
+     exit 1
+   fi
+   ```
+4. Print your summary, then `exit 0` so the orchestrator respects the Blocked
+   phase: "Blocked on infrastructure — <cause>."
 
 ## Important rules
 

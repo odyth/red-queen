@@ -284,17 +284,28 @@ async function cmdPrComment(args: string[]): Promise<void> {
   }
 }
 
-// Picks the most recently submitted review. GitHub returns reviews oldest-first,
-// so the `>=` tie-break keeps the last-seen review on equal timestamps. Reviews
-// not yet submitted carry an empty submittedAt and never win against a real one.
+// Picks the review the coder reworks against: the most recently submitted
+// CHANGES_REQUESTED review, whose body carries the blockers. Falls back to the
+// most recent review of any state when nothing requested changes. Selecting by
+// state stops a later human COMMENTED/APPROVED review from shadowing the
+// actionable request-changes verdict. GitHub returns reviews oldest-first, so
+// the `>=` tie-break keeps the last-seen review on equal timestamps; unsubmitted
+// reviews carry an empty submittedAt and never win against a real one.
 export function pickLatestReview(reviews: Review[]): Review | null {
-  let latest: Review | null = null;
+  let latestChangesRequested: Review | null = null;
+  let latestOverall: Review | null = null;
   for (const review of reviews) {
-    if (latest === null || review.submittedAt >= latest.submittedAt) {
-      latest = review;
+    if (latestOverall === null || review.submittedAt >= latestOverall.submittedAt) {
+      latestOverall = review;
+    }
+    if (
+      review.state === "CHANGES_REQUESTED" &&
+      (latestChangesRequested === null || review.submittedAt >= latestChangesRequested.submittedAt)
+    ) {
+      latestChangesRequested = review;
     }
   }
-  return latest;
+  return latestChangesRequested ?? latestOverall;
 }
 
 function parsePrNumber(raw: string | undefined, cmd: string): number {

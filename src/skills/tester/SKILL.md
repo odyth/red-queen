@@ -89,7 +89,7 @@ cd "${worktree_path}"
 If build fails:
 
 1. Capture the last ~100 lines of output for your summary.
-2. Publish the results comment (Step 6) with `Build: fail`.
+2. Publish the results comment (the **Publish results to the PR** step) with `Build: fail`.
 3. Your stdout: "Build failed — routing to coding. <brief cause>".
 4. Exit. The orchestrator will treat your exit as a failure and route to
    `phase.onFail` (typically `coding`).
@@ -120,7 +120,7 @@ If tests fail:
 
 If `testCommandFull` is set and different from the targeted command, run
 it now to catch regressions. Apply the same pre-existing-vs-new
-classification as Step 3.
+classification as the targeted-tests step.
 
 ### Step 5: Verify CI status
 

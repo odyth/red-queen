@@ -369,6 +369,35 @@ describe("RedQueen orchestrator", () => {
     expect(attempts).toBe(3);
   });
 
+  it("routes code-review failure straight to coding without crash-retries", async () => {
+    const prompts: string[] = [];
+    const h = setupHarness((opts) => {
+      const content = readDispatchedPrompt(opts);
+      if (content !== null) {
+        prompts.push(content);
+      }
+      return Promise.resolve({
+        success: false,
+        exitCode: 1,
+        elapsed: 0,
+        summary: "",
+        error: "blockers",
+        usage: null,
+      });
+    });
+    h.pipelineState.create("PROJ-NR", "code-review");
+    h.issueTracker.phases.set("PROJ-NR", "code-review");
+    h.queue.enqueue({ type: "code-review", issueId: "PROJ-NR" });
+
+    await runUntil(h, () => prompts.some((c) => c.includes("phaseName: coding")));
+
+    // maxRetries is 2, but code-review opts out of crash-retries: a request-changes
+    // exit dispatches the reviewer exactly once, then routes to coding for rework.
+    const reviewRuns = prompts.filter((c) => c.includes("phaseName: code-review")).length;
+    expect(reviewRuns).toBe(1);
+    expect(h.pipelineState.get("PROJ-NR")?.currentPhase).toBe("coding");
+  });
+
   it("respects agent-changed phase", async () => {
     let runCount = 0;
     const h = setupHarness(() => {

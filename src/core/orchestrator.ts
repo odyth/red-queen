@@ -1027,7 +1027,8 @@ export class RedQueen {
     const priorRetries = typeof metadata.retries === "number" ? metadata.retries : 0;
     const nextRetries = priorRetries + 1;
 
-    if (nextRetries <= this.deps.runtime.config.pipeline.maxRetries) {
+    const retriesSkipped = phase.skipRetryOnFailure === true;
+    if (retriesSkipped === false && nextRetries <= this.deps.runtime.config.pipeline.maxRetries) {
       this.deps.queue.enqueue({
         type: task.type,
         issueId,

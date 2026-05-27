@@ -197,12 +197,16 @@ export class GitHubSourceControlAdapter implements SourceControl {
   }
 
   async getReviews(prNumber: number): Promise<Review[]> {
-    const reviews = (await this.client.paginate(this.client.rest.pulls.listReviews, {
-      owner: this.owner,
-      repo: this.repo,
-      pull_number: prNumber,
-      per_page: 100,
-    })) as {
+    const reviews = (await this.client.call(
+      `GET /repos/${this.owner}/${this.repo}/pulls/${String(prNumber)}/reviews`,
+      () =>
+        this.client.paginate(this.client.rest.pulls.listReviews, {
+          owner: this.owner,
+          repo: this.repo,
+          pull_number: prNumber,
+          per_page: 100,
+        }),
+    )) as {
       id: number;
       user: { login?: string } | null;
       body?: string;
