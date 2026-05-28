@@ -134,9 +134,6 @@ Structure:
 ## Verdict
 <Pass | Fail>
 
-## Rating
-<1-10>/10 — <one-sentence rationale>
-
 ## Critical Issues (Blockers)
 (one block per blocker)
 - **Issue:** <short title>
@@ -163,47 +160,63 @@ that cannot be verified from the diff, state them explicitly.>
 
 ### Step 6: Decide
 
-Combine code quality and CI status:
+Combine code quality and CI status. **Your exit code routes the PR:** exit
+non-zero to send it back for rework, exit zero to advance it. Posting the
+verdict alone does not route — you must also exit with the matching code. The
+one exception is the Blocked path below, which routes by setting the phase to
+`blocked` and then exiting zero.
 
 **Blockers exist, iterations remaining:**
-Pipe the report into `redqueen pr review <prNumber> --verdict request-changes`.
+Pipe the report into `redqueen pr review <prNumber> --verdict request-changes`,
+then `exit 1`. The orchestrator routes back to coding for rework.
 Your summary: "Changes requested — iteration N/M, <N> blockers."
 
 **Blockers exist, last iteration:**
-Pipe the report into `redqueen pr review <prNumber> --verdict request-changes`.
-Your summary: "Final iteration — escalating to human." The orchestrator
-will route to the human review gate based on `escalateTo`.
+Pipe the report into `redqueen pr review <prNumber> --verdict request-changes`,
+then `exit 1`. Once iterations are exhausted the orchestrator routes to the
+human review gate based on `escalateTo`.
+Your summary: "Final iteration — escalating to human."
 
 **No blockers, CI green:**
-Pipe the report into `redqueen pr review <prNumber> --verdict approve`.
-Your summary: "Approved — Rating: X/10, CI: pass."
+Pipe the report into `redqueen pr review <prNumber> --verdict approve`, then
+`exit 0`.
+Your summary: "Approved — CI: pass."
 
 **No blockers, CI failing due to PR changes:**
-Treat the CI failure as a blocker — request changes. Include the CI
-failure details in the Critical Issues section.
+Treat the CI failure as a blocker — request changes (post
+`--verdict request-changes`, then `exit 1`). Include the CI failure details in
+the Critical Issues section.
 
 **No blockers, CI failing due to infrastructure (migration, env):**
 Approve the code but set Blocked (see below). Code is fine; humans must
 fix infra.
 
 **No blockers, CI pending after timeout:**
-Approve with a note. The tester phase will re-verify CI.
+Approve with a note, then `exit 0`. The tester phase will re-verify CI.
 
 ## Blocked path
 
 When CI fails for reasons outside the coder's control:
 
 1. Post the review with `--verdict approve` noting that code is fine but CI
-   blocks merge.
+   blocks merge — add a "BLOCKED BY INFRA" line so the human sees it on the PR.
 2. Post a tracker comment explaining the infra issue and what the human
    needs to do:
    ```
    echo "Code review passed but CI is blocked by infrastructure: <cause>. Human action: <what to do>" | redqueen issue comment <issueId>
    ```
-3. Post a PR comment with the same text so the human sees it from either
-   place: pipe the text into `redqueen pr review <prNumber> --verdict approve`
-   with an additional "BLOCKED BY INFRA" note.
-4. Your summary: "Blocked on infrastructure — <cause>."
+3. Move the issue into the Blocked human-gate so the orchestrator stops
+   advancing the pipeline. This phase change is what routes the issue — a
+   non-zero exit would instead route to coding and ping-pong the infra failure
+   back to the coder:
+   ```
+   if ! redqueen issue set-phase <issueId> blocked; then
+     echo "Could not route to blocked — summary: phase-change failed"
+     exit 1
+   fi
+   ```
+4. Print your summary, then `exit 0` so the orchestrator respects the Blocked
+   phase: "Blocked on infrastructure — <cause>."
 
 ## Important rules
 

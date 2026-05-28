@@ -1,4 +1,5 @@
 import { parseArgs } from "node:util";
+import type { Review } from "../integrations/source-control.js";
 import { loadCliContext } from "./context.js";
 import { CliError } from "./errors.js";
 import { readBodyFromStdinOrFlag, writeJson, writeText } from "./io.js";
@@ -18,15 +19,21 @@ export async function cmdPr(args: string[]): Promise<void> {
     case "review":
       await cmdPrReview(rest);
       return;
+    case "reviews":
+      await cmdPrReviews(rest);
+      return;
     case "comments":
       await cmdPrComments(rest);
+      return;
+    case "comment":
+      await cmdPrComment(rest);
       return;
     case "reply":
       await cmdPrReply(rest);
       return;
     default:
       throw new CliError(
-        `Unknown 'pr' subcommand: ${subcommand ?? "(missing)"}. Valid: create, diff, checks, review, comments, reply.`,
+        `Unknown 'pr' subcommand: ${subcommand ?? "(missing)"}. Valid: create, diff, checks, review, reviews, comments, comment, reply.`,
       );
   }
 }
@@ -229,6 +236,76 @@ async function cmdPrReply(args: string[]): Promise<void> {
   } finally {
     ctx.cleanup();
   }
+}
+
+async function cmdPrReviews(args: string[]): Promise<void> {
+  const { positionals, values } = parseArgs({
+    args,
+    options: {
+      latest: { type: "boolean", default: false },
+      pretty: { type: "boolean", default: false },
+    },
+    allowPositionals: true,
+  });
+  const prNumber = parsePrNumber(positionals[0], "pr reviews");
+  const ctx = loadCliContext();
+  try {
+    const reviews = await ctx.sourceControl.getReviews(prNumber);
+    if (values.latest === true) {
+      writeJson(pickLatestReview(reviews), values.pretty === true);
+      return;
+    }
+    writeJson(reviews, values.pretty === true);
+  } finally {
+    ctx.cleanup();
+  }
+}
+
+async function cmdPrComment(args: string[]): Promise<void> {
+  const { positionals, values } = parseArgs({
+    args,
+    options: { body: { type: "string" } },
+    allowPositionals: true,
+  });
+  const prNumber = parsePrNumber(positionals[0], "pr comment");
+  const body = await readBodyFromStdinOrFlag(values.body, "comment body");
+  const ctx = loadCliContext();
+  try {
+    await ctx.sourceControl.postPrComment(prNumber, body);
+    ctx.audit.log({
+      component: "helper:pr",
+      issueId: null,
+      message: `Posted PR comment on PR #${String(prNumber)}`,
+      metadata: { prNumber, bodyLength: body.length },
+    });
+    writeJson({ ok: true });
+  } finally {
+    ctx.cleanup();
+  }
+}
+
+// Picks the review the coder reworks against: the most recently submitted
+// CHANGES_REQUESTED review, whose body carries the blockers. Falls back to the
+// most recent review of any state when nothing requested changes. Selecting by
+// state stops a later human COMMENTED/APPROVED review from shadowing the
+// actionable request-changes verdict. GitHub returns reviews oldest-first, so
+// the `>=` tie-break keeps the last-seen review on equal timestamps; unsubmitted
+// reviews carry an empty submittedAt and never win against a real one.
+export function pickLatestReview(reviews: Review[]): Review | null {
+  let latestChangesRequested: Review | null = null;
+  let latestOverall: Review | null = null;
+  for (const review of reviews) {
+    if (latestOverall === null || review.submittedAt >= latestOverall.submittedAt) {
+      latestOverall = review;
+    }
+    if (
+      review.state === "CHANGES_REQUESTED" &&
+      (latestChangesRequested === null || review.submittedAt >= latestChangesRequested.submittedAt)
+    ) {
+      latestChangesRequested = review;
+    }
+  }
+  return latestChangesRequested ?? latestOverall;
 }
 
 function parsePrNumber(raw: string | undefined, cmd: string): number {

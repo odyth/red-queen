@@ -1,17 +1,12 @@
 import type BetterSqlite3 from "better-sqlite3";
-import type {
-  OrchestratorState,
-  OrchestratorStatus,
-  PipelineRecord,
-  PlanReviewVerdict,
-  PlanReviewVerdictKind,
-} from "./types.js";
+import type { OrchestratorState, OrchestratorStatus, PipelineRecord } from "./types.js";
 
 // --- Pipeline state row shape ---
 
 interface PipelineRow {
   issue_id: string;
   current_phase: string | null;
+  prior_phase: string | null;
   branch_name: string | null;
   pr_number: number | null;
   worktree_path: string | null;
@@ -20,11 +15,7 @@ interface PipelineRow {
   spec_content: string | null;
   prior_context: string | null;
   delegator_account_id: string | null;
-  plan_review_verdict: string | null;
-  plan_review_rating: number | null;
-  plan_review_blockers: number | null;
-  plan_review_open_questions: number | null;
-  plan_review_recorded_at: string | null;
+  open_question_count: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -69,8 +60,14 @@ export class PipelineStateStore {
 
   updatePhase(issueId: string, phase: string): boolean {
     const now = new Date().toISOString();
+    // Shift the outgoing phase into prior_phase atomically. SQLite evaluates the
+    // RHS against the pre-update row, so prior_phase captures current_phase as it
+    // was before this transition. Every transition path funnels through here, so
+    // a dispatched skill can read prior_phase to know what ran before it.
     const result = this.db
-      .prepare("UPDATE pipeline_state SET current_phase = ?, updated_at = ? WHERE issue_id = ?")
+      .prepare(
+        "UPDATE pipeline_state SET prior_phase = current_phase, current_phase = ?, updated_at = ? WHERE issue_id = ?",
+      )
       .run(phase, now, issueId);
     return result.changes > 0;
   }
@@ -174,16 +171,15 @@ export class PipelineStateStore {
 
   resetIterations(issueId: string): boolean {
     const now = new Date().toISOString();
+    // open_question_count is also cleared: it's a per-cycle signal set by
+    // each spec-writing run, and a stale value left over from a previous
+    // gate visit would mislead the skip-gate router.
     const result = this.db
       .prepare(
         `UPDATE pipeline_state SET
            review_iterations = 0,
            feedback_iterations = 0,
-           plan_review_verdict = NULL,
-           plan_review_rating = NULL,
-           plan_review_blockers = NULL,
-           plan_review_open_questions = NULL,
-           plan_review_recorded_at = NULL,
+           open_question_count = NULL,
            updated_at = ?
          WHERE issue_id = ?`,
       )
@@ -191,44 +187,10 @@ export class PipelineStateStore {
     return result.changes > 0;
   }
 
-  setPlanReviewVerdict(issueId: string, verdict: PlanReviewVerdict): boolean {
+  resetReviewIterations(issueId: string): boolean {
     const now = new Date().toISOString();
     const result = this.db
-      .prepare(
-        `UPDATE pipeline_state SET
-           plan_review_verdict = ?,
-           plan_review_rating = ?,
-           plan_review_blockers = ?,
-           plan_review_open_questions = ?,
-           plan_review_recorded_at = ?,
-           updated_at = ?
-         WHERE issue_id = ?`,
-      )
-      .run(
-        verdict.verdict,
-        verdict.rating,
-        verdict.blockers,
-        verdict.openQuestions,
-        verdict.recordedAt,
-        now,
-        issueId,
-      );
-    return result.changes > 0;
-  }
-
-  clearPlanReviewVerdict(issueId: string): boolean {
-    const now = new Date().toISOString();
-    const result = this.db
-      .prepare(
-        `UPDATE pipeline_state SET
-           plan_review_verdict = NULL,
-           plan_review_rating = NULL,
-           plan_review_blockers = NULL,
-           plan_review_open_questions = NULL,
-           plan_review_recorded_at = NULL,
-           updated_at = ?
-         WHERE issue_id = ?`,
-      )
+      .prepare("UPDATE pipeline_state SET review_iterations = 0, updated_at = ? WHERE issue_id = ?")
       .run(now, issueId);
     return result.changes > 0;
   }
@@ -256,6 +218,16 @@ export class PipelineStateStore {
         "UPDATE pipeline_state SET delegator_account_id = ?, updated_at = ? WHERE issue_id = ?",
       )
       .run(accountId, now, issueId);
+    return result.changes > 0;
+  }
+
+  setOpenQuestionCount(issueId: string, count: number | null): boolean {
+    const now = new Date().toISOString();
+    const result = this.db
+      .prepare(
+        "UPDATE pipeline_state SET open_question_count = ?, updated_at = ? WHERE issue_id = ?",
+      )
+      .run(count, now, issueId);
     return result.changes > 0;
   }
 
@@ -373,6 +345,7 @@ function toPipelineRecord(row: PipelineRow): PipelineRecord {
   return {
     issueId: row.issue_id,
     currentPhase: row.current_phase,
+    priorPhase: row.prior_phase,
     branchName: row.branch_name,
     prNumber: row.pr_number,
     worktreePath: row.worktree_path,
@@ -381,41 +354,8 @@ function toPipelineRecord(row: PipelineRow): PipelineRecord {
     specContent: row.spec_content,
     priorContext: row.prior_context,
     delegatorAccountId: row.delegator_account_id,
-    planReviewVerdict: toPlanReviewVerdict(row),
+    openQuestionCount: row.open_question_count,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-  };
-}
-
-function toPlanReviewVerdict(row: PipelineRow): PlanReviewVerdict | null {
-  // All five columns are written together by setPlanReviewVerdict and cleared
-  // together by clearPlanReviewVerdict/resetIterations, so if the verdict kind
-  // is present the other fields must be present too. Anything else is a
-  // corrupted row — surface it rather than silently returning null.
-  if (row.plan_review_verdict === null) {
-    return null;
-  }
-  if (row.plan_review_verdict !== "approve" && row.plan_review_verdict !== "request-changes") {
-    throw new Error(
-      `plan_review_verdict has invalid value "${row.plan_review_verdict}" for issue ${row.issue_id}`,
-    );
-  }
-  if (
-    row.plan_review_rating === null ||
-    row.plan_review_blockers === null ||
-    row.plan_review_open_questions === null ||
-    row.plan_review_recorded_at === null
-  ) {
-    throw new Error(
-      `plan_review_* columns are partially populated for issue ${row.issue_id} — refusing to hydrate`,
-    );
-  }
-  const kind: PlanReviewVerdictKind = row.plan_review_verdict;
-  return {
-    verdict: kind,
-    rating: row.plan_review_rating,
-    blockers: row.plan_review_blockers,
-    openQuestions: row.plan_review_open_questions,
-    recordedAt: row.plan_review_recorded_at,
   };
 }

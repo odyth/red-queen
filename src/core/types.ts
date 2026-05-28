@@ -15,10 +15,25 @@ export interface PhaseDefinition {
   maxIterations?: number;
   escalateTo?: string;
   assignTo: AssignTo;
+  // Selects which counter feeds the skill's `iterationCount`. Replaces the
+  // brittle phase-name string match in skill-context. "review" → review_iterations,
+  // "feedback" → feedback_iterations, "none" → 0. Omitted phases fall back to the
+  // legacy name-based heuristic so existing configs keep working.
+  iterationCounter?: "review" | "feedback" | "none";
   // When set, the phase is only executed if a PR's presence matches this value.
   // true  → phase consumes PR-level feedback (e.g. code-feedback); skip when no PR.
   // false → phase consumes tracker-level feedback pre-PR (e.g. spec-feedback); skip when a PR exists.
   requiresPr?: boolean;
+  // When true, a successful run of this phase resets review_iterations to 0.
+  // Used by code-review and any custom reviewer phase that closes a review loop:
+  // a downstream failure (e.g. testing) should re-enter the loop with a fresh budget.
+  resetReviewIterationsOnPass?: boolean;
+  // When true, a non-zero worker exit skips the global crash-retry and routes
+  // immediately via onFail/escalateTo. Used by code-review: the reviewer's
+  // `exit 1` is a deliberate "request changes" verdict, not a crash — retrying
+  // it would re-run the reviewer (and re-post the review) maxRetries times on
+  // every rework cycle. The onFail iteration counting + escalation still apply.
+  skipRetryOnFailure?: boolean;
 }
 
 export class PhaseGraph {
@@ -128,19 +143,10 @@ export interface NewTask {
 
 // --- Pipeline state ---
 
-export type PlanReviewVerdictKind = "approve" | "request-changes";
-
-export interface PlanReviewVerdict {
-  verdict: PlanReviewVerdictKind;
-  rating: number;
-  blockers: number;
-  openQuestions: number;
-  recordedAt: string;
-}
-
 export interface PipelineRecord {
   issueId: string;
   currentPhase: string | null;
+  priorPhase: string | null;
   branchName: string | null;
   prNumber: number | null;
   worktreePath: string | null;
@@ -149,7 +155,10 @@ export interface PipelineRecord {
   specContent: string | null;
   priorContext: string | null;
   delegatorAccountId: string | null;
-  planReviewVerdict: PlanReviewVerdict | null;
+  // Set by the spec-writing skill via `redqueen spec meta`. Null on records
+  // that haven't run spec-writing yet (or on pre-migration rows). The
+  // orchestrator's skip-gate fast-path only fires on an explicit zero.
+  openQuestionCount: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -191,6 +200,7 @@ export interface SkillContext {
   prNumber: number | null;
   specContent: string | null;
   priorContext: string | null;
+  priorPhase: string | null;
   iterationCount: number;
   maxIterations: number;
   codebaseMapPath: string | null;

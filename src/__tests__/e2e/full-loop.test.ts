@@ -92,7 +92,6 @@ describe("E2E: orchestrator full pipeline loop", () => {
     skillsDir = join(tempDir, "skills");
     mkdirSync(skillsDir, { recursive: true });
     writeSkill("prompt-writer");
-    writeSkill("planning-review");
     writeSkill("coder");
     writeSkill("reviewer");
     writeSkill("tester");
@@ -131,7 +130,6 @@ describe("E2E: orchestrator full pipeline loop", () => {
         return null; // fall through to phaseRule matchers below
       },
       phaseRule("spec-writing", "Spec drafted"),
-      phaseRule("plan-review", "Plan review passed"),
       // Coding creates a branch and PR as a simulated side effect of the skill.
       (call) => {
         if (call.phaseName !== "coding") {
@@ -184,15 +182,13 @@ describe("E2E: orchestrator full pipeline loop", () => {
     const startPromise = rq.start();
 
     try {
-      // Phase 1: spec-writing → plan-review (both automated) → spec-review
-      // (human gate). skipSpecReviewIfReady is off by default, so plan-review
-      // lands the ticket on the human gate even on a clean worker pass.
+      // Phase 1: spec-writing → spec-review (human gate). The automated
+      // spec-writing pass lands the ticket on the spec-review human gate.
       await waitFor(
         () => issueTracker.phases.get("TEST-1") === "spec-review",
         "issue to advance to spec-review",
       );
       expect(workerCalls).toContain("spec-writing");
-      expect(workerCalls).toContain("plan-review");
       expect(issueTracker.assignments.get("TEST-1")).toBe("human");
 
       // Simulate human approval: flip the phase to coding. The poller's next
@@ -228,13 +224,7 @@ describe("E2E: orchestrator full pipeline loop", () => {
 
     // Assertions run while db is still open.
     try {
-      expect(workerCalls).toEqual([
-        "spec-writing",
-        "plan-review",
-        "coding",
-        "code-review",
-        "testing",
-      ]);
+      expect(workerCalls).toEqual(["spec-writing", "coding", "code-review", "testing"]);
       expect(queue.listByStatus("ready")).toHaveLength(0);
       expect(queue.listByStatus("working")).toHaveLength(0);
       expect(pipelineState.get("TEST-1")?.currentPhase).toBe("done");

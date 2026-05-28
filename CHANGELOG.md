@@ -5,6 +5,78 @@ All notable changes to Red Queen are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-05-28
+
+The v6 loop release. Rework phases used to re-enter with no memory of
+what failed — the coder picked up a code-review rejection as a fresh
+task. This release adds explicit prior-phase plumbing so the coder
+branches into review-rework or test-rework mode and pulls the
+reviewer's actual report from the PR instead of starting over.
+
+### Added
+
+- `pipeline_state.prior_phase` column. Set atomically on every phase
+  transition (`UPDATE … SET prior_phase = current_phase, current_phase
+  = ?`), surfaced into the skill context as `priorPhase`. The default
+  coder skill reads it to choose between fresh-write, review-rework
+  (`priorPhase === "code-review"`) and test-rework (`priorPhase ===
+  "testing"`) — in rework modes it reuses the existing worktree/PR and
+  fetches the latest review with `redqueen pr reviews <pr> --latest`
+  to act on blockers, instead of opening a new PR from scratch.
+- `redqueen pr reviews <pr> [--latest]` CLI. `--latest` picks the most
+  recent `CHANGES_REQUESTED` review (falling back to the newest
+  review of any state), so a later human `COMMENTED` or `APPROVED`
+  review can't shadow the actionable verdict the coder must rework
+  against.
+- `phase_sub_iterations` table + `redqueen sub-iter start | complete`
+  CLI for skills that want to record granular in-skill progress. The
+  unique `(issue_id, phase_name, sub_iter_index)` index protects
+  against concurrent inserts racing on `max(index)+1`.
+- `pipeline.skipSpecReviewIfReady` fast-path. When the spec-writing
+  skill records `openQuestionCount = 0` via `redqueen spec meta` and
+  the flag is on, the orchestrator skips the `spec-review` human gate
+  and routes straight to its `next` target. The count is single-use —
+  cleared after consumption so a stale zero from a previous cycle
+  can't fire it again.
+- `PhaseDefinition.iterationCounter: "review" | "feedback" | "none"`
+  to explicitly bind a phase to a counter. Replaces the brittle
+  phase-name string match (`name.includes("review")`); legacy configs
+  without the field fall back to the old heuristic.
+- `PhaseDefinition.skipRetryOnFailure`. When true, a non-zero worker
+  exit skips the global crash-retry and routes immediately via
+  `onFail` / `escalateTo`. Default `code-review` sets it: the
+  reviewer's `exit 1` is a deliberate "request changes" verdict, not
+  a crash, so it no longer triggers `maxRetries` reviewer re-runs (and
+  duplicate review posts) per rework cycle.
+- `PhaseDefinition.resetReviewIterationsOnPass`. Default `code-review`
+  sets it: once the review loop closes successfully, a downstream
+  testing failure re-enters the loop with a fresh iteration budget
+  rather than the count accumulated from the prior round.
+
+### Changed
+
+- **Breaking (data loss on first boot)**: the `plan-review` phase was
+  removed from the default pipeline. On first start of any 0.6 build,
+  an irreversible migration drops these columns from `pipeline_state`:
+  `plan_review_verdict`, `plan_review_rating`, `plan_review_blockers`,
+  `plan_review_open_questions`, `plan_review_recorded_at`. Existing
+  data in these columns is permanently lost. If you need it, snapshot
+  `.redqueen/redqueen.db` before upgrading.
+- Default reviewer skill now signals routing via exit code: `exit 1`
+  on `request-changes`, `exit 0` on approve. Combined with
+  `skipRetryOnFailure` on `code-review` this means one reviewer run
+  per rework cycle, one posted review.
+- Default tester skill now appends a per-run results comment to the PR
+  on every exit (pass, route-to-coding, or Blocked) so the PR carries
+  the full test history.
+- Orchestrator only re-reads the spec from the tracker on the first
+  dispatch of a phase that's a direct successor of a human gate
+  (`next` or `rework` target). Mid-automation phases skip the
+  round-trip.
+- Worker output truncation caps raised from 500 to 2000 chars so the
+  audit log carries enough of the worker's stdout to diagnose failures
+  without tailing logs.
+
 ## [0.4.0] - 2026-05-08
 
 ### Changed

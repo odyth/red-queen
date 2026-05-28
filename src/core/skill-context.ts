@@ -4,7 +4,13 @@ import { isAbsolute, join, resolve } from "node:path";
 import { stringify as stringifyYaml } from "yaml";
 import type { ProjectModule } from "./config.js";
 import type { RuntimeState } from "./runtime-state.js";
-import type { PipelineRecord, SkillContext, SkillModuleContext, Task } from "./types.js";
+import type {
+  PhaseDefinition,
+  PipelineRecord,
+  SkillContext,
+  SkillModuleContext,
+  Task,
+} from "./types.js";
 
 export type ModuleResolver = (
   worktreePath: string | null,
@@ -63,7 +69,8 @@ export function buildSkillContext(deps: SkillContextDeps): SkillContext {
     prNumber: pipelineRecord.prNumber,
     specContent: pipelineRecord.specContent,
     priorContext: pipelineRecord.priorContext,
-    iterationCount: relevantIterationCount(phaseName, pipelineRecord),
+    priorPhase: pipelineRecord.priorPhase,
+    iterationCount: relevantIterationCount(phase, pipelineRecord),
     maxIterations,
     codebaseMapPath: deps.codebaseMapPath ?? null,
     projectDir: resolve(config.project.directory),
@@ -89,14 +96,24 @@ function defaultResolveModule(): SkillModuleContext | null {
   return null;
 }
 
-function relevantIterationCount(phaseName: string, record: PipelineRecord): number {
-  if (phaseName.includes("feedback")) {
-    return record.feedbackIterations;
+function relevantIterationCount(phase: PhaseDefinition, record: PipelineRecord): number {
+  switch (phase.iterationCounter) {
+    case "review":
+      return record.reviewIterations;
+    case "feedback":
+      return record.feedbackIterations;
+    case "none":
+      return 0;
+    default:
+      // Legacy fallback for phases that predate iterationCounter.
+      if (phase.name.includes("feedback")) {
+        return record.feedbackIterations;
+      }
+      if (phase.name.includes("review")) {
+        return record.reviewIterations;
+      }
+      return 0;
   }
-  if (phaseName.includes("review")) {
-    return record.reviewIterations;
-  }
-  return 0;
 }
 
 export function renderSkillPrompt(context: SkillContext, skillMarkdown: string): string {

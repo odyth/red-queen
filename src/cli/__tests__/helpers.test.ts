@@ -5,8 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cmdIssue } from "../issue.js";
 import { cmdPipeline } from "../pipeline.js";
-import { cmdPlan } from "../plan.js";
 import { cmdPr } from "../pr.js";
+import { cmdSpec } from "../spec.js";
+import { cmdSubIter } from "../sub-iter.js";
 
 let tmp: string;
 let originalCwd: string;
@@ -125,146 +126,89 @@ describe("cmdPr review via --body", () => {
   });
 });
 
-describe("cmdPlan verdict", () => {
-  it("persists a clean pass verdict", async () => {
-    await cmdPipeline(["update", "PLAN-1"]);
+describe("cmdSubIter start", () => {
+  it("opens a new sub-iteration entry against the current phase", async () => {
+    await cmdPipeline(["update", "SUB-1"]);
     stdoutCapture = [];
-    await cmdPlan([
-      "verdict",
-      "PLAN-1",
-      "--verdict",
-      "approve",
-      "--rating",
-      "9",
-      "--blockers",
-      "0",
-      "--open-questions",
-      "0",
-    ]);
-    const out = stdoutCapture.join("");
-    const parsed = JSON.parse(out) as {
-      ok: boolean;
-      verdict: string;
-      rating: number;
-      blockers: number;
-      openQuestions: number;
-    };
-    expect(parsed.ok).toBe(true);
-    expect(parsed.verdict).toBe("approve");
-    expect(parsed.rating).toBe(9);
-    expect(parsed.blockers).toBe(0);
-    expect(parsed.openQuestions).toBe(0);
-  });
+    // Seed currentPhase via the pipeline_state row — the CLI doesn't accept
+    // it as a flag (it reads from pipeline state to keep the skill ergonomic).
+    const { loadCliContext } = await import("../context.js");
+    const ctx = loadCliContext();
+    ctx.pipelineState.updatePhase("SUB-1", "spec-writing");
+    ctx.cleanup();
 
-  it("persists a request-changes verdict", async () => {
-    await cmdPipeline(["update", "PLAN-2"]);
-    stdoutCapture = [];
-    await cmdPlan([
-      "verdict",
-      "PLAN-2",
-      "--verdict",
-      "request-changes",
-      "--rating",
-      "4",
-      "--blockers",
-      "3",
-      "--open-questions",
-      "2",
-    ]);
+    await cmdSubIter(["start", "SUB-1", "Codebase research"]);
     const parsed = JSON.parse(stdoutCapture.join("")) as {
-      verdict: string;
-      rating: number;
-      blockers: number;
-      openQuestions: number;
+      issueId: string;
+      phaseName: string;
+      subIterIndex: number;
+      label: string;
+      status: string;
     };
-    expect(parsed.verdict).toBe("request-changes");
-    expect(parsed.rating).toBe(4);
-    expect(parsed.blockers).toBe(3);
-    expect(parsed.openQuestions).toBe(2);
+    expect(parsed.issueId).toBe("SUB-1");
+    expect(parsed.phaseName).toBe("spec-writing");
+    expect(parsed.subIterIndex).toBe(0);
+    expect(parsed.label).toBe("Codebase research");
+    expect(parsed.status).toBe("in-progress");
   });
 
-  it("errors when no pipeline record exists for the issue", async () => {
-    await expect(
-      cmdPlan([
-        "verdict",
-        "PLAN-MISSING",
-        "--verdict",
-        "approve",
-        "--rating",
-        "9",
-        "--blockers",
-        "0",
-        "--open-questions",
-        "0",
-      ]),
-    ).rejects.toThrow(/no pipeline record/);
+  it("errors when no pipeline record exists", async () => {
+    await expect(cmdSubIter(["start", "SUB-MISSING", "label"])).rejects.toThrow(
+      /no pipeline record/,
+    );
   });
 
-  it("rejects an invalid verdict value", async () => {
-    await expect(
-      cmdPlan([
-        "verdict",
-        "PLAN-3",
-        "--verdict",
-        "maybe",
-        "--rating",
-        "8",
-        "--blockers",
-        "0",
-        "--open-questions",
-        "0",
-      ]),
-    ).rejects.toThrow(/verdict/);
+  it("errors when the pipeline record has no current phase", async () => {
+    await cmdPipeline(["update", "SUB-NOPHASE"]);
+    await expect(cmdSubIter(["start", "SUB-NOPHASE", "label"])).rejects.toThrow(/no current phase/);
   });
 
-  it("rejects a rating outside [1,10]", async () => {
-    await expect(
-      cmdPlan([
-        "verdict",
-        "PLAN-4",
-        "--verdict",
-        "approve",
-        "--rating",
-        "11",
-        "--blockers",
-        "0",
-        "--open-questions",
-        "0",
-      ]),
-    ).rejects.toThrow(/rating/);
+  it("errors without an issueId", async () => {
+    await expect(cmdSubIter(["start"])).rejects.toThrow(/issueId/);
   });
 
-  it("rejects negative blockers", async () => {
-    await expect(
-      cmdPlan([
-        "verdict",
-        "PLAN-5",
-        "--verdict",
-        "approve",
-        "--rating",
-        "8",
-        "--blockers",
-        "-1",
-        "--open-questions",
-        "0",
-      ]),
-    ).rejects.toThrow(/blockers/);
+  it("errors without a label", async () => {
+    await cmdPipeline(["update", "SUB-2"]);
+    await expect(cmdSubIter(["start", "SUB-2"])).rejects.toThrow(/label/);
+  });
+});
+
+describe("cmdSubIter complete", () => {
+  it("closes the most recent open sub-iteration with a summary", async () => {
+    await cmdPipeline(["update", "SUB-3"]);
+    const { loadCliContext } = await import("../context.js");
+    const ctx = loadCliContext();
+    ctx.pipelineState.updatePhase("SUB-3", "spec-writing");
+    ctx.cleanup();
+
+    await cmdSubIter(["start", "SUB-3", "Codebase research"]);
+    stdoutCapture = [];
+    await cmdSubIter(["complete", "SUB-3", "--summary", "Picked module X"]);
+    const parsed = JSON.parse(stdoutCapture.join("")) as {
+      status: string;
+      summary: string;
+      label: string;
+    };
+    expect(parsed.status).toBe("completed");
+    expect(parsed.summary).toBe("Picked module X");
+    expect(parsed.label).toBe("Codebase research");
   });
 
-  it("errors without issueId", async () => {
-    await expect(
-      cmdPlan([
-        "verdict",
-        "--verdict",
-        "approve",
-        "--rating",
-        "8",
-        "--blockers",
-        "0",
-        "--open-questions",
-        "0",
-      ]),
-    ).rejects.toThrow(/issueId/);
+  it("errors when no open sub-iteration exists", async () => {
+    await cmdPipeline(["update", "SUB-NONE"]);
+    const { loadCliContext } = await import("../context.js");
+    const ctx = loadCliContext();
+    ctx.pipelineState.updatePhase("SUB-NONE", "spec-writing");
+    ctx.cleanup();
+
+    await expect(cmdSubIter(["complete", "SUB-NONE", "--summary", "x"])).rejects.toThrow(
+      /no open sub-iteration/,
+    );
+  });
+
+  it("errors without --summary", async () => {
+    await cmdPipeline(["update", "SUB-4"]);
+    await expect(cmdSubIter(["complete", "SUB-4"])).rejects.toThrow(/summary/);
   });
 });
 
@@ -281,5 +225,62 @@ describe("cmdPr comments", () => {
     const out = stdoutCapture.join("");
     const parsed = JSON.parse(out) as unknown;
     expect(Array.isArray(parsed)).toBe(true);
+  });
+});
+
+describe("cmdSpec meta", () => {
+  it("records the open-question count on the pipeline record", async () => {
+    await cmdPipeline(["update", "META-1"]);
+    stdoutCapture = [];
+    await cmdSpec(["meta", "META-1", "--open-questions", "0"]);
+    const parsed = JSON.parse(stdoutCapture.join("")) as {
+      issueId: string;
+      openQuestionCount: number;
+    };
+    expect(parsed.issueId).toBe("META-1");
+    expect(parsed.openQuestionCount).toBe(0);
+
+    const { loadCliContext } = await import("../context.js");
+    const ctx = loadCliContext();
+    expect(ctx.pipelineState.get("META-1")?.openQuestionCount).toBe(0);
+    ctx.cleanup();
+  });
+
+  it("overwrites a previous value on subsequent runs", async () => {
+    await cmdPipeline(["update", "META-2"]);
+    await cmdSpec(["meta", "META-2", "--open-questions", "3"]);
+    stdoutCapture = [];
+    await cmdSpec(["meta", "META-2", "--open-questions", "0"]);
+    const parsed = JSON.parse(stdoutCapture.join("")) as { openQuestionCount: number };
+    expect(parsed.openQuestionCount).toBe(0);
+  });
+
+  it("errors when no pipeline record exists", async () => {
+    await expect(cmdSpec(["meta", "META-MISSING", "--open-questions", "0"])).rejects.toThrow(
+      /no pipeline record/,
+    );
+  });
+
+  it("errors without an issueId", async () => {
+    await expect(cmdSpec(["meta"])).rejects.toThrow(/<id>/);
+  });
+
+  it("errors without --open-questions", async () => {
+    await cmdPipeline(["update", "META-3"]);
+    await expect(cmdSpec(["meta", "META-3"])).rejects.toThrow(/open-questions/);
+  });
+
+  it("rejects a non-integer count", async () => {
+    await cmdPipeline(["update", "META-4"]);
+    await expect(cmdSpec(["meta", "META-4", "--open-questions", "abc"])).rejects.toThrow(
+      /non-negative integer/,
+    );
+  });
+
+  it("rejects a decimal count", async () => {
+    await cmdPipeline(["update", "META-5"]);
+    await expect(cmdSpec(["meta", "META-5", "--open-questions", "1.5"])).rejects.toThrow(
+      /non-negative integer/,
+    );
   });
 });

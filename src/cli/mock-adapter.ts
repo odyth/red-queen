@@ -3,6 +3,7 @@ import type {
   CheckStatus,
   CreatePROptions,
   PullRequest,
+  Review,
   SourceControl,
 } from "../integrations/source-control.js";
 import type {
@@ -126,6 +127,9 @@ export class MockSourceControlAdapter implements SourceControl {
   postReview(): Promise<void> {
     return Promise.resolve();
   }
+  getReviews(): Promise<Review[]> {
+    return Promise.resolve([]);
+  }
   dismissStaleReviews(): Promise<void> {
     return Promise.resolve();
   }
@@ -136,6 +140,9 @@ export class MockSourceControlAdapter implements SourceControl {
     return Promise.resolve([]);
   }
   replyToComment(): Promise<void> {
+    return Promise.resolve();
+  }
+  postPrComment(): Promise<void> {
     return Promise.resolve();
   }
   getChecks(): Promise<CheckStatus[]> {

@@ -23,6 +23,16 @@ export interface PullRequest {
   reviewDecision: string | null;
 }
 
+export type ReviewState = "APPROVED" | "CHANGES_REQUESTED" | "COMMENTED";
+
+export interface Review {
+  id: string;
+  author: string;
+  body: string;
+  state: ReviewState;
+  submittedAt: string;
+}
+
 export type CheckConclusion = "success" | "failure" | "pending" | "skipped" | "neutral";
 
 export interface CheckStatus {
@@ -45,10 +55,14 @@ export interface SourceControl {
 
   // Review operations
   postReview(prNumber: number, body: string, verdict: "approve" | "request-changes"): Promise<void>;
+  getReviews(prNumber: number): Promise<Review[]>;
   dismissStaleReviews(prNumber: number): Promise<void>;
   getReviewComments(prNumber: number): Promise<Comment[]>;
   getReviewThreads(prNumber: number, options?: GetReviewThreadsOptions): Promise<ReviewThread[]>;
   replyToComment(prNumber: number, commentId: number, body: string): Promise<void>;
+
+  // PR-level (issue) comment — distinct from inline review-thread comments.
+  postPrComment(prNumber: number, body: string): Promise<void>;
 
   // CI checks
   getChecks(prNumber: number): Promise<CheckStatus[]>;

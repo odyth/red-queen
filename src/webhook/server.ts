@@ -211,8 +211,8 @@ export class WebhookServer {
         const record = pipelineState.get(event.issueId);
         const hasPr = record !== null && record.prNumber !== null;
         // Find the rework phase whose requiresPr matches current PR state.
-        // Restrict to "-feedback" phases so we don't accidentally pick a
-        // scored review phase (e.g. plan-review also has requiresPr: false).
+        // Restrict to "-feedback" phases so we don't accidentally pick an
+        // automated review phase that also declares requiresPr.
         // Looking up by metadata + name suffix (not hardcoded
         // "code-feedback"/"spec-feedback") lets customized phase graphs
         // route correctly as long as they follow the naming convention.

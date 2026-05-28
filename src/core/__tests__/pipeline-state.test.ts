@@ -77,6 +77,35 @@ describe("PipelineStateStore", () => {
     expect(store.get("PROJ-1")?.currentPhase).toBe("coding");
   });
 
+  it("create leaves prior_phase null", () => {
+    const record = store.create("PROJ-1", "coding");
+    expect(record.priorPhase).toBeNull();
+  });
+
+  it("updatePhase shifts the outgoing phase into prior_phase", () => {
+    store.create("PROJ-1", "coding");
+
+    store.updatePhase("PROJ-1", "code-review");
+    let record = store.get("PROJ-1");
+    expect(record?.currentPhase).toBe("code-review");
+    expect(record?.priorPhase).toBe("coding");
+
+    store.updatePhase("PROJ-1", "coding");
+    record = store.get("PROJ-1");
+    expect(record?.currentPhase).toBe("coding");
+    expect(record?.priorPhase).toBe("code-review");
+  });
+
+  it("resetIterations leaves prior_phase intact", () => {
+    store.create("PROJ-1", "coding");
+    store.updatePhase("PROJ-1", "code-review");
+    store.incrementReviewIterations("PROJ-1");
+    expect(store.resetIterations("PROJ-1")).toBe(true);
+    const record = store.get("PROJ-1");
+    expect(record?.reviewIterations).toBe(0);
+    expect(record?.priorPhase).toBe("coding");
+  });
+
   it("updates branch name", () => {
     store.create("PROJ-1");
     store.updateBranch("PROJ-1", "feature/PROJ-1-add-login");
@@ -124,98 +153,23 @@ describe("PipelineStateStore", () => {
     expect(record?.feedbackIterations).toBe(0);
   });
 
-  it("resetIterations clears any stored plan-review verdict", () => {
-    store.create("PROJ-1");
-    store.setPlanReviewVerdict("PROJ-1", {
-      verdict: "approve",
-      rating: 9,
-      blockers: 0,
-      openQuestions: 1,
-      recordedAt: "2026-05-07T00:00:00.000Z",
-    });
-    expect(store.resetIterations("PROJ-1")).toBe(true);
-    expect(store.get("PROJ-1")?.planReviewVerdict).toBeNull();
-  });
-
   it("resetIterations returns false when no record exists", () => {
     expect(store.resetIterations("PROJ-NOBODY")).toBe(false);
   });
 
-  it("hydrates planReviewVerdict as null by default", () => {
-    const record = store.create("PROJ-1");
-    expect(record.planReviewVerdict).toBeNull();
-  });
-
-  it("setPlanReviewVerdict stores and roundtrips the struct", () => {
+  it("resetReviewIterations zeros review counter only, leaving feedback intact", () => {
     store.create("PROJ-1");
-    expect(
-      store.setPlanReviewVerdict("PROJ-1", {
-        verdict: "approve",
-        rating: 9,
-        blockers: 0,
-        openQuestions: 0,
-        recordedAt: "2026-05-07T00:00:00.000Z",
-      }),
-    ).toBe(true);
-    expect(store.get("PROJ-1")?.planReviewVerdict).toEqual({
-      verdict: "approve",
-      rating: 9,
-      blockers: 0,
-      openQuestions: 0,
-      recordedAt: "2026-05-07T00:00:00.000Z",
-    });
+    store.incrementReviewIterations("PROJ-1");
+    store.incrementReviewIterations("PROJ-1");
+    store.incrementFeedbackIterations("PROJ-1");
+    expect(store.resetReviewIterations("PROJ-1")).toBe(true);
+    const record = store.get("PROJ-1");
+    expect(record?.reviewIterations).toBe(0);
+    expect(record?.feedbackIterations).toBe(1);
   });
 
-  it("setPlanReviewVerdict overwrites a prior verdict in place", () => {
-    store.create("PROJ-1");
-    store.setPlanReviewVerdict("PROJ-1", {
-      verdict: "request-changes",
-      rating: 4,
-      blockers: 3,
-      openQuestions: 2,
-      recordedAt: "2026-05-07T00:00:00.000Z",
-    });
-    store.setPlanReviewVerdict("PROJ-1", {
-      verdict: "approve",
-      rating: 8,
-      blockers: 0,
-      openQuestions: 1,
-      recordedAt: "2026-05-07T00:01:00.000Z",
-    });
-    const v = store.get("PROJ-1")?.planReviewVerdict;
-    expect(v?.verdict).toBe("approve");
-    expect(v?.rating).toBe(8);
-    expect(v?.blockers).toBe(0);
-    expect(v?.openQuestions).toBe(1);
-  });
-
-  it("setPlanReviewVerdict returns false when record is missing", () => {
-    expect(
-      store.setPlanReviewVerdict("PROJ-NOBODY", {
-        verdict: "approve",
-        rating: 9,
-        blockers: 0,
-        openQuestions: 0,
-        recordedAt: "2026-05-07T00:00:00.000Z",
-      }),
-    ).toBe(false);
-  });
-
-  it("clearPlanReviewVerdict nulls all verdict columns", () => {
-    store.create("PROJ-1");
-    store.setPlanReviewVerdict("PROJ-1", {
-      verdict: "request-changes",
-      rating: 5,
-      blockers: 2,
-      openQuestions: 1,
-      recordedAt: "2026-05-07T00:00:00.000Z",
-    });
-    expect(store.clearPlanReviewVerdict("PROJ-1")).toBe(true);
-    expect(store.get("PROJ-1")?.planReviewVerdict).toBeNull();
-  });
-
-  it("clearPlanReviewVerdict returns false when record is missing", () => {
-    expect(store.clearPlanReviewVerdict("PROJ-NOBODY")).toBe(false);
+  it("resetReviewIterations returns false when no record exists", () => {
+    expect(store.resetReviewIterations("PROJ-NOBODY")).toBe(false);
   });
 
   it("updates spec content", () => {
@@ -295,6 +249,41 @@ describe("PipelineStateStore", () => {
     const record = store.create("PROJ-1");
     const updated = store.updateBranchInfo("PROJ-1", {});
     expect(updated.issueId).toBe(record.issueId);
+  });
+
+  it("creates with null openQuestionCount", () => {
+    const record = store.create("PROJ-1");
+    expect(record.openQuestionCount).toBeNull();
+  });
+
+  it("setOpenQuestionCount stores a value and reads it back", () => {
+    store.create("PROJ-1");
+    expect(store.setOpenQuestionCount("PROJ-1", 0)).toBe(true);
+    expect(store.get("PROJ-1")?.openQuestionCount).toBe(0);
+
+    expect(store.setOpenQuestionCount("PROJ-1", 5)).toBe(true);
+    expect(store.get("PROJ-1")?.openQuestionCount).toBe(5);
+  });
+
+  it("setOpenQuestionCount accepts null to clear", () => {
+    store.create("PROJ-1");
+    store.setOpenQuestionCount("PROJ-1", 3);
+    expect(store.setOpenQuestionCount("PROJ-1", null)).toBe(true);
+    expect(store.get("PROJ-1")?.openQuestionCount).toBeNull();
+  });
+
+  it("setOpenQuestionCount returns false for nonexistent issue", () => {
+    expect(store.setOpenQuestionCount("nope", 0)).toBe(false);
+  });
+
+  it("resetIterations also clears openQuestionCount", () => {
+    store.create("PROJ-1");
+    store.setOpenQuestionCount("PROJ-1", 0);
+    store.incrementReviewIterations("PROJ-1");
+    expect(store.resetIterations("PROJ-1")).toBe(true);
+    const record = store.get("PROJ-1");
+    expect(record?.reviewIterations).toBe(0);
+    expect(record?.openQuestionCount).toBeNull();
   });
 });
 

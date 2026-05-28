@@ -20,15 +20,19 @@ Helper commands (called by skills):
   issue attachments <id>      Download attachments (--dir <path>)
   spec get <id>               Print the stored spec
   spec set <id>               Set the spec (--body or stdin)
-  plan verdict <id>           Record a plan-review verdict (--verdict --rating --blockers --open-questions)
+  spec meta <id>              Record spec metadata (--open-questions <N>)
   pr create                   Create a PR (--issue --head --base --title, body via stdin)
   pr diff <number>            Print the PR diff
   pr checks <number>          Print CI check status (--wait <seconds>)
   pr review <number>          Post a review (--verdict, body via stdin)
+  pr reviews <number>         List reviews as JSON (--latest for the most recent)
   pr comments <number>        List review comments as JSON
+  pr comment <number>         Post a PR-level comment (--body or stdin)
   pr reply <number> <id>      Reply to a review comment (--body or stdin)
   pipeline update <issueId>   Update pipeline state (--branch --pr --worktree --clear-pr)
   pipeline cleanup <issueId>  Remove worktree and clear worktree path (--keep-branch)
+  sub-iter start <id> <label> Open a new in-skill sub-iteration entry
+  sub-iter complete <id>      Close the most recent open sub-iteration (--summary "...")
 
 Global flags:
   -h, --help                  Print this message

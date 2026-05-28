@@ -184,7 +184,24 @@ EOF
 Use a HEREDOC to preserve formatting. The helper updates both the tracker
 and the cached `specContent` in pipeline state.
 
-### Step 8: Clean up the worktree
+### Step 8: Record the open-question count
+
+Count the items remaining in the spec's **Open Questions** section (after
+you've tried to answer them yourself in Step 6). Then publish the count so
+the orchestrator can route — when `pipeline.skipSpecReviewIfReady` is on and
+the count is zero, the orchestrator skips the spec-review human gate and
+goes straight to coding.
+
+```
+redqueen spec meta <issueId> --open-questions <N>
+```
+
+`<N>` is a non-negative integer. Always call this — pass `0` when the spec
+has no open questions, or the actual count otherwise. Do not skip the call
+to "force" the human gate; the orchestrator only skips when the project
+opts in via config.
+
+### Step 9: Clean up the worktree
 
 ```
 git worktree remove "${projectDir}/.redqueen/worktrees/spec-${issueId}"
@@ -193,7 +210,7 @@ git worktree remove "${projectDir}/.redqueen/worktrees/spec-${issueId}"
 If removal fails, retry with `--force`. If it still fails, continue — the
 next run will refresh the worktree.
 
-### Step 9: Final summary (your stdout)
+### Step 10: Final summary (your stdout)
 
 Print one line summarizing what you produced. This becomes `priorContext`
 for the next phase.
@@ -206,32 +223,23 @@ for the next phase.
   the orchestrator from the tracker before this dispatch — so inline
   human edits made on the spec custom field or marker comment during
   spec-review are already folded in. That is what you are revising.
-- `priorContext` in the context block carries the summary of whoever
-  triggered this feedback pass — either the planning-review skill (when
-  plan-review failed) or human commentary picked up on exit from the
-  spec-review gate. Read it before anything else; it names the upstream.
-- Fetch comments: `redqueen issue comments <issueId>`. Find the most
-  recent human feedback, if any. When the upstream is plan-review there
-  may be no new human comments — the verdict body (blockers, required
-  decisions) IS the feedback, and it has already been surfaced via
-  `priorContext`.
+- `priorContext` in the context block carries the summary of the
+  spec-review human reviewer (or the previous spec-feedback iteration on
+  multi-round reworks). Read it before anything else.
+- Fetch comments: `redqueen issue comments <issueId>`. The most recent
+  human feedback since the prior `priorContext` handoff is the changes
+  to apply.
 - Attachments may have changed — re-run `redqueen issue attachments` and
   re-read any new images.
 
 ### Rev Step 2: Analyze the feedback
 
-For each point — whether it came from a human comment or from a
-plan-review verdict summary — classify it:
+For each point, classify it:
 
 - **Diagnosis change** — the reviewer disagrees with the root cause.
 - **Scope change** — files or acceptance criteria are added or removed.
 - **Question answered** — the reviewer resolved an Open Question.
 - **Clarification** — wording or structure needs adjustment.
-
-Plan-review blockers will typically land as "Diagnosis change" or
-"Clarification" — they name a decision the spec must lock in, not a
-request to do the implementation. Address the decision; do not bloat the
-spec with plan-review's own commentary.
 
 ### Rev Step 3: Refresh the worktree
 
@@ -256,9 +264,18 @@ cat <<'EOF' | redqueen spec set <issueId>
 EOF
 ```
 
-### Rev Step 7: Clean up and summarize
+### Rev Step 7: Record the open-question count
 
-Remove the worktree (same as Fresh Write Flow Step 8). Print a one-line
+Same as Fresh Write Flow Step 8 — count remaining items in the spec's
+Open Questions section and publish:
+
+```
+redqueen spec meta <issueId> --open-questions <N>
+```
+
+### Rev Step 8: Clean up and summarize
+
+Remove the worktree (same as Fresh Write Flow Step 9). Print a one-line
 summary naming the main changes so the next review has context.
 
 ## When to set Blocked

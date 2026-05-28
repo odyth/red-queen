@@ -10,23 +10,21 @@
 **Red Queen is to Claude Code what Jenkins is to bash.**
 
 A deterministic state machine that shuttles Jira or GitHub tickets through a
-configurable AI coding pipeline — spec, plan review, code, review, test,
-human review — and drops a merged PR out the end. The orchestrator itself
-spends zero AI tokens; it just dispatches Claude Code workers between phases
-and stops at the gates you configure.
+configurable AI coding pipeline — spec, code, review, test, human review —
+and drops a merged PR out the end. The orchestrator itself spends zero AI
+tokens; it just dispatches Claude Code workers between phases and stops at
+the gates you configure.
 
 ## TL;DR
 
-You assign a ticket. Claude writes a spec. An automated plan-review scores
-it for blockers and ambiguity (and loops back for rework if it's weak). You
-approve at the human gate. Claude writes the code and opens a PR. Another
-Claude reviews it. Another tests it. You review the final PR and merge. Step
-in at any gate, or remove them entirely.
+You assign a ticket. Claude writes a spec. You approve at the human gate.
+Claude writes the code and opens a PR. Another Claude reviews it. Another
+tests it. You review the final PR and merge. Step in at any gate, or remove
+them entirely.
 
 Phases, skills, and gates are all declared in `redqueen.yaml` — add a
-`security-review` phase, skip the human spec-review when plan-review scores
-clean, override a skill prompt by dropping a file into `.redqueen/skills/`.
-The graph is yours to shape.
+`security-review` phase, override a skill prompt by dropping a file into
+`.redqueen/skills/`. The graph is yours to shape.
 
 ## Install
 
@@ -113,11 +111,25 @@ Open <http://127.0.0.1:4400>. Five tabs:
 In Jira, set the **AI Phase** field on a ticket to `Spec Writing` and
 assign it to the AI bot account. The orchestrator polls every 30
 seconds (or reacts to a webhook if configured). You'll see it move:
-`Spec Writing` → `Plan Review` → `Spec Review` (human gate) → `Coding`
-→ `Code Review` → `Testing` → `Human Review` → merged. A weak plan
-loops back through `Spec Feedback` up to three times before
-escalating; set `pipeline.skipSpecReviewIfReady: true` to auto-promote
-clean plans straight into `Coding` and skip the human gate.
+`Spec Writing` → `Spec Review` (human gate) → `Coding` → `Code Review`
+→ `Testing` → `Human Review` → merged.
+
+A few things worth knowing about how the loop behaves:
+
+- **Spec rework** loops back through `Spec Feedback` up to three times
+  before escalating to a blocked gate.
+- **Code rework** — whether from a failed `Code Review` or `Testing` —
+  routes back to `Coding` and pushes to the *same PR*. The coder reads
+  the prior phase from its context and either addresses reviewer
+  blockers or reproduces the test failure locally before pushing.
+- **Code Review and Testing both comment on the PR every run.** Review
+  verdicts and an append-only test history land on the PR so you can
+  see what each iteration produced without digging through logs.
+- **Skip the spec gate when the spec is ready.** Set
+  `pipeline.skipSpecReviewIfReady: true` and the orchestrator will jump
+  straight from `Spec Writing` to `Coding` whenever the spec writer
+  finishes with zero open questions. Leave it off (default) to always
+  human-review the spec.
 
 ## Alternative: GitHub Issues
 

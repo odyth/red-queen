@@ -6,21 +6,9 @@ export const DEFAULT_PHASES: PhaseDefinition[] = [
     label: "Spec Writing",
     type: "automated",
     skill: "prompt-writer",
-    next: "plan-review",
+    next: "spec-review",
     onFail: "spec-awaiting-info",
     assignTo: "ai",
-  },
-  {
-    name: "plan-review",
-    label: "Plan Review",
-    type: "automated",
-    skill: "planning-review",
-    next: "spec-review",
-    onFail: "spec-feedback",
-    maxIterations: 3,
-    escalateTo: "spec-review",
-    assignTo: "ai",
-    requiresPr: false,
   },
   {
     name: "spec-review",
@@ -35,7 +23,7 @@ export const DEFAULT_PHASES: PhaseDefinition[] = [
     label: "Spec Feedback",
     type: "automated",
     skill: "prompt-writer",
-    next: "plan-review",
+    next: "spec-review",
     maxIterations: 3,
     escalateTo: "blocked",
     assignTo: "ai",
@@ -55,6 +43,9 @@ export const DEFAULT_PHASES: PhaseDefinition[] = [
     skill: "coder",
     next: "code-review",
     assignTo: "ai",
+    // coding re-enters from code-review (and testing) on failure; review_iterations
+    // is bumped before the transition, so the coder sees the correct rework round.
+    iterationCounter: "review",
   },
   {
     name: "code-review",
@@ -66,6 +57,11 @@ export const DEFAULT_PHASES: PhaseDefinition[] = [
     maxIterations: 3,
     escalateTo: "human-review",
     assignTo: "ai",
+    resetReviewIterationsOnPass: true,
+    // The reviewer's `exit 1` means "request changes", not "crashed". Skip the
+    // crash-retry gate so a single request-changes routes straight to coding
+    // (one reviewer run, one posted review) instead of retrying maxRetries times.
+    skipRetryOnFailure: true,
   },
   {
     name: "testing",

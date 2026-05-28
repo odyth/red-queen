@@ -41,6 +41,13 @@ Read the YAML context block. Fields you rely on:
 - `specContent` — the spec. Do not re-fetch. The orchestrator refreshes
   `specContent` from the tracker before each dispatch, so inline human
   edits made during spec-review are already folded in.
+- `priorPhase` — the phase that ran immediately before this dispatch. Drives
+  the mode in Step 0: `null` / `spec-review` / `blocked` → fresh write;
+  `code-review` → review-rework; `testing` → test-rework.
+- `iterationCount` / `maxIterations` — the rework round and its cap. `0` on a
+  fresh write, `1` on the first rework. At `iterationCount >= maxIterations`
+  this is the last automated attempt before human escalation.
+- `prNumber` — the existing PR on a rework round. Reuse it; never open a new one.
 - `buildCommands`, `testCommands` — fallback commands.
 - `module` — if non-null, use `module.buildCommand` instead of
   `buildCommands`, and `module.testCommandTargeted ?? testCommands`
@@ -62,6 +69,22 @@ Read the YAML context block. Fields you rely on:
    implementing.
 
 ## Execution
+
+### Step 0: Determine mode
+
+Read `priorPhase` and `iterationCount` from the context block.
+
+- `priorPhase` is `"code-review"` → **review-rework mode**. A reviewer requested
+  changes. Skip Steps 1–9 and follow **Rework modes → Review-rework** below.
+- `priorPhase` is `"testing"` → **test-rework mode**. Tests failed. Skip
+  Steps 1–9 and follow **Rework modes → Test-rework** below.
+- anything else (`null`, `"spec-review"`, `"blocked"`, …) → **fresh-write
+  mode**. Continue to Step 1.
+
+`iterationCount` is the rework round. When `iterationCount >= maxIterations`,
+this is the last automated attempt before the orchestrator escalates to human
+review — be decisive: fix what you reasonably can, push back clearly on the
+rest, do not stall.
 
 ### Step 1: Verify the spec exists
 
@@ -197,6 +220,75 @@ and PR number atomically.
 
 One line: branch, PR number, file count, build + test status. This becomes
 `priorContext` for the reviewer.
+
+## Rework modes
+
+Step 0 routes here instead of Steps 1–9 when the coder is re-entered after a
+failed review or test. The branch, worktree, and PR from the original coding
+round already exist — refresh and reuse them. **Never open a new PR**; pushing
+to the existing branch updates the open PR. `worktree_path` and `bare_base` are
+computed exactly as in Step 2.
+
+### Review-rework (`priorPhase` is `code-review`)
+
+A reviewer requested changes. Address them.
+
+1. Refresh the worktree:
+
+   ```
+   git -C "${worktree_path}" fetch origin "${bare_base}"
+   git -C "${worktree_path}" rebase "${baseBranch}"
+   ```
+
+2. Fetch the latest review and read its `body` (the reviewer's report, with a
+   `## Critical Issues (Blockers)` section):
+
+   ```
+   redqueen pr reviews "${prNumber}" --latest
+   ```
+
+3. For each blocker, do exactly one of:
+   - **Fix it** (the default) — make the change the reviewer asked for.
+   - **Push back** — only when the blocker is wrong: it demands defensive code
+     for a case that cannot occur, a hypothetical-future abstraction, or a
+     style change that contradicts `.redqueen/references/coding-standards.md`
+     or `CLAUDE.md`. Never silently ignore a blocker.
+
+   Apply non-blocking improvements only when quick and clearly correct.
+
+4. If you pushed back on anything, post one PR comment summarizing it so the
+   next review pass and the human gate see your reasoning:
+
+   ```
+   cat <<'EOF' | redqueen pr comment "${prNumber}"
+   ## Rework response
+   Addressed: <blockers fixed>.
+   Pushed back: <blocker> — <why>.
+   EOF
+   ```
+
+5. Build, test, commit, and push as in Steps 5–7. Do not create a PR.
+6. Your stdout summary: blockers fixed, blockers pushed back, build + test
+   status. Exit 0.
+
+### Test-rework (`priorPhase` is `testing`)
+
+Tests failed in the tester phase. Reproduce locally — your local run is
+authoritative — then fix.
+
+1. Refresh the worktree (same commands as Review-rework step 1).
+2. Re-run the build and targeted tests locally:
+   - Build: `module.buildCommand` if module is non-null, else `buildCommands`.
+   - Test: `module.testCommandTargeted ?? testCommands`.
+
+   The failure the tester reported should reproduce. Failures that reach you
+   are real and reproducible — the tester routes infrastructure and flaky
+   failures to Blocked, not to coding.
+
+3. Fix the cause. Re-run build + targeted tests until both are green.
+4. Commit and push as in Steps 6–7. Do not create a PR.
+5. Your stdout summary: what failed, what you changed, build + test status.
+   Exit 0.
 
 ## Blocked path
 

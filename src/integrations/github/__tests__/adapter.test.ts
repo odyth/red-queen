@@ -231,6 +231,56 @@ describe("GitHubSourceControlAdapter", () => {
     expect(comments[0]?.author).toBe("alice");
   });
 
+  it("getReviews maps reviews and normalizes state", async () => {
+    fake.setPaginate(() => [
+      {
+        id: 1,
+        user: { login: "bot" },
+        body: "first pass",
+        state: "COMMENTED",
+        submitted_at: "2026-01-01T00:00:00Z",
+      },
+      {
+        id: 2,
+        user: { login: "bot" },
+        body: "please fix",
+        state: "CHANGES_REQUESTED",
+        submitted_at: "2026-01-02T00:00:00Z",
+      },
+      { id: 3, user: null, body: "", state: "DISMISSED", submitted_at: null },
+    ]);
+    const reviews = await adapter.getReviews(5);
+    expect(reviews).toHaveLength(3);
+    expect(reviews[0]).toEqual({
+      id: "1",
+      author: "bot",
+      body: "first pass",
+      state: "COMMENTED",
+      submittedAt: "2026-01-01T00:00:00Z",
+    });
+    expect(reviews[1]?.state).toBe("CHANGES_REQUESTED");
+    // DISMISSED and any non-actionable state collapse to COMMENTED; null user → "unknown".
+    expect(reviews[2]).toEqual({
+      id: "3",
+      author: "unknown",
+      body: "",
+      state: "COMMENTED",
+      submittedAt: "",
+    });
+  });
+
+  it("postPrComment posts an issue comment on the PR", async () => {
+    let called = false;
+    fake.add("createComment", (args) => {
+      called = true;
+      expect(args.issue_number).toBe(5);
+      expect(args.body).toBe("## Test Results\nbuild: pass");
+      return {};
+    });
+    await adapter.postPrComment(5, "## Test Results\nbuild: pass");
+    expect(called).toBe(true);
+  });
+
   it("getReviewThreads paginates and filters resolved by default", async () => {
     let calls = 0;
     fake.setGraphql((_query, vars) => {

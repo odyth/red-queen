@@ -32,7 +32,9 @@ const PhaseDefinitionSchema = z
     maxIterations: z.number().int().positive().optional(),
     escalateTo: z.string().optional(),
     assignTo: z.enum(["ai", "human"]),
+    iterationCounter: z.enum(["review", "feedback", "none"]).optional(),
     requiresPr: z.boolean().optional(),
+    resetReviewIterationsOnPass: z.boolean().optional(),
   })
   .strict();
 

@@ -123,20 +123,6 @@ function writeSkill(name: string): void {
   writeFileSync(join(dir, "SKILL.md"), `# ${name}\n`);
 }
 
-// Worker prompt is "Read and follow <tempPath> exactly." — pull the rendered
-// skill body out of that temp file so tests can branch on YAML context fields.
-function readPromptBody(prompt: string): string {
-  const match = /^Read and follow (.+) exactly\.$/.exec(prompt.trim());
-  if (match === null) {
-    return prompt;
-  }
-  try {
-    return readFileSync(match[1] ?? "", "utf8");
-  } catch {
-    return prompt;
-  }
-}
-
 async function runUntil(
   h: Harness,
   predicate: () => boolean,
@@ -161,6 +147,22 @@ async function runUntilAfterRuns(h: Harness, count: number, maxMs = 2000): Promi
   await runUntil(h, () => h.runs.length >= count, { maxMs });
 }
 
+// The orchestrator writes the rendered skill prompt (the YAML context block) to a
+// temp file and only passes the worker a "Read and follow <path> exactly." string.
+// The file still exists while the worker runs, so read it back to inspect context.
+function readDispatchedPrompt(opts: WorkerOptions): string | null {
+  const match = /Read and follow (.+) exactly\./.exec(opts.prompt);
+  const path = match?.[1];
+  if (path === undefined) {
+    return null;
+  }
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+}
+
 let currentHarness: Harness | null = null;
 
 describe("RedQueen orchestrator", () => {
@@ -172,7 +174,6 @@ describe("RedQueen orchestrator", () => {
     mkdirSync(skillsDir, { recursive: true });
     // Write SKILL.md for every skill referenced by default phases
     writeSkill("prompt-writer");
-    writeSkill("planning-review");
     writeSkill("coder");
     writeSkill("reviewer");
     writeSkill("tester");
@@ -227,6 +228,102 @@ describe("RedQueen orchestrator", () => {
     expect(phasesSeen[1]).toBe("code-review");
   });
 
+  it("dispatches coding as review-rework after code-review fails", async () => {
+    const prompts: string[] = [];
+    const h = setupHarness((opts) => {
+      const content = readDispatchedPrompt(opts);
+      if (content !== null) {
+        prompts.push(content);
+      }
+      return Promise.resolve({
+        success: false,
+        exitCode: 1,
+        elapsed: 0,
+        summary: "",
+        error: "blockers",
+        usage: null,
+      });
+    });
+    h.pipelineState.create("PROJ-RW1", "code-review");
+    h.issueTracker.phases.set("PROJ-RW1", "code-review");
+    h.queue.enqueue({ type: "code-review", issueId: "PROJ-RW1" });
+
+    await runUntil(
+      h,
+      () =>
+        h.pipelineState.get("PROJ-RW1")?.currentPhase === "coding" &&
+        prompts.some((c) => c.includes("phaseName: coding")),
+    );
+
+    const record = h.pipelineState.get("PROJ-RW1");
+    expect(record?.currentPhase).toBe("coding");
+    expect(record?.priorPhase).toBe("code-review");
+    expect(record?.reviewIterations).toBe(1);
+
+    // The coder dispatch must carry the rework signal and the correct round.
+    const codingPrompt = prompts.find((c) => c.includes("phaseName: coding"));
+    expect(codingPrompt).toContain("priorPhase: code-review");
+    expect(codingPrompt).toContain("iterationCount: 1");
+  });
+
+  it("dispatches coding as test-rework after testing fails", async () => {
+    const prompts: string[] = [];
+    const h = setupHarness((opts) => {
+      const content = readDispatchedPrompt(opts);
+      if (content !== null) {
+        prompts.push(content);
+      }
+      return Promise.resolve({
+        success: false,
+        exitCode: 1,
+        elapsed: 0,
+        summary: "",
+        error: "tests failed",
+        usage: null,
+      });
+    });
+    h.pipelineState.create("PROJ-RW2", "testing");
+    h.issueTracker.phases.set("PROJ-RW2", "testing");
+    h.queue.enqueue({ type: "testing", issueId: "PROJ-RW2" });
+
+    await runUntil(
+      h,
+      () =>
+        h.pipelineState.get("PROJ-RW2")?.currentPhase === "coding" &&
+        prompts.some((c) => c.includes("phaseName: coding")),
+    );
+
+    expect(h.pipelineState.get("PROJ-RW2")?.priorPhase).toBe("testing");
+    const codingPrompt = prompts.find((c) => c.includes("phaseName: coding"));
+    expect(codingPrompt).toContain("priorPhase: testing");
+  });
+
+  it("dispatches a fresh coding task with priorPhase null", async () => {
+    const prompts: string[] = [];
+    const h = setupHarness((opts) => {
+      const content = readDispatchedPrompt(opts);
+      if (content !== null) {
+        prompts.push(content);
+      }
+      return Promise.resolve({
+        success: false,
+        exitCode: 1,
+        elapsed: 0,
+        summary: "",
+        error: "stop cascade",
+        usage: null,
+      });
+    });
+    h.pipelineState.create("PROJ-RW3", "coding");
+    h.issueTracker.phases.set("PROJ-RW3", "coding");
+    h.queue.enqueue({ type: "coding", issueId: "PROJ-RW3" });
+
+    await runUntil(h, () => prompts.some((c) => c.includes("phaseName: coding")));
+
+    const codingPrompt = prompts.find((c) => c.includes("phaseName: coding"));
+    expect(codingPrompt).toContain("priorPhase: null");
+  });
+
   it("skips stale task when issue is at human gate", async () => {
     const h = setupHarness(() =>
       Promise.resolve({
@@ -273,6 +370,35 @@ describe("RedQueen orchestrator", () => {
     expect(attempts).toBe(3);
   });
 
+  it("routes code-review failure straight to coding without crash-retries", async () => {
+    const prompts: string[] = [];
+    const h = setupHarness((opts) => {
+      const content = readDispatchedPrompt(opts);
+      if (content !== null) {
+        prompts.push(content);
+      }
+      return Promise.resolve({
+        success: false,
+        exitCode: 1,
+        elapsed: 0,
+        summary: "",
+        error: "blockers",
+        usage: null,
+      });
+    });
+    h.pipelineState.create("PROJ-NR", "code-review");
+    h.issueTracker.phases.set("PROJ-NR", "code-review");
+    h.queue.enqueue({ type: "code-review", issueId: "PROJ-NR" });
+
+    await runUntil(h, () => prompts.some((c) => c.includes("phaseName: coding")));
+
+    // maxRetries is 2, but code-review opts out of crash-retries: a request-changes
+    // exit dispatches the reviewer exactly once, then routes to coding for rework.
+    const reviewRuns = prompts.filter((c) => c.includes("phaseName: code-review")).length;
+    expect(reviewRuns).toBe(1);
+    expect(h.pipelineState.get("PROJ-NR")?.currentPhase).toBe("coding");
+  });
+
   it("respects agent-changed phase", async () => {
     let runCount = 0;
     const h = setupHarness(() => {
@@ -310,8 +436,7 @@ describe("RedQueen orchestrator", () => {
   it("processes new-ticket tasks without a worker", async () => {
     // Snapshot tracker state on the FIRST worker invocation — at that point
     // new-ticket is complete and we're still at spec-writing+ai (the worker
-    // hasn't advanced the phase yet). With plan-review now sitting between
-    // spec-writing and spec-review, subsequent worker runs would overwrite
+    // hasn't advanced the phase yet). Subsequent worker runs would overwrite
     // the snapshot, so we freeze it after the first capture.
     const snapshot: { phase: string | null; assignment: string | null } = {
       phase: null,
@@ -367,9 +492,8 @@ describe("RedQueen orchestrator", () => {
   });
 
   it("assigns to human when advancing to human gate", async () => {
-    // spec-writing -> plan-review -> spec-review (human). Both automated
-    // workers succeed; the default config leaves skipSpecReviewIfReady off
-    // so the pipeline parks at the spec-review human gate either way.
+    // spec-writing -> spec-review (human). spec-writing succeeds and the
+    // orchestrator parks the ticket at the spec-review human gate.
     const h = setupHarness(() =>
       Promise.resolve({
         success: true,
@@ -390,177 +514,93 @@ describe("RedQueen orchestrator", () => {
     expect(h.queue.hasOpenTask("PROJ-1", "spec-review")).toBe(false);
   });
 
-  it("plan-review clean pass with skipSpecReviewIfReady=false still parks at spec-review", async () => {
+  it("skipSpecReviewIfReady: skips spec-review gate when 0 open questions", async () => {
+    // First worker run (spec-writing) succeeds — the rest fail to stop the
+    // cascade so the ticket parks at whatever phase the skip-gate logic
+    // landed it in.
+    let runCount = 0;
     const h = setupHarness(
-      (opts) => {
-        // Simulate the planning-review skill writing a clean verdict before exit.
-        if (readPromptBody(opts.prompt).includes("phaseName: plan-review")) {
-          h.pipelineState.setPlanReviewVerdict("PROJ-R1", {
-            verdict: "approve",
-            rating: 9,
-            blockers: 0,
-            openQuestions: 0,
-            recordedAt: "2026-05-07T00:00:00.000Z",
+      () => {
+        runCount += 1;
+        if (runCount === 1) {
+          return Promise.resolve({
+            success: true,
+            exitCode: 0,
+            elapsed: 1,
+            summary: "spec written",
+            error: null,
           });
         }
         return Promise.resolve({
+          success: false,
+          exitCode: 1,
+          elapsed: 1,
+          summary: "",
+          error: "stop cascade",
+        });
+      },
+      { skipSpecReviewIfReady: true },
+    );
+    h.pipelineState.create("PROJ-SKIP", "spec-writing");
+    h.pipelineState.setOpenQuestionCount("PROJ-SKIP", 0);
+    h.issueTracker.phases.set("PROJ-SKIP", "spec-writing");
+    h.queue.enqueue({ type: "spec-writing", issueId: "PROJ-SKIP" });
+
+    await runUntil(h, () => h.issueTracker.calls.includes("setPhase:PROJ-SKIP:coding"));
+
+    // Skipped straight from spec-writing to coding; spec-review never set.
+    expect(h.issueTracker.calls).toContain("setPhase:PROJ-SKIP:coding");
+    expect(h.issueTracker.calls).not.toContain("setPhase:PROJ-SKIP:spec-review");
+    // The count is consumed and cleared so a stale value can't fire again.
+    expect(h.pipelineState.get("PROJ-SKIP")?.openQuestionCount).toBeNull();
+  });
+
+  it("skipSpecReviewIfReady: holds at spec-review when there are open questions", async () => {
+    const h = setupHarness(
+      () =>
+        Promise.resolve({
           success: true,
           exitCode: 0,
           elapsed: 1,
-          summary: "done",
+          summary: "spec written",
           error: null,
-        });
-      },
+        }),
+      { skipSpecReviewIfReady: true },
+    );
+    h.pipelineState.create("PROJ-HOLD", "spec-writing");
+    h.pipelineState.setOpenQuestionCount("PROJ-HOLD", 2);
+    h.issueTracker.phases.set("PROJ-HOLD", "spec-writing");
+    h.queue.enqueue({ type: "spec-writing", issueId: "PROJ-HOLD" });
+
+    await runUntil(h, () => h.issueTracker.assignments.get("PROJ-HOLD") === "human");
+
+    expect(h.issueTracker.phases.get("PROJ-HOLD")).toBe("spec-review");
+    expect(h.issueTracker.assignments.get("PROJ-HOLD")).toBe("human");
+    // Count survives — it was not consumed for routing.
+    expect(h.pipelineState.get("PROJ-HOLD")?.openQuestionCount).toBe(2);
+  });
+
+  it("skipSpecReviewIfReady=false: never skips even when 0 open questions", async () => {
+    const h = setupHarness(
+      () =>
+        Promise.resolve({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "spec written",
+          error: null,
+        }),
       { skipSpecReviewIfReady: false },
     );
-    h.pipelineState.create("PROJ-R1", "plan-review");
-    h.issueTracker.phases.set("PROJ-R1", "plan-review");
-    h.queue.enqueue({ type: "plan-review", issueId: "PROJ-R1" });
+    h.pipelineState.create("PROJ-OFF", "spec-writing");
+    h.pipelineState.setOpenQuestionCount("PROJ-OFF", 0);
+    h.issueTracker.phases.set("PROJ-OFF", "spec-writing");
+    h.queue.enqueue({ type: "spec-writing", issueId: "PROJ-OFF" });
 
-    await runUntil(h, () => h.issueTracker.phases.get("PROJ-R1") === "spec-review");
+    await runUntil(h, () => h.issueTracker.assignments.get("PROJ-OFF") === "human");
 
-    expect(h.issueTracker.phases.get("PROJ-R1")).toBe("spec-review");
-    expect(h.issueTracker.assignments.get("PROJ-R1")).toBe("human");
-  });
-
-  it("plan-review clean pass with skipSpecReviewIfReady=true jumps to coding", async () => {
-    // Fail on phases past coding so the harness parks once we've verified the
-    // spec-review human gate was skipped — otherwise the automated tail (code
-    // review → testing → human-review) would chase the ticket past coding.
-    const h = setupHarness(
-      (opts) => {
-        const body = readPromptBody(opts.prompt);
-        if (body.includes("phaseName: plan-review")) {
-          h.pipelineState.setPlanReviewVerdict("PROJ-R2", {
-            verdict: "approve",
-            rating: 9,
-            blockers: 0,
-            openQuestions: 0,
-            recordedAt: "2026-05-07T00:00:00.000Z",
-          });
-        }
-        if (body.includes("phaseName: coding")) {
-          return Promise.resolve({
-            success: false,
-            exitCode: 1,
-            elapsed: 1,
-            summary: "",
-            error: "stop cascade",
-          });
-        }
-        return Promise.resolve({
-          success: true,
-          exitCode: 0,
-          elapsed: 1,
-          summary: "done",
-          error: null,
-        });
-      },
-      { skipSpecReviewIfReady: true },
-    );
-    h.pipelineState.create("PROJ-R2", "plan-review");
-    h.issueTracker.phases.set("PROJ-R2", "plan-review");
-    h.queue.enqueue({ type: "plan-review", issueId: "PROJ-R2" });
-
-    await runUntil(h, () => h.issueTracker.phases.get("PROJ-R2") === "coding");
-
-    expect(h.issueTracker.phases.get("PROJ-R2")).toBe("coding");
-    expect(h.issueTracker.assignments.get("PROJ-R2")).toBe("ai");
-    // Confirm we never reached the spec-review human gate.
-    expect(h.issueTracker.calls).not.toContain("setPhase:PROJ-R2:spec-review");
-  });
-
-  it("plan-review rating below 8 does not auto-skip even when enabled", async () => {
-    const h = setupHarness(
-      (opts) => {
-        if (readPromptBody(opts.prompt).includes("phaseName: plan-review")) {
-          h.pipelineState.setPlanReviewVerdict("PROJ-R3", {
-            verdict: "approve",
-            rating: 7,
-            blockers: 0,
-            openQuestions: 0,
-            recordedAt: "2026-05-07T00:00:00.000Z",
-          });
-        }
-        return Promise.resolve({
-          success: true,
-          exitCode: 0,
-          elapsed: 1,
-          summary: "done",
-          error: null,
-        });
-      },
-      { skipSpecReviewIfReady: true },
-    );
-    h.pipelineState.create("PROJ-R3", "plan-review");
-    h.issueTracker.phases.set("PROJ-R3", "plan-review");
-    h.queue.enqueue({ type: "plan-review", issueId: "PROJ-R3" });
-
-    await runUntil(h, () => h.issueTracker.phases.get("PROJ-R3") === "spec-review");
-
-    expect(h.issueTracker.phases.get("PROJ-R3")).toBe("spec-review");
-    expect(h.issueTracker.assignments.get("PROJ-R3")).toBe("human");
-  });
-
-  it("plan-review with open questions does not auto-skip even when enabled", async () => {
-    const h = setupHarness(
-      (opts) => {
-        if (readPromptBody(opts.prompt).includes("phaseName: plan-review")) {
-          h.pipelineState.setPlanReviewVerdict("PROJ-R4", {
-            verdict: "approve",
-            rating: 9,
-            blockers: 0,
-            openQuestions: 2,
-            recordedAt: "2026-05-07T00:00:00.000Z",
-          });
-        }
-        return Promise.resolve({
-          success: true,
-          exitCode: 0,
-          elapsed: 1,
-          summary: "done",
-          error: null,
-        });
-      },
-      { skipSpecReviewIfReady: true },
-    );
-    h.pipelineState.create("PROJ-R4", "plan-review");
-    h.issueTracker.phases.set("PROJ-R4", "plan-review");
-    h.queue.enqueue({ type: "plan-review", issueId: "PROJ-R4" });
-
-    await runUntil(h, () => h.issueTracker.phases.get("PROJ-R4") === "spec-review");
-
-    expect(h.issueTracker.phases.get("PROJ-R4")).toBe("spec-review");
-    expect(h.issueTracker.assignments.get("PROJ-R4")).toBe("human");
-  });
-
-  it("plan-review clears any stale verdict before dispatching the skill", async () => {
-    const h = setupHarness(() =>
-      Promise.resolve({
-        success: false,
-        exitCode: 1,
-        elapsed: 1,
-        summary: "",
-        error: "no verdict recorded",
-      }),
-    );
-    h.pipelineState.create("PROJ-R5", "plan-review");
-    h.issueTracker.phases.set("PROJ-R5", "plan-review");
-    // Pretend a previous run left a stale clean verdict behind. The dispatch
-    // cycle must wipe it before running the worker so a crashed skill can't
-    // coast through on stale state.
-    h.pipelineState.setPlanReviewVerdict("PROJ-R5", {
-      verdict: "approve",
-      rating: 10,
-      blockers: 0,
-      openQuestions: 0,
-      recordedAt: "2026-05-07T00:00:00.000Z",
-    });
-    h.queue.enqueue({ type: "plan-review", issueId: "PROJ-R5" });
-
-    await runUntilAfterRuns(h, 1);
-
-    expect(h.pipelineState.get("PROJ-R5")?.planReviewVerdict).toBeNull();
+    expect(h.issueTracker.phases.get("PROJ-OFF")).toBe("spec-review");
+    expect(h.issueTracker.assignments.get("PROJ-OFF")).toBe("human");
   });
 
   it("fails gracefully when skill file is missing", async () => {
@@ -1107,6 +1147,10 @@ describe("RedQueen orchestrator", () => {
   });
 
   it("Gap 3: does not reset when leaving an automated phase", async () => {
+    // Use code-review → testing pairing (both automated) with a passing
+    // worker on testing. Gate-leave reset must not fire (prior phase is
+    // automated) and the Alice-parity code-review-pass reset isn't in scope
+    // either (the worker isn't running code-review here).
     const h = setupHarness(() =>
       Promise.resolve({
         success: true,
@@ -1116,17 +1160,89 @@ describe("RedQueen orchestrator", () => {
         error: null,
       }),
     );
-    // Automated → automated (coding → code-review). Seed counters; they must NOT reset.
-    h.pipelineState.create("PROJ-302", "coding");
+    h.pipelineState.create("PROJ-302", "code-review");
     h.pipelineState.incrementReviewIterations("PROJ-302");
     h.pipelineState.incrementReviewIterations("PROJ-302");
-    h.issueTracker.phases.set("PROJ-302", "code-review");
-    h.queue.enqueue({ type: "code-review", issueId: "PROJ-302" });
+    h.issueTracker.phases.set("PROJ-302", "testing");
+    h.queue.enqueue({ type: "testing", issueId: "PROJ-302" });
 
     await runUntilAfterRuns(h, 1);
 
     const record = h.pipelineState.get("PROJ-302");
     expect(record?.reviewIterations).toBe(2);
+  });
+
+  it("Alice parity: coding pass does NOT reset reviewIterations on entry to code-review", async () => {
+    // Only resetReviewIterationsOnPass=true on a SUCCESSFUL run should clear
+    // the counter. Entering code-review from a coding pass must preserve the
+    // count so the next review attempt is the (N+1)th.
+    //
+    // Strategy: coding succeeds → enters code-review with reviewIterations=3;
+    // code-review then exhausts its retry budget and fails → handleFailure
+    // increments to 4 → 4 > maxIterations=3 → escalates to human-review.
+    // If entry-to-code-review had reset to 0, the failure increment would
+    // land at 1, escalation wouldn't fire, and the pipeline would fall back
+    // to coding (which has no onFail) and stall.
+    let runCount = 0;
+    const h = setupHarness(() => {
+      runCount += 1;
+      if (runCount === 1) {
+        return Promise.resolve({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "code written",
+          error: null,
+        });
+      }
+      return Promise.resolve({
+        success: false,
+        exitCode: 1,
+        elapsed: 1,
+        summary: "review failed",
+        error: "blockers found",
+      });
+    });
+    h.pipelineState.create("PROJ-304", "coding");
+    h.pipelineState.incrementReviewIterations("PROJ-304");
+    h.pipelineState.incrementReviewIterations("PROJ-304");
+    h.pipelineState.incrementReviewIterations("PROJ-304");
+    h.issueTracker.phases.set("PROJ-304", "coding");
+    h.queue.enqueue({ type: "coding", issueId: "PROJ-304" });
+
+    await runUntil(h, () => h.pipelineState.get("PROJ-304")?.currentPhase === "human-review", {
+      maxMs: 5000,
+    });
+
+    const record = h.pipelineState.get("PROJ-304");
+    expect(record?.currentPhase).toBe("human-review");
+    expect(record?.reviewIterations).toBe(4);
+  });
+
+  it("Alice parity: code-review pass resets reviewIterations but not feedbackIterations", async () => {
+    const h = setupHarness(() =>
+      Promise.resolve({
+        success: true,
+        exitCode: 0,
+        elapsed: 1,
+        summary: "approved",
+        error: null,
+      }),
+    );
+    h.pipelineState.create("PROJ-303", "code-review");
+    h.pipelineState.incrementReviewIterations("PROJ-303");
+    h.pipelineState.incrementReviewIterations("PROJ-303");
+    h.pipelineState.incrementFeedbackIterations("PROJ-303");
+    h.pipelineState.incrementFeedbackIterations("PROJ-303");
+    h.issueTracker.phases.set("PROJ-303", "code-review");
+    h.queue.enqueue({ type: "code-review", issueId: "PROJ-303" });
+
+    await runUntilAfterRuns(h, 1);
+
+    const record = h.pipelineState.get("PROJ-303");
+    expect(record?.reviewIterations).toBe(0);
+    // feedback_iterations is for spec rework — unrelated to code-review pass.
+    expect(record?.feedbackIterations).toBe(2);
   });
 
   it("Gap 4: respectAgentPhaseChange to human-gate calls assignToHuman", async () => {

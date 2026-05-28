@@ -356,13 +356,6 @@ export class RedQueen {
       return;
     }
 
-    // plan-review's forward edge reads this verdict from pipeline state. Clear
-    // stale values from previous attempts up front so a skill that forgets to
-    // call `redqueen plan verdict` can't leak a prior verdict forward.
-    if (phaseName === "plan-review") {
-      this.deps.pipelineState.clearPlanReviewVerdict(task.issueId);
-    }
-
     await this.dispatchWorkerForTask(task, phase);
   }
 
@@ -829,6 +822,15 @@ export class RedQueen {
       metadata: { taskId: task.id, elapsed: result.elapsed },
     });
 
+    // Alice parity: review_iterations measures pressure within a single
+    // review loop. Once the reviewer phase passes, that loop is closed —
+    // a downstream testing failure should re-enter the loop with a fresh
+    // budget, not the count accumulated from this round. Leave
+    // feedback_iterations alone: it tracks the orthogonal spec-rework loop.
+    if (phase.resetReviewIterationsOnPass === true) {
+      this.deps.pipelineState.resetReviewIterations(issueId);
+    }
+
     if (phase.requiresPr === true) {
       const record = this.deps.pipelineState.get(issueId);
       const prNumber = record?.prNumber ?? null;
@@ -902,43 +904,8 @@ export class RedQueen {
     }
   }
 
-  // Plan-review is the only phase whose forward edge depends on a skill-emitted
-  // verdict. If the skill logged a clean pass (rating >= 8, zero blockers, zero
-  // open questions) AND the user opted into skipping the human gate, we jump
-  // straight to coding. Otherwise we fall through to phase.next (spec-review).
-  private resolvePlanReviewTarget(issueId: string, phase: PhaseDefinition, task: Task): string {
-    const record = this.deps.pipelineState.get(issueId);
-    const verdict = record?.planReviewVerdict ?? null;
-    const skipEnabled = this.deps.runtime.config.pipeline.skipSpecReviewIfReady;
-    const canSkip =
-      skipEnabled === true &&
-      verdict !== null &&
-      verdict.verdict === "approve" &&
-      verdict.rating >= 8 &&
-      verdict.blockers === 0 &&
-      verdict.openQuestions === 0;
-    if (canSkip === false) {
-      return phase.next;
-    }
-    this.deps.audit.log({
-      component: "orchestrator",
-      issueId,
-      message: `plan-review clean (${String(verdict.rating)}/10, 0 blockers, 0 open questions) — skipping spec-review gate`,
-      metadata: {
-        taskId: task.id,
-        rating: verdict.rating,
-        blockers: verdict.blockers,
-        openQuestions: verdict.openQuestions,
-      },
-    });
-    return "coding";
-  }
-
   private async advanceNormal(issueId: string, phase: PhaseDefinition, task: Task): Promise<void> {
     let nextPhaseName = phase.next;
-    if (phase.name === "plan-review") {
-      nextPhaseName = this.resolvePlanReviewTarget(issueId, phase, task);
-    }
     if (nextPhaseName === "done") {
       this.deps.pipelineState.updatePhase(issueId, "done");
       this.deps.audit.log({
@@ -950,7 +917,7 @@ export class RedQueen {
       return;
     }
 
-    const nextPhase = this.deps.runtime.phaseGraph.getPhase(nextPhaseName);
+    let nextPhase = this.deps.runtime.phaseGraph.getPhase(nextPhaseName);
     if (nextPhase === undefined) {
       this.deps.audit.log({
         component: "orchestrator",
@@ -959,6 +926,55 @@ export class RedQueen {
         metadata: { taskId: task.id, currentPhase: phase.name },
       });
       return;
+    }
+
+    // skipSpecReviewIfReady fast-path: when the just-completed phase recorded
+    // zero open questions via `redqueen spec meta` and the global flag is on,
+    // skip a human-gate next-hop and route straight to the gate's own next.
+    // The count is treated as a single-use signal — cleared after consumption
+    // so a stale value from a previous cycle can't fire it again.
+    if (
+      this.deps.runtime.config.pipeline.skipSpecReviewIfReady === true &&
+      nextPhase.type === "human-gate"
+    ) {
+      const record = this.deps.pipelineState.get(issueId);
+      if (record?.openQuestionCount === 0) {
+        const skipTarget = nextPhase.next;
+        this.deps.audit.log({
+          component: "orchestrator",
+          issueId,
+          message: `Skipping human gate ${nextPhaseName} — 0 open questions and skipSpecReviewIfReady is on`,
+          metadata: {
+            taskId: task.id,
+            fromPhase: phase.name,
+            skippedGate: nextPhaseName,
+            advancingTo: skipTarget,
+          },
+        });
+        this.deps.pipelineState.setOpenQuestionCount(issueId, null);
+        if (skipTarget === "done") {
+          this.deps.pipelineState.updatePhase(issueId, "done");
+          this.deps.audit.log({
+            component: "orchestrator",
+            issueId,
+            message: `Pipeline complete`,
+            metadata: { taskId: task.id },
+          });
+          return;
+        }
+        const resolved = this.deps.runtime.phaseGraph.getPhase(skipTarget);
+        if (resolved === undefined) {
+          this.deps.audit.log({
+            component: "orchestrator",
+            issueId,
+            message: `Skip target ${skipTarget} not found — stopping here`,
+            metadata: { taskId: task.id, skippedGate: nextPhaseName },
+          });
+          return;
+        }
+        nextPhaseName = skipTarget;
+        nextPhase = resolved;
+      }
     }
 
     try {
@@ -1060,7 +1076,8 @@ export class RedQueen {
     const priorRetries = typeof metadata.retries === "number" ? metadata.retries : 0;
     const nextRetries = priorRetries + 1;
 
-    if (nextRetries <= this.deps.runtime.config.pipeline.maxRetries) {
+    const retriesSkipped = phase.skipRetryOnFailure === true;
+    if (retriesSkipped === false && nextRetries <= this.deps.runtime.config.pipeline.maxRetries) {
       this.deps.queue.enqueue({
         type: task.type,
         issueId,

@@ -12,9 +12,12 @@ export async function cmdSpec(args: string[]): Promise<void> {
     case "set":
       await cmdSpecSet(rest);
       return;
+    case "meta":
+      await cmdSpecMeta(rest);
+      return;
     default:
       throw new CliError(
-        `Unknown 'spec' subcommand: ${subcommand ?? "(missing)"}. Valid: get, set.`,
+        `Unknown 'spec' subcommand: ${subcommand ?? "(missing)"}. Valid: get, set, meta.`,
       );
   }
 }
@@ -64,4 +67,44 @@ async function cmdSpecSet(args: string[]): Promise<void> {
   } finally {
     ctx.cleanup();
   }
+}
+
+function cmdSpecMeta(args: string[]): Promise<void> {
+  const { positionals, values } = parseArgs({
+    args,
+    options: {
+      "open-questions": { type: "string" },
+    },
+    allowPositionals: true,
+  });
+  const issueId = positionals[0];
+  if (issueId === undefined) {
+    throw new CliError("spec meta: <id> is required");
+  }
+  const raw = values["open-questions"];
+  if (raw === undefined) {
+    throw new CliError("spec meta: --open-questions <N> is required");
+  }
+  const count = Number.parseInt(raw, 10);
+  if (Number.isNaN(count) || count < 0 || String(count) !== raw.trim()) {
+    throw new CliError(`spec meta: --open-questions must be a non-negative integer, got "${raw}"`);
+  }
+  const ctx = loadCliContext();
+  try {
+    const existing = ctx.pipelineState.get(issueId);
+    if (existing === null) {
+      throw new CliError(`spec meta: no pipeline record for ${issueId} — run new-ticket first`);
+    }
+    ctx.pipelineState.setOpenQuestionCount(issueId, count);
+    ctx.audit.log({
+      component: "helper:spec",
+      issueId,
+      message: `Recorded open-question count: ${String(count)}`,
+      metadata: { openQuestionCount: count },
+    });
+    writeJson({ issueId, openQuestionCount: count });
+  } finally {
+    ctx.cleanup();
+  }
+  return Promise.resolve();
 }
