@@ -905,7 +905,7 @@ export class RedQueen {
   }
 
   private async advanceNormal(issueId: string, phase: PhaseDefinition, task: Task): Promise<void> {
-    const nextPhaseName = phase.next;
+    let nextPhaseName = phase.next;
     if (nextPhaseName === "done") {
       this.deps.pipelineState.updatePhase(issueId, "done");
       this.deps.audit.log({
@@ -917,7 +917,7 @@ export class RedQueen {
       return;
     }
 
-    const nextPhase = this.deps.runtime.phaseGraph.getPhase(nextPhaseName);
+    let nextPhase = this.deps.runtime.phaseGraph.getPhase(nextPhaseName);
     if (nextPhase === undefined) {
       this.deps.audit.log({
         component: "orchestrator",
@@ -926,6 +926,55 @@ export class RedQueen {
         metadata: { taskId: task.id, currentPhase: phase.name },
       });
       return;
+    }
+
+    // skipSpecReviewIfReady fast-path: when the just-completed phase recorded
+    // zero open questions via `redqueen spec meta` and the global flag is on,
+    // skip a human-gate next-hop and route straight to the gate's own next.
+    // The count is treated as a single-use signal — cleared after consumption
+    // so a stale value from a previous cycle can't fire it again.
+    if (
+      this.deps.runtime.config.pipeline.skipSpecReviewIfReady === true &&
+      nextPhase.type === "human-gate"
+    ) {
+      const record = this.deps.pipelineState.get(issueId);
+      if (record?.openQuestionCount === 0) {
+        const skipTarget = nextPhase.next;
+        this.deps.audit.log({
+          component: "orchestrator",
+          issueId,
+          message: `Skipping human gate ${nextPhaseName} — 0 open questions and skipSpecReviewIfReady is on`,
+          metadata: {
+            taskId: task.id,
+            fromPhase: phase.name,
+            skippedGate: nextPhaseName,
+            advancingTo: skipTarget,
+          },
+        });
+        this.deps.pipelineState.setOpenQuestionCount(issueId, null);
+        if (skipTarget === "done") {
+          this.deps.pipelineState.updatePhase(issueId, "done");
+          this.deps.audit.log({
+            component: "orchestrator",
+            issueId,
+            message: `Pipeline complete`,
+            metadata: { taskId: task.id },
+          });
+          return;
+        }
+        const resolved = this.deps.runtime.phaseGraph.getPhase(skipTarget);
+        if (resolved === undefined) {
+          this.deps.audit.log({
+            component: "orchestrator",
+            issueId,
+            message: `Skip target ${skipTarget} not found — stopping here`,
+            metadata: { taskId: task.id, skippedGate: nextPhaseName },
+          });
+          return;
+        }
+        nextPhaseName = skipTarget;
+        nextPhase = resolved;
+      }
     }
 
     try {

@@ -37,6 +37,7 @@ interface Harness {
 
 interface HarnessOptions {
   extra?: Partial<RedQueenDeps>;
+  skipSpecReviewIfReady?: boolean;
 }
 
 function setupHarness(
@@ -73,7 +74,7 @@ function setupHarness(
       stallThresholdMs: 60_000,
       reconcileInterval: 0,
       claudeBin: "/bin/sh",
-      skipSpecReviewIfReady: false,
+      skipSpecReviewIfReady: options.skipSpecReviewIfReady ?? false,
     },
   });
   const runtime = new RuntimeState(phaseGraph, config);
@@ -511,6 +512,95 @@ describe("RedQueen orchestrator", () => {
     expect(h.issueTracker.phases.get("PROJ-1")).toBe("spec-review");
     expect(h.issueTracker.assignments.get("PROJ-1")).toBe("human");
     expect(h.queue.hasOpenTask("PROJ-1", "spec-review")).toBe(false);
+  });
+
+  it("skipSpecReviewIfReady: skips spec-review gate when 0 open questions", async () => {
+    // First worker run (spec-writing) succeeds — the rest fail to stop the
+    // cascade so the ticket parks at whatever phase the skip-gate logic
+    // landed it in.
+    let runCount = 0;
+    const h = setupHarness(
+      () => {
+        runCount += 1;
+        if (runCount === 1) {
+          return Promise.resolve({
+            success: true,
+            exitCode: 0,
+            elapsed: 1,
+            summary: "spec written",
+            error: null,
+          });
+        }
+        return Promise.resolve({
+          success: false,
+          exitCode: 1,
+          elapsed: 1,
+          summary: "",
+          error: "stop cascade",
+        });
+      },
+      { skipSpecReviewIfReady: true },
+    );
+    h.pipelineState.create("PROJ-SKIP", "spec-writing");
+    h.pipelineState.setOpenQuestionCount("PROJ-SKIP", 0);
+    h.issueTracker.phases.set("PROJ-SKIP", "spec-writing");
+    h.queue.enqueue({ type: "spec-writing", issueId: "PROJ-SKIP" });
+
+    await runUntil(h, () => h.issueTracker.calls.includes("setPhase:PROJ-SKIP:coding"));
+
+    // Skipped straight from spec-writing to coding; spec-review never set.
+    expect(h.issueTracker.calls).toContain("setPhase:PROJ-SKIP:coding");
+    expect(h.issueTracker.calls).not.toContain("setPhase:PROJ-SKIP:spec-review");
+    // The count is consumed and cleared so a stale value can't fire again.
+    expect(h.pipelineState.get("PROJ-SKIP")?.openQuestionCount).toBeNull();
+  });
+
+  it("skipSpecReviewIfReady: holds at spec-review when there are open questions", async () => {
+    const h = setupHarness(
+      () =>
+        Promise.resolve({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "spec written",
+          error: null,
+        }),
+      { skipSpecReviewIfReady: true },
+    );
+    h.pipelineState.create("PROJ-HOLD", "spec-writing");
+    h.pipelineState.setOpenQuestionCount("PROJ-HOLD", 2);
+    h.issueTracker.phases.set("PROJ-HOLD", "spec-writing");
+    h.queue.enqueue({ type: "spec-writing", issueId: "PROJ-HOLD" });
+
+    await runUntil(h, () => h.issueTracker.assignments.get("PROJ-HOLD") === "human");
+
+    expect(h.issueTracker.phases.get("PROJ-HOLD")).toBe("spec-review");
+    expect(h.issueTracker.assignments.get("PROJ-HOLD")).toBe("human");
+    // Count survives — it was not consumed for routing.
+    expect(h.pipelineState.get("PROJ-HOLD")?.openQuestionCount).toBe(2);
+  });
+
+  it("skipSpecReviewIfReady=false: never skips even when 0 open questions", async () => {
+    const h = setupHarness(
+      () =>
+        Promise.resolve({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "spec written",
+          error: null,
+        }),
+      { skipSpecReviewIfReady: false },
+    );
+    h.pipelineState.create("PROJ-OFF", "spec-writing");
+    h.pipelineState.setOpenQuestionCount("PROJ-OFF", 0);
+    h.issueTracker.phases.set("PROJ-OFF", "spec-writing");
+    h.queue.enqueue({ type: "spec-writing", issueId: "PROJ-OFF" });
+
+    await runUntil(h, () => h.issueTracker.assignments.get("PROJ-OFF") === "human");
+
+    expect(h.issueTracker.phases.get("PROJ-OFF")).toBe("spec-review");
+    expect(h.issueTracker.assignments.get("PROJ-OFF")).toBe("human");
   });
 
   it("fails gracefully when skill file is missing", async () => {

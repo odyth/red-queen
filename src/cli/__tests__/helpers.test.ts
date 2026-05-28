@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { cmdIssue } from "../issue.js";
 import { cmdPipeline } from "../pipeline.js";
 import { cmdPr } from "../pr.js";
+import { cmdSpec } from "../spec.js";
 import { cmdSubIter } from "../sub-iter.js";
 
 let tmp: string;
@@ -224,5 +225,62 @@ describe("cmdPr comments", () => {
     const out = stdoutCapture.join("");
     const parsed = JSON.parse(out) as unknown;
     expect(Array.isArray(parsed)).toBe(true);
+  });
+});
+
+describe("cmdSpec meta", () => {
+  it("records the open-question count on the pipeline record", async () => {
+    await cmdPipeline(["update", "META-1"]);
+    stdoutCapture = [];
+    await cmdSpec(["meta", "META-1", "--open-questions", "0"]);
+    const parsed = JSON.parse(stdoutCapture.join("")) as {
+      issueId: string;
+      openQuestionCount: number;
+    };
+    expect(parsed.issueId).toBe("META-1");
+    expect(parsed.openQuestionCount).toBe(0);
+
+    const { loadCliContext } = await import("../context.js");
+    const ctx = loadCliContext();
+    expect(ctx.pipelineState.get("META-1")?.openQuestionCount).toBe(0);
+    ctx.cleanup();
+  });
+
+  it("overwrites a previous value on subsequent runs", async () => {
+    await cmdPipeline(["update", "META-2"]);
+    await cmdSpec(["meta", "META-2", "--open-questions", "3"]);
+    stdoutCapture = [];
+    await cmdSpec(["meta", "META-2", "--open-questions", "0"]);
+    const parsed = JSON.parse(stdoutCapture.join("")) as { openQuestionCount: number };
+    expect(parsed.openQuestionCount).toBe(0);
+  });
+
+  it("errors when no pipeline record exists", async () => {
+    await expect(cmdSpec(["meta", "META-MISSING", "--open-questions", "0"])).rejects.toThrow(
+      /no pipeline record/,
+    );
+  });
+
+  it("errors without an issueId", async () => {
+    await expect(cmdSpec(["meta"])).rejects.toThrow(/<id>/);
+  });
+
+  it("errors without --open-questions", async () => {
+    await cmdPipeline(["update", "META-3"]);
+    await expect(cmdSpec(["meta", "META-3"])).rejects.toThrow(/open-questions/);
+  });
+
+  it("rejects a non-integer count", async () => {
+    await cmdPipeline(["update", "META-4"]);
+    await expect(cmdSpec(["meta", "META-4", "--open-questions", "abc"])).rejects.toThrow(
+      /non-negative integer/,
+    );
+  });
+
+  it("rejects a decimal count", async () => {
+    await cmdPipeline(["update", "META-5"]);
+    await expect(cmdSpec(["meta", "META-5", "--open-questions", "1.5"])).rejects.toThrow(
+      /non-negative integer/,
+    );
   });
 });

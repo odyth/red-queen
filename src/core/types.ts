@@ -155,6 +155,10 @@ export interface PipelineRecord {
   specContent: string | null;
   priorContext: string | null;
   delegatorAccountId: string | null;
+  // Set by the spec-writing skill via `redqueen spec meta`. Null on records
+  // that haven't run spec-writing yet (or on pre-migration rows). The
+  // orchestrator's skip-gate fast-path only fires on an explicit zero.
+  openQuestionCount: number | null;
   createdAt: string;
   updatedAt: string;
 }

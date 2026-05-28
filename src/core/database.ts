@@ -34,6 +34,7 @@ export const SCHEMA_SQL = `
     spec_content TEXT,
     prior_context TEXT,
     delegator_account_id TEXT,
+    open_question_count INTEGER,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -171,6 +172,18 @@ export class RedQueenDatabase {
         if (msg.includes("no such column") === false) {
           throw err;
         }
+      }
+    }
+
+    // open_question_count carries the spec-writing skill's count for the
+    // skip-gate fast-path. Null on fresh records / pre-migration rows; the
+    // orchestrator only consumes the value when it's a real zero.
+    try {
+      this.db.exec("ALTER TABLE pipeline_state ADD COLUMN open_question_count INTEGER");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("duplicate column") === false) {
+        throw err;
       }
     }
   }

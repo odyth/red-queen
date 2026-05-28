@@ -250,6 +250,41 @@ describe("PipelineStateStore", () => {
     const updated = store.updateBranchInfo("PROJ-1", {});
     expect(updated.issueId).toBe(record.issueId);
   });
+
+  it("creates with null openQuestionCount", () => {
+    const record = store.create("PROJ-1");
+    expect(record.openQuestionCount).toBeNull();
+  });
+
+  it("setOpenQuestionCount stores a value and reads it back", () => {
+    store.create("PROJ-1");
+    expect(store.setOpenQuestionCount("PROJ-1", 0)).toBe(true);
+    expect(store.get("PROJ-1")?.openQuestionCount).toBe(0);
+
+    expect(store.setOpenQuestionCount("PROJ-1", 5)).toBe(true);
+    expect(store.get("PROJ-1")?.openQuestionCount).toBe(5);
+  });
+
+  it("setOpenQuestionCount accepts null to clear", () => {
+    store.create("PROJ-1");
+    store.setOpenQuestionCount("PROJ-1", 3);
+    expect(store.setOpenQuestionCount("PROJ-1", null)).toBe(true);
+    expect(store.get("PROJ-1")?.openQuestionCount).toBeNull();
+  });
+
+  it("setOpenQuestionCount returns false for nonexistent issue", () => {
+    expect(store.setOpenQuestionCount("nope", 0)).toBe(false);
+  });
+
+  it("resetIterations also clears openQuestionCount", () => {
+    store.create("PROJ-1");
+    store.setOpenQuestionCount("PROJ-1", 0);
+    store.incrementReviewIterations("PROJ-1");
+    expect(store.resetIterations("PROJ-1")).toBe(true);
+    const record = store.get("PROJ-1");
+    expect(record?.reviewIterations).toBe(0);
+    expect(record?.openQuestionCount).toBeNull();
+  });
 });
 
 describe("OrchestratorStateStore", () => {

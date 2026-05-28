@@ -15,6 +15,7 @@ interface PipelineRow {
   spec_content: string | null;
   prior_context: string | null;
   delegator_account_id: string | null;
+  open_question_count: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -170,11 +171,15 @@ export class PipelineStateStore {
 
   resetIterations(issueId: string): boolean {
     const now = new Date().toISOString();
+    // open_question_count is also cleared: it's a per-cycle signal set by
+    // each spec-writing run, and a stale value left over from a previous
+    // gate visit would mislead the skip-gate router.
     const result = this.db
       .prepare(
         `UPDATE pipeline_state SET
            review_iterations = 0,
            feedback_iterations = 0,
+           open_question_count = NULL,
            updated_at = ?
          WHERE issue_id = ?`,
       )
@@ -213,6 +218,16 @@ export class PipelineStateStore {
         "UPDATE pipeline_state SET delegator_account_id = ?, updated_at = ? WHERE issue_id = ?",
       )
       .run(accountId, now, issueId);
+    return result.changes > 0;
+  }
+
+  setOpenQuestionCount(issueId: string, count: number | null): boolean {
+    const now = new Date().toISOString();
+    const result = this.db
+      .prepare(
+        "UPDATE pipeline_state SET open_question_count = ?, updated_at = ? WHERE issue_id = ?",
+      )
+      .run(count, now, issueId);
     return result.changes > 0;
   }
 
@@ -339,6 +354,7 @@ function toPipelineRecord(row: PipelineRow): PipelineRecord {
     specContent: row.spec_content,
     priorContext: row.prior_context,
     delegatorAccountId: row.delegator_account_id,
+    openQuestionCount: row.open_question_count,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

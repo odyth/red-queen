@@ -20,6 +20,7 @@ Helper commands (called by skills):
   issue attachments <id>      Download attachments (--dir <path>)
   spec get <id>               Print the stored spec
   spec set <id>               Set the spec (--body or stdin)
+  spec meta <id>              Record spec metadata (--open-questions <N>)
   pr create                   Create a PR (--issue --head --base --title, body via stdin)
   pr diff <number>            Print the PR diff
   pr checks <number>          Print CI check status (--wait <seconds>)
