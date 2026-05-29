@@ -19,6 +19,9 @@ export interface WorkerResult {
   summary: string;
   error: string | null;
   usage: RunUsage | null;
+  // Claude Code's own total_cost_usd for the run, when emitted. Present even on
+  // a Max subscription (the equivalent API list price). null when absent.
+  reportedCostUsd: number | null;
 }
 
 export interface WorkerOptions {
@@ -195,10 +198,10 @@ export function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       const elapsed = Math.round((Date.now() - startTime) / 1000);
       const exitCode = code ?? -1;
 
-      const { summary, usage } = extractWorkerOutput(stdout);
+      const { summary, usage, reportedCostUsd } = extractWorkerOutput(stdout);
 
       if (exitCode === 0 && killed === false) {
-        resolve({ success: true, exitCode, elapsed, summary, error: null, usage });
+        resolve({ success: true, exitCode, elapsed, summary, error: null, usage, reportedCostUsd });
         return;
       }
 
@@ -217,6 +220,7 @@ export function runWorker(options: WorkerOptions): Promise<WorkerResult> {
         summary,
         error,
         usage,
+        reportedCostUsd,
       });
     });
 
@@ -231,6 +235,7 @@ export function runWorker(options: WorkerOptions): Promise<WorkerResult> {
         summary: "",
         error: err.message,
         usage: null,
+        reportedCostUsd: null,
       });
     });
   });
@@ -323,11 +328,12 @@ function parseCpuTime(timeStr: string): number {
 interface ExtractedOutput {
   summary: string;
   usage: RunUsage | null;
+  reportedCostUsd: number | null;
 }
 
 export function extractWorkerOutput(stdout: string): ExtractedOutput {
   if (stdout.length === 0) {
-    return { summary: "Completed (no output)", usage: null };
+    return { summary: "Completed (no output)", usage: null, reportedCostUsd: null };
   }
   try {
     const parsed = JSON.parse(stdout) as unknown;
@@ -341,12 +347,16 @@ export function extractWorkerOutput(stdout: string): ExtractedOutput {
             : null;
       const summary =
         raw !== null ? truncate(raw, SUMMARY_MAX_LEN) : truncate(stdout, SUMMARY_MAX_LEN);
-      return { summary, usage: extractUsage(obj) };
+      return {
+        summary,
+        usage: extractUsage(obj),
+        reportedCostUsd: numericField(obj, "total_cost_usd"),
+      };
     }
   } catch {
     // Fall through to raw stdout handling
   }
-  return { summary: truncate(stdout, SUMMARY_MAX_LEN), usage: null };
+  return { summary: truncate(stdout, SUMMARY_MAX_LEN), usage: null, reportedCostUsd: null };
 }
 
 function extractUsage(obj: Record<string, unknown>): RunUsage | null {

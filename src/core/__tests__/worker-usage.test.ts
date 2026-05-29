@@ -2,9 +2,10 @@ import { describe, expect, it } from "vitest";
 import { extractWorkerOutput } from "../worker.js";
 
 describe("extractWorkerOutput", () => {
-  it("extracts summary and usage from well-formed Claude Code JSON output", () => {
+  it("extracts summary, usage, and reported cost from well-formed Claude Code JSON output", () => {
     const stdout = JSON.stringify({
       result: "Did the thing.",
+      total_cost_usd: 0.05041775,
       usage: {
         input_tokens: 1234,
         output_tokens: 567,
@@ -12,7 +13,7 @@ describe("extractWorkerOutput", () => {
         cache_creation_input_tokens: 100,
       },
     });
-    const { summary, usage } = extractWorkerOutput(stdout);
+    const { summary, usage, reportedCostUsd } = extractWorkerOutput(stdout);
     expect(summary).toBe("Did the thing.");
     expect(usage).toEqual({
       inputTokens: 1234,
@@ -20,6 +21,16 @@ describe("extractWorkerOutput", () => {
       cacheReadTokens: 8900,
       cacheCreationTokens: 100,
     });
+    expect(reportedCostUsd).toBe(0.05041775);
+  });
+
+  it("returns null reportedCostUsd when total_cost_usd is absent", () => {
+    const stdout = JSON.stringify({
+      result: "ok",
+      usage: { input_tokens: 5 },
+    });
+    const { reportedCostUsd } = extractWorkerOutput(stdout);
+    expect(reportedCostUsd).toBeNull();
   });
 
   it("returns null usage when the JSON has no usage block", () => {

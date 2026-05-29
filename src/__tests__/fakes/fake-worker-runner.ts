@@ -60,6 +60,7 @@ export function phaseRule(
       summary,
       error: null,
       usage: null,
+      reportedCostUsd: null,
       ...overrides,
     };
   };

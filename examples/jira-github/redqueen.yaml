@@ -45,3 +45,12 @@ project:
 
 pipeline:
   baseBranch: origin/main
+  cost:
+    # Post an estimated per-phase + total cost comment on each ticket (upserted
+    # in place). Works on Bedrock and Claude Max — cost comes from Claude Code's
+    # reported usage. Off by default.
+    enabled: true
+    # Optional per-model rate overrides (USD per 1M tokens), used only when the
+    # CLI reports no cost (e.g. some Bedrock setups):
+    # pricing:
+    #   opus: { input: 15, output: 75, cacheRead: 1.5, cacheCreation: 18.75 }

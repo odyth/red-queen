@@ -9,6 +9,7 @@ import type { Attachment, Issue, IssueTracker } from "../issue-tracker.js";
 import { fromAdf, toAdf } from "./adf.js";
 import type { AdfNode } from "./adf.js";
 import { renderBreakdownAdf } from "./cost-adf.js";
+import { findCostComment } from "./cost-comment.js";
 import { JiraClient } from "./client.js";
 import { parseJiraWebhookEvent, validateJiraWebhook } from "./webhook.js";
 
@@ -296,18 +297,33 @@ export class JiraIssueTrackerAdapter implements IssueTracker {
   }
 
   async setCostBreakdown(issueId: string, breakdown: CostBreakdown): Promise<void> {
-    const totalField = this.config.customFields.totalCost;
-    const breakdownField = this.config.customFields.costBreakdown;
-    if (totalField === undefined || breakdownField === undefined) {
-      throw new Error(
-        "Jira setCostBreakdown: customFields.totalCost and customFields.costBreakdown must be configured when pipeline.cost.enabled is true",
-      );
+    // Upsert a single cost comment: find ours by its marker title and update it
+    // in place so re-running phases refreshes one comment instead of stacking a
+    // new one each time. No custom fields required.
+    const body = renderBreakdownAdf(breakdown);
+    const existing = await this.client.request<{ comments?: JiraCommentRaw[] }>(
+      "GET",
+      `/rest/api/3/issue/${encodeURIComponent(issueId)}/comment`,
+    );
+    const found = findCostComment(
+      (existing.comments ?? []).map((c) => ({ id: c.id, body: c.body, created: c.created })),
+    );
+    if (found.duplicateCount > 0) {
+      this.audit("Jira setCostBreakdown: multiple cost comments found, updating newest", {
+        issueId,
+        duplicateCount: found.duplicateCount,
+      });
     }
-    await this.client.request("PUT", `/rest/api/3/issue/${encodeURIComponent(issueId)}`, {
-      fields: {
-        [totalField]: Number(breakdown.totalCostUsd.toFixed(4)),
-        [breakdownField]: renderBreakdownAdf(breakdown),
-      },
+    if (found.commentId !== null) {
+      await this.client.request(
+        "PUT",
+        `/rest/api/3/issue/${encodeURIComponent(issueId)}/comment/${encodeURIComponent(found.commentId)}`,
+        { body },
+      );
+      return;
+    }
+    await this.client.request("POST", `/rest/api/3/issue/${encodeURIComponent(issueId)}/comment`, {
+      body,
     });
   }
 
