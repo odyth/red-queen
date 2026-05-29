@@ -124,9 +124,10 @@ describe("WebhookServer", () => {
     expect(queue.hasOpenTask("PROJ-1", "spec-review")).toBe(false);
   });
 
-  it("creates code-feedback task when PR exists", async () => {
-    pipelineState.create("PROJ-1", "code-review");
+  it("eagerly transitions to code-feedback and reassigns to AI when feedback lands at a human gate", async () => {
+    pipelineState.create("PROJ-1", "human-review");
     pipelineState.updatePrNumber("PROJ-1", 42);
+    issueTracker.phases.set("PROJ-1", "human-review");
     sourceControl.parseResult = {
       source: "webhook",
       type: "pr-feedback",
@@ -137,14 +138,17 @@ describe("WebhookServer", () => {
     await postWebhook("/webhook/source-control", "{}");
     await new Promise((r) => setTimeout(r, 30));
     expect(queue.hasOpenTask("PROJ-1", "code-feedback")).toBe(true);
-    // Webhook must not touch tracker state synchronously — auto-transition happens
-    // in the orchestrator's preDispatchValidation when the task dispatches.
-    expect(issueTracker.calls.some((c) => c.startsWith("setPhase:"))).toBe(false);
-    expect(issueTracker.calls.some((c) => c.startsWith("assignToAi:"))).toBe(false);
+    // Status + assignment flip synchronously so the human's review queue updates
+    // the moment they leave feedback, instead of waiting for the orchestrator.
+    const setIdx = issueTracker.calls.indexOf("setPhase:PROJ-1:code-feedback");
+    expect(setIdx).toBeGreaterThanOrEqual(0);
+    expect(issueTracker.calls.indexOf("assignToAi:PROJ-1")).toBeGreaterThan(setIdx);
+    expect(pipelineState.get("PROJ-1")?.currentPhase).toBe("code-feedback");
   });
 
-  it("creates spec-feedback task when no PR", async () => {
+  it("eagerly transitions to spec-feedback when feedback lands at the spec-review gate (no PR)", async () => {
     pipelineState.create("PROJ-1", "spec-review");
+    issueTracker.phases.set("PROJ-1", "spec-review");
     sourceControl.parseResult = {
       source: "webhook",
       type: "pr-feedback",
@@ -155,6 +159,29 @@ describe("WebhookServer", () => {
     await postWebhook("/webhook/source-control", "{}");
     await new Promise((r) => setTimeout(r, 30));
     expect(queue.hasOpenTask("PROJ-1", "spec-feedback")).toBe(true);
+    expect(issueTracker.calls).toContain("setPhase:PROJ-1:spec-feedback");
+    expect(issueTracker.calls).toContain("assignToAi:PROJ-1");
+  });
+
+  it("enqueues feedback without transitioning when the ticket is mid-automation (not at a human gate)", async () => {
+    pipelineState.create("PROJ-1", "code-review");
+    pipelineState.updatePrNumber("PROJ-1", 42);
+    issueTracker.phases.set("PROJ-1", "code-review");
+    sourceControl.parseResult = {
+      source: "webhook",
+      type: "pr-feedback",
+      issueId: "PROJ-1",
+      timestamp: new Date().toISOString(),
+      payload: {},
+    };
+    await postWebhook("/webhook/source-control", "{}");
+    await new Promise((r) => setTimeout(r, 30));
+    // Feedback is still captured, but the orchestrator owns the transition while
+    // it's actively working the ticket — webhook leaves tracker state untouched.
+    expect(queue.hasOpenTask("PROJ-1", "code-feedback")).toBe(true);
+    expect(issueTracker.calls.some((c) => c.startsWith("setPhase:"))).toBe(false);
+    expect(issueTracker.calls.some((c) => c.startsWith("assignToAi:"))).toBe(false);
+    expect(pipelineState.get("PROJ-1")?.currentPhase).toBe("code-review");
   });
 
   it("creates new-ticket task on assignment-change without phase", async () => {

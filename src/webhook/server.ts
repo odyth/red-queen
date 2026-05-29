@@ -7,6 +7,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AuditLogger } from "../core/audit.js";
 import type { TaskQueue } from "../core/queue.js";
 import type { PipelineStateStore } from "../core/pipeline-state.js";
+import { autoTransitionRework } from "../core/rework-transition.js";
 import type { RuntimeState } from "../core/runtime-state.js";
 import type { PipelineEvent } from "../core/types.js";
 import type { IssueTracker } from "../integrations/issue-tracker.js";
@@ -229,6 +230,35 @@ export class WebhookServer {
           break;
         }
         const taskType = reworkPhase.name;
+        // Hand the ticket back to the AI the instant feedback lands so the
+        // human's review queue stops listing it as theirs — don't wait for the
+        // orchestrator to dequeue (it may be deep in a backlog). Deterministic +
+        // idempotent: autoTransitionRework only mutates when the tracker is
+        // parked at a human gate whose rework target is this phase, so it can't
+        // race the orchestrator while it's actively working the ticket. The
+        // orchestrator's preDispatchValidation re-runs the same transition as a
+        // fallback (e.g. if the read below fails).
+        let currentPhase: string | null = null;
+        try {
+          currentPhase = await issueTracker.getPhase(event.issueId);
+        } catch (err) {
+          audit.log({
+            component,
+            issueId: event.issueId,
+            message: `pr-feedback: phase read failed, deferring transition to dispatch: ${errorMessage(err)}`,
+            metadata: { taskType },
+          });
+        }
+        if (currentPhase !== null) {
+          await autoTransitionRework(
+            { issueTracker, pipelineState, phaseGraph: runtime.phaseGraph, audit },
+            event.issueId,
+            currentPhase,
+            taskType,
+            component,
+            { source: "pr-feedback" },
+          );
+        }
         if (queue.hasOpenTask(event.issueId, taskType)) {
           break;
         }
@@ -240,7 +270,7 @@ export class WebhookServer {
         audit.log({
           component,
           issueId: event.issueId,
-          message: `pr-feedback enqueued ${taskType} — orchestrator will auto-transition if currently at human gate`,
+          message: `pr-feedback enqueued ${taskType}`,
           metadata: { taskType, hasPr },
         });
         break;

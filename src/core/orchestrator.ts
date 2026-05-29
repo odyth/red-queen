@@ -10,6 +10,7 @@ import { computeCost } from "./cost.js";
 import { Poller } from "./poller.js";
 import type { TaskQueue } from "./queue.js";
 import { reconcile } from "./reconciler.js";
+import { autoTransitionRework } from "./rework-transition.js";
 import { createModuleResolver } from "./module-resolver.js";
 import type { RuntimeState } from "./runtime-state.js";
 import type { ServiceInstallContext, ServiceManager } from "./service/index.js";
@@ -497,61 +498,25 @@ export class RedQueen {
     return "proceed";
   }
 
-  private async tryAutoTransitionRework(
+  private tryAutoTransitionRework(
     issueId: string,
     currentPhase: string,
     targetPhase: string,
     task: Task,
   ): Promise<"transitioned" | "skip"> {
-    const gate = this.deps.runtime.phaseGraph.getPhase(currentPhase);
-    if (gate?.rework !== targetPhase) {
-      return "skip";
-    }
-    const targetPhaseDef = this.deps.runtime.phaseGraph.getPhase(targetPhase);
-    const requiresPr = targetPhaseDef?.requiresPr;
-    if (requiresPr !== undefined) {
-      const record = this.deps.pipelineState.get(issueId);
-      const hasPr = record !== null && record.prNumber !== null;
-      if (requiresPr === true && hasPr === false) {
-        return "skip";
-      }
-      if (requiresPr === false && hasPr === true) {
-        return "skip";
-      }
-    }
-    try {
-      await this.deps.issueTracker.setPhase(issueId, targetPhase);
-    } catch (err) {
-      this.deps.audit.log({
-        component: "orchestrator",
-        issueId,
-        message: `Auto-transition ${currentPhase} -> ${targetPhase} failed: ${errorMessage(err)}`,
-        metadata: { taskId: task.id, from: currentPhase, to: targetPhase },
-      });
-      return "skip";
-    }
-    // setPhase succeeded — commit the transition locally. assignToAi below is an
-    // ops signal (ticket assignee in the tracker UI); a failure there does not
-    // undo the phase change, so we still return "transitioned" and let the user
-    // see progress instead of apparent silence.
-    this.deps.pipelineState.updatePhase(issueId, targetPhase);
-    try {
-      await this.deps.issueTracker.assignToAi(issueId);
-    } catch (err) {
-      this.deps.audit.log({
-        component: "orchestrator",
-        issueId,
-        message: `Auto-transition ${currentPhase} -> ${targetPhase}: assignToAi failed after setPhase succeeded: ${errorMessage(err)}`,
-        metadata: { taskId: task.id, from: currentPhase, to: targetPhase },
-      });
-    }
-    this.deps.audit.log({
-      component: "orchestrator",
+    return autoTransitionRework(
+      {
+        issueTracker: this.deps.issueTracker,
+        pipelineState: this.deps.pipelineState,
+        phaseGraph: this.deps.runtime.phaseGraph,
+        audit: this.deps.audit,
+      },
       issueId,
-      message: `Auto-transitioned ${currentPhase} -> ${targetPhase} for rework`,
-      metadata: { taskId: task.id, from: currentPhase, to: targetPhase },
-    });
-    return "transitioned";
+      currentPhase,
+      targetPhase,
+      "orchestrator",
+      { taskId: task.id },
+    );
   }
 
   private async syncSpecFromTracker(
