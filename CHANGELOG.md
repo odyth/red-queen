@@ -5,6 +5,23 @@ All notable changes to Red Queen are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - YYYY-MM-DD
+
+Polling fix. The Jira reconciler built JQL that silently matched
+nothing, so mid-pipeline phase moves were only ever picked up by
+webhooks — polling, the intended fallback, was effectively a no-op.
+
+### Fixed
+
+- Jira `listIssuesByPhase` built JQL of the form `"customfield_10158" =
+  "10056"`. Jira Cloud accepts that syntax but resolves it to zero rows,
+  so reconciliation/polling found no issues for any AI phase. The phase
+  clause now renders custom-field ids as `cf[<id>]` with an unquoted
+  numeric option id (`cf[10158] = 10056`) — the only form Jira actually
+  matches. Without it, manual or API phase moves (e.g. dragging a ticket
+  to Coding) were silently missed unless a phase-change webhook caught
+  them first.
+
 ## [0.6.0] - 2026-05-28
 
 The v6 loop release. Rework phases used to re-enter with no memory of

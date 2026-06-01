@@ -136,9 +136,18 @@ export class JiraIssueTrackerAdapter implements IssueTracker {
     if (mapping === undefined) {
       return [];
     }
+    // Jira JQL needs cf[<id>] (not the quoted "customfield_<id>" field name) and an
+    // unquoted numeric option id; both quoted forms silently return zero rows.
+    const phaseField = this.config.customFields.phase;
+    const fieldRef = /^customfield_\d+$/.test(phaseField)
+      ? `cf[${phaseField.slice("customfield_".length)}]`
+      : `"${escapeJql(phaseField)}"`;
+    const optionValue = /^\d+$/.test(mapping.optionId)
+      ? mapping.optionId
+      : `"${escapeJql(mapping.optionId)}"`;
     const clauses = [
       `project = "${escapeJql(this.config.projectKey)}"`,
-      `"${this.config.customFields.phase}" = "${escapeJql(mapping.optionId)}"`,
+      `${fieldRef} = ${optionValue}`,
       `statusCategory != Done`,
     ];
     if (this.config.reconcileScope === "active-sprint-or-all") {

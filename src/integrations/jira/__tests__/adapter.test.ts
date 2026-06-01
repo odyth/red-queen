@@ -153,6 +153,10 @@ describe("JiraIssueTrackerAdapter", () => {
     // JQL must filter out Done status category (unquoted form)
     const parsedJql = new URL(phaseCall?.url ?? "").searchParams.get("jql") ?? "";
     expect(parsedJql).toContain("statusCategory != Done");
+    // Phase clause must use cf[<id>] with an unquoted numeric option id — the
+    // quoted "customfield_<id>" = "<id>" form silently returns zero rows in Jira.
+    expect(parsedJql).toContain("cf[10158] = 10056");
+    expect(parsedJql).not.toContain('"customfield_10158"');
     // Issue.id must be the Jira key, not the numeric id
     expect(issues[0]?.id).toBe("RQ-7");
   });
