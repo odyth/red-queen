@@ -338,17 +338,46 @@ export class WebhookServer {
         if (record !== null && delegator !== null) {
           pipelineState.updateDelegator(event.issueId, delegator);
         }
-        if (record !== null && record.currentPhase !== null) {
-          break;
-        }
+        // Resolve the ticket's live Jira phase and route it the same way a
+        // phase-change webhook would, so "assign to AI" and "set AI Phase" are
+        // symmetric triggers: either one — in any order, or both bundled in a
+        // single Jira update — lands the same task. The old guard returned early
+        // whenever local state already had a phase, so assigning a mid-pipeline
+        // ticket back to the bot after a human advanced its phase did nothing
+        // and logged nothing.
         const currentJiraPhase = await issueTracker.getPhase(event.issueId);
         const entryPhaseNames = new Set(runtime.phaseGraph.getEntryPhases().map((p) => p.name));
         let taskType: string;
         if (currentJiraPhase === null) {
+          if (record !== null) {
+            audit.log({
+              component,
+              issueId: event.issueId,
+              message: "assignment-change: no Jira phase set — no task created",
+              metadata: {},
+            });
+            break;
+          }
           taskType = "new-ticket";
+        } else if (runtime.phaseGraph.getPhase(currentJiraPhase) === undefined) {
+          audit.log({
+            component,
+            issueId: event.issueId,
+            message: `assignment-change references unknown phase ${currentJiraPhase}`,
+            metadata: { phase: currentJiraPhase },
+          });
+          break;
+        } else if (runtime.phaseGraph.isHumanGate(currentJiraPhase)) {
+          audit.log({
+            component,
+            issueId: event.issueId,
+            message: `assignment-change while parked at human gate ${currentJiraPhase} — no task created`,
+            metadata: { phase: currentJiraPhase },
+          });
+          break;
         } else if (entryPhaseNames.has(currentJiraPhase)) {
           taskType = currentJiraPhase;
-        } else {
+        } else if (record === null) {
           audit.log({
             component,
             issueId: event.issueId,
@@ -356,6 +385,16 @@ export class WebhookServer {
             metadata: { phase: currentJiraPhase },
           });
           break;
+        } else if (record.currentPhase === currentJiraPhase) {
+          audit.log({
+            component,
+            issueId: event.issueId,
+            message: `assignment-change: Jira phase ${currentJiraPhase} matches local state — no task created`,
+            metadata: { phase: currentJiraPhase },
+          });
+          break;
+        } else {
+          taskType = currentJiraPhase;
         }
         if (queue.hasOpenTask(event.issueId, taskType)) {
           break;
@@ -365,6 +404,12 @@ export class WebhookServer {
           issueId: event.issueId,
           description: "Assigned to AI",
           metadata: delegator !== null ? { delegator } : undefined,
+        });
+        audit.log({
+          component,
+          issueId: event.issueId,
+          message: `assignment-change enqueued ${taskType}`,
+          metadata: { phase: currentJiraPhase, taskType },
         });
         break;
       }

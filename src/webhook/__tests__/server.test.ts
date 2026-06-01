@@ -365,6 +365,51 @@ describe("WebhookServer", () => {
     expect(task?.metadata.delegator).toBe("justin-13");
   });
 
+  it("assignment-change enqueues the live Jira phase when a human advanced it mid-pipeline", async () => {
+    pipelineState.create("PROJ-15", "spec-writing");
+    issueTracker.phases.set("PROJ-15", "coding");
+    issueTracker.parseResult = {
+      source: "webhook",
+      type: "assignment-change",
+      issueId: "PROJ-15",
+      timestamp: new Date().toISOString(),
+      payload: {},
+    };
+    await postWebhook("/webhook/issue-tracker", "{}");
+    await new Promise((r) => setTimeout(r, 30));
+    expect(queue.hasOpenTask("PROJ-15", "coding")).toBe(true);
+  });
+
+  it("assignment-change does not enqueue when Jira phase matches local state", async () => {
+    pipelineState.create("PROJ-16", "coding");
+    issueTracker.phases.set("PROJ-16", "coding");
+    issueTracker.parseResult = {
+      source: "webhook",
+      type: "assignment-change",
+      issueId: "PROJ-16",
+      timestamp: new Date().toISOString(),
+      payload: {},
+    };
+    await postWebhook("/webhook/issue-tracker", "{}");
+    await new Promise((r) => setTimeout(r, 30));
+    expect(queue.listByStatus("ready")).toHaveLength(0);
+  });
+
+  it("assignment-change while parked at a human gate creates no task", async () => {
+    pipelineState.create("PROJ-17", "coding");
+    issueTracker.phases.set("PROJ-17", "spec-review");
+    issueTracker.parseResult = {
+      source: "webhook",
+      type: "assignment-change",
+      issueId: "PROJ-17",
+      timestamp: new Date().toISOString(),
+      payload: {},
+    };
+    await postWebhook("/webhook/issue-tracker", "{}");
+    await new Promise((r) => setTimeout(r, 30));
+    expect(queue.listByStatus("ready")).toHaveLength(0);
+  });
+
   it("phase-change updates delegator and propagates to task metadata", async () => {
     pipelineState.create("PROJ-14", "spec-writing");
     issueTracker.parseResult = {
