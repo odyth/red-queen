@@ -7,9 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.6.1] - YYYY-MM-DD
 
-Polling fix. The Jira reconciler built JQL that silently matched
-nothing, so mid-pipeline phase moves were only ever picked up by
-webhooks — polling, the intended fallback, was effectively a no-op.
+Reliability fixes for mid-pipeline phase moves. Both paths that should
+catch a ticket whose AI Phase advanced — the webhook and the polling
+fallback — had a hole: the reconciler's JQL matched nothing, and
+assigning a ticket back to the bot was a no-op once it had local
+pipeline state. Either gap alone could leave a ticket stuck.
 
 ### Fixed
 
@@ -21,6 +23,19 @@ webhooks — polling, the intended fallback, was effectively a no-op.
   matches. Without it, manual or API phase moves (e.g. dragging a ticket
   to Coding) were silently missed unless a phase-change webhook caught
   them first.
+- Jira webhook: assigning a ticket back to the bot now triggers pickup
+  symmetrically with an AI Phase change. The `assignment-change` handler
+  returned early whenever local pipeline state already had a phase, so a
+  human advancing the phase mid-pipeline and reassigning to the bot did
+  nothing — and logged nothing — unless a standalone phase-change webhook
+  happened to fire (unreliable when phase and assignee move in one Jira
+  update, since the parser surfaces only the first changelog item). It now
+  resolves the ticket's live Jira phase on assignment and routes it through
+  the same logic as a phase-change: either trigger, in any order or bundled
+  in one update, enqueues the same task. No-ops (live phase matches local
+  state, or is a human gate) are logged instead of dropped silently. A
+  failed live-phase read is logged and deferred to the poller rather than
+  thrown into the generic dispatch handler, where it would have been lost.
 
 ## [0.6.0] - 2026-05-28
 
