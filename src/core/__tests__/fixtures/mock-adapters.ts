@@ -26,6 +26,7 @@ export class MockIssueTracker implements IssueTracker {
   validateResult = true;
   calls: string[] = [];
   getSpecThrowsFor = new Set<string>();
+  getPhaseThrowsFor = new Set<string>();
 
   async getIssue(issueId: string): Promise<Issue> {
     this.calls.push(`getIssue:${issueId}`);
@@ -43,6 +44,9 @@ export class MockIssueTracker implements IssueTracker {
 
   getPhase(issueId: string): Promise<string | null> {
     this.calls.push(`getPhase:${issueId}`);
+    if (this.getPhaseThrowsFor.has(issueId)) {
+      return Promise.reject(new Error(`mock getPhase failure for ${issueId}`));
+    }
     return Promise.resolve(this.phases.get(issueId) ?? null);
   }
 

@@ -33,7 +33,9 @@ pipeline state. Either gap alone could leave a ticket stuck.
   resolves the ticket's live Jira phase on assignment and routes it through
   the same logic as a phase-change: either trigger, in any order or bundled
   in one update, enqueues the same task. No-ops (live phase matches local
-  state, or is a human gate) are logged instead of dropped silently.
+  state, or is a human gate) are logged instead of dropped silently. A
+  failed live-phase read is logged and deferred to the poller rather than
+  thrown into the generic dispatch handler, where it would have been lost.
 
 ## [0.6.0] - 2026-05-28
 

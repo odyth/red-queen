@@ -345,7 +345,23 @@ export class WebhookServer {
         // whenever local state already had a phase, so assigning a mid-pipeline
         // ticket back to the bot after a human advanced its phase did nothing
         // and logged nothing.
-        const currentJiraPhase = await issueTracker.getPhase(event.issueId);
+        let currentJiraPhase: string | null;
+        try {
+          currentJiraPhase = await issueTracker.getPhase(event.issueId);
+        } catch (err) {
+          // The 200 is already flushed, so Jira won't retry. Don't let this throw
+          // into the generic dispatch catch — log explicitly and let the poller
+          // reconcile. Local state is not a usable fallback here: this trigger
+          // exists precisely because local state may be stale (a human advanced
+          // the phase in Jira).
+          audit.log({
+            component,
+            issueId: event.issueId,
+            message: `assignment-change: phase read failed, deferring to poller: ${errorMessage(err)}`,
+            metadata: {},
+          });
+          break;
+        }
         const entryPhaseNames = new Set(runtime.phaseGraph.getEntryPhases().map((p) => p.name));
         let taskType: string;
         if (currentJiraPhase === null) {
@@ -376,6 +392,9 @@ export class WebhookServer {
           });
           break;
         } else if (entryPhaseNames.has(currentJiraPhase)) {
+          // Entry phase: intentionally skip the matches-local-state check below.
+          // hasOpenTask dedups in-flight work; a failed entry task re-kicks on
+          // reassign, which is the desired retry.
           taskType = currentJiraPhase;
         } else if (record === null) {
           audit.log({
