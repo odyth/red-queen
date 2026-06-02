@@ -5,13 +5,22 @@ All notable changes to Red Queen are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.6.1] - YYYY-MM-DD
+## [0.7.0] - 2026-06-02
 
-Reliability fixes for mid-pipeline phase moves. Both paths that should
-catch a ticket whose AI Phase advanced — the webhook and the polling
-fallback — had a hole: the reconciler's JQL matched nothing, and
-assigning a ticket back to the bot was a no-op once it had local
-pipeline state. Either gap alone could leave a ticket stuck.
+Spend now lands where people actually look — as a Jira comment — alongside
+reliability fixes that close the gaps where mid-pipeline phase moves and PR
+feedback could leave a ticket parked.
+
+### Added
+
+- Cost is surfaced as a single upserted Jira comment (per-phase + total),
+  matched by a marker title and updated in place, mirroring the GitHub
+  adapter. No custom fields required — the prior design wrote to two optional
+  custom fields and threw when they weren't configured, so nothing landed.
+  Spend comes from Claude Code's reported `total_cost_usd` (emitted even on a
+  Max subscription), falling back to token×pricing only when the CLI reports
+  none (e.g. Bedrock), and every comment is labeled an estimated
+  API-equivalent cost so a flat-rate Max number isn't mistaken for billing.
 
 ### Fixed
 
@@ -36,6 +45,13 @@ pipeline state. Either gap alone could leave a ticket stuck.
   state, or is a human gate) are logged instead of dropped silently. A
   failed live-phase read is logged and deferred to the poller rather than
   thrown into the generic dispatch handler, where it would have been lost.
+- Jira webhook: human PR feedback now runs the rework transition (setPhase +
+  assignToAi) immediately instead of deferring it to the orchestrator's
+  dispatch path. A queue backlog used to leave the ticket parked at the human
+  gate, still assigned to the reviewer, so the handoff never showed in their
+  review list. Guarded to fire only at a human gate whose rework target
+  matches (so it can't race the orchestrator); the dispatch-path transition
+  stays as an idempotent fallback.
 
 ## [0.6.0] - 2026-05-28
 
