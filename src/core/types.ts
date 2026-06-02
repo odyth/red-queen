@@ -40,6 +40,11 @@ export interface PhaseDefinition {
   // through the failure path (retry → onFail) instead of parking an empty spec
   // at the next human gate.
   producesSpec?: boolean;
+  // When true, this phase consumes the spec (the coder phase). Before dispatch the
+  // orchestrator verifies a non-empty spec exists; if none does — e.g. a ticket
+  // moved straight to coding without ever being specced — the worker is never
+  // launched and the issue is kicked back to the spec-producing entry phase.
+  requiresSpec?: boolean;
 }
 
 export class PhaseGraph {

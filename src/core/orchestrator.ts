@@ -51,6 +51,8 @@ export interface RedQueenDeps {
   moduleResolver?: ModuleResolver;
   now?: () => number;
   sleepFn?: (ms: number) => Promise<void>;
+  phaseWatchIntervalMs?: number;
+  phaseDriftGraceMs?: number;
   installSignalHandlers?: boolean;
   serviceManager?: ServiceManager;
   serviceContext?: ServiceInstallContext;
@@ -59,6 +61,17 @@ export interface RedQueenDeps {
 }
 
 const TEMP_PREFIX = "rq-";
+// How often the in-flight phase watch re-reads the tracker phase while a worker
+// runs. A worker can run for many minutes; one tracker read per tick (single
+// active worker at a time) is negligible.
+const PHASE_WATCH_INTERVAL_MS = 15_000;
+// How long a tracker phase must stay drifted off the running phase before the watch
+// aborts the worker. A worker's last act is often a self-route via `set-phase`; it
+// then takes a few seconds to emit its final JSON and exit, during which the tracker
+// reads as drifted. The grace lets that wrap-up finish (the worker exits and the
+// watch is torn down) so only a persistent drift — a human moving the ticket while
+// the worker grinds on now-moot work — actually aborts.
+const PHASE_DRIFT_GRACE_MS = 30_000;
 
 export class RedQueen {
   private readonly deps: RedQueenDeps;
@@ -357,6 +370,13 @@ export class RedQueen {
       return;
     }
 
+    if (
+      phase.requiresSpec === true &&
+      (await this.guardRequiresSpec(task, phase)) === "kicked-back"
+    ) {
+      return;
+    }
+
     await this.dispatchWorkerForTask(task, phase);
   }
 
@@ -609,6 +629,82 @@ export class RedQueen {
     return false;
   }
 
+  // A spec-consuming phase (coding) must not run without a spec. The coder skill
+  // self-checks too, but that's LLM-driven; this is the deterministic backstop for
+  // a ticket moved straight to coding without ever being specced. Check the cache
+  // first — it's what buildSkillContext hands the coder — then the tracker as the
+  // source-of-truth fallback. On a tracker read error, proceed and let the coder's
+  // own check catch it rather than block on a transient failure.
+  private async guardRequiresSpec(
+    task: Task,
+    phase: PhaseDefinition,
+  ): Promise<"proceed" | "kicked-back"> {
+    const issueId = task.issueId;
+    if (issueId === null) {
+      return "proceed";
+    }
+
+    const cached = this.deps.pipelineState.get(issueId)?.specContent ?? null;
+    if (cached !== null && cached.trim() !== "") {
+      return "proceed";
+    }
+
+    let trackerSpec: string | null;
+    try {
+      trackerSpec = await this.deps.issueTracker.getSpec(issueId);
+    } catch (err) {
+      this.deps.audit.log({
+        component: "orchestrator",
+        issueId,
+        message: `requiresSpec guard: tracker spec read failed (${errorMessage(err)}) — proceeding, coder self-checks`,
+        metadata: { taskId: task.id, phase: phase.name },
+      });
+      return "proceed";
+    }
+    if (trackerSpec !== null && trackerSpec.trim() !== "") {
+      return "proceed";
+    }
+
+    const target = this.resolveSpecEntryPhase();
+    this.deps.queue.markWorking(task.id);
+    if (target === null) {
+      this.deps.queue.markFailed(
+        task.id,
+        `${phase.name} requires a spec but none exists and no spec-producing entry phase is configured`,
+      );
+      this.deps.orchestratorState.incrementErrors();
+      this.deps.audit.log({
+        component: "orchestrator",
+        issueId,
+        message: `${phase.name} requires a spec but none exists and no entry phase produces one — cannot kick back`,
+        metadata: { taskId: task.id },
+      });
+      this.emitQueueChanged();
+      return "kicked-back";
+    }
+    this.deps.queue.markComplete(task.id, `No spec — kicked ${phase.name} back to ${target}`);
+    this.deps.audit.log({
+      component: "orchestrator",
+      issueId,
+      message: `${phase.name} dispatched with no spec — kicking back to ${target}, no worker launched`,
+      metadata: { taskId: task.id, target },
+    });
+    await this.transitionTo(issueId, target, task);
+    this.emitQueueChanged();
+    return "kicked-back";
+  }
+
+  // Only a spec-producing entry phase can satisfy a kicked-back requiresSpec ticket.
+  // Falling back to entries[0] when none produces a spec would re-dispatch coding into
+  // the same empty-spec kickback every cycle, unbounded. Returning null instead routes
+  // the caller to fail the task with a clear config error.
+  private resolveSpecEntryPhase(): string | null {
+    return (
+      this.deps.runtime.phaseGraph.getEntryPhases().find((p) => p.producesSpec === true)?.name ??
+      null
+    );
+  }
+
   private async dispatchWorkerForTask(task: Task, phase: PhaseDefinition): Promise<void> {
     const issueId = task.issueId;
     if (issueId === null) {
@@ -731,6 +827,8 @@ export class RedQueen {
     this.emitWorkerStarted(task, phase);
 
     const startedAt = this.now();
+    const abort = new AbortController();
+    const stopPhaseWatch = this.startPhaseWatch(issueId, task, phase, abort);
     let result: WorkerResult;
     try {
       result = await this.runWorker({
@@ -741,6 +839,7 @@ export class RedQueen {
         stallThresholdMs: this.deps.runtime.config.pipeline.stallThresholdMs,
         model: this.deps.runtime.config.pipeline.model,
         effort: this.deps.runtime.config.pipeline.effort,
+        signal: abort.signal,
         onStart: (pid) => {
           this.currentWorkerPid = pid;
         },
@@ -758,6 +857,7 @@ export class RedQueen {
         },
       });
     } finally {
+      stopPhaseWatch();
       this.currentWorkerPid = null;
       safeUnlink(tempPath);
     }
@@ -765,7 +865,13 @@ export class RedQueen {
     const elapsed = Math.round((this.now() - startedAt) / 1000);
     this.emitWorkerCompleted(task, phase, result, elapsed);
 
-    if (result.success) {
+    // An abort means the ticket left this phase mid-run (the watch killed the
+    // worker). That's not a failure — don't retry or route onFail. Gate on
+    // result.success === false so a worker that cleanly exited 0 in the same
+    // instant the abort fired still takes the success path.
+    if (abort.signal.aborted && result.success === false) {
+      await this.handleAbortedByPhaseChange(task, phase);
+    } else if (result.success) {
       await this.handleSuccess(task, phase, result);
     } else {
       await this.handleFailure(task, phase, result);
@@ -775,6 +881,122 @@ export class RedQueen {
     this.deps.orchestratorState.setCurrentTaskId(null);
     this.emitDashboardStatus();
     this.emitQueueChanged();
+  }
+
+  // While a worker runs, poll the tracker phase. If the ticket is moved out of the
+  // phase the worker is executing, abort it — the work is now moot. Returns a stop
+  // function the dispatch loop calls in its finally. Reentrancy-guarded so a slow
+  // tracker read can't stack overlapping checks.
+  private startPhaseWatch(
+    issueId: string,
+    task: Task,
+    phase: PhaseDefinition,
+    abort: AbortController,
+  ): () => void {
+    let checking = false;
+    let driftSince: number | null = null;
+    const intervalMs = this.deps.phaseWatchIntervalMs ?? PHASE_WATCH_INTERVAL_MS;
+    const graceMs = this.deps.phaseDriftGraceMs ?? PHASE_DRIFT_GRACE_MS;
+    const handle = setInterval(() => {
+      if (checking || abort.signal.aborted) {
+        return;
+      }
+      checking = true;
+      void this.checkPhaseDrift(issueId, task, phase, abort, driftSince, graceMs)
+        .then((next) => {
+          driftSince = next;
+        })
+        .finally(() => {
+          checking = false;
+        });
+    }, intervalMs);
+    return () => {
+      clearInterval(handle);
+    };
+  }
+
+  // Decide whether a worker whose ticket left its phase should be aborted. A worker's
+  // last act before exit is often a self-route via `set-phase` (coder → blocked /
+  // spec-writing, tester → coding, reviewer → blocked, prompt-writer → awaiting-info);
+  // for the few seconds it then takes to emit its final JSON and exit, the tracker
+  // reads as drifted even though the worker is cleanly wrapping up. Aborting there
+  // kills the process before that JSON lands, destroying the run's usage/cost/summary
+  // and routing it through handleAbortedByPhaseChange instead of handleSuccess. So we
+  // don't abort on first sight of drift: we start a grace clock and abort only once
+  // the drift has outlasted it — by then a self-route has exited (this watch is torn
+  // down in the dispatch finally and stops ticking), so a still-running drift means a
+  // human moved the ticket and the worker is grinding on now-moot work. A forward
+  // self-advance to `next` is never drift (handleSuccess owns it as selfAdvancedToNext).
+  // Returns the next driftSince: null while on-phase, the first-seen timestamp once
+  // drifted. A transient read error is swallowed and leaves the clock untouched.
+  private async checkPhaseDrift(
+    issueId: string,
+    task: Task,
+    phase: PhaseDefinition,
+    abort: AbortController,
+    driftSince: number | null,
+    graceMs: number,
+  ): Promise<number | null> {
+    let current: string | null;
+    try {
+      current = await this.deps.issueTracker.getPhase(issueId);
+    } catch {
+      return driftSince;
+    }
+    if (current === null || current === phase.name || current === phase.next) {
+      return null;
+    }
+    const now = this.now();
+    if (driftSince === null) {
+      this.deps.audit.log({
+        component: "orchestrator",
+        issueId,
+        message: `Ticket moved to ${current} while ${phase.name} worker was running — holding ${String(Math.round(graceMs / 1000))}s in case the worker is self-routing before exit`,
+        metadata: { taskId: task.id, runningPhase: phase.name, currentPhase: current },
+      });
+      return now;
+    }
+    if (now - driftSince < graceMs) {
+      return driftSince;
+    }
+    this.deps.audit.log({
+      component: "orchestrator",
+      issueId,
+      message: `Ticket on ${current} for ${String(Math.round((now - driftSince) / 1000))}s while ${phase.name} worker still runs — aborting worker (human move, not a self-route)`,
+      metadata: { taskId: task.id, runningPhase: phase.name, currentPhase: current },
+    });
+    abort.abort();
+    return driftSince;
+  }
+
+  // The phase watch aborted the worker because the ticket left the running phase.
+  // Not a failure: mark the task complete and respect wherever the ticket now sits
+  // (respectAgentPhaseChange syncs local state and enqueues the new phase if needed,
+  // idempotent via hasOpenTask). No retry, no onFail routing.
+  private async handleAbortedByPhaseChange(task: Task, phase: PhaseDefinition): Promise<void> {
+    const issueId = task.issueId;
+    if (issueId === null) {
+      return;
+    }
+    let newPhase: string | null;
+    try {
+      newPhase = await this.deps.issueTracker.getPhase(issueId);
+    } catch {
+      newPhase = null;
+    }
+    this.deps.queue.markComplete(
+      task.id,
+      `Aborted ${phase.name} — ticket moved to ${newPhase ?? "another phase"}`,
+    );
+    this.deps.audit.log({
+      component: "orchestrator",
+      issueId,
+      message: `Aborted ${phase.name} worker — ticket moved to ${newPhase ?? "unknown phase"}`,
+      metadata: { taskId: task.id, newPhase },
+    });
+    if (newPhase !== null && newPhase !== phase.name) {
+      this.respectAgentPhaseChange(issueId, task, newPhase);
+    }
   }
 
   private async handleSuccess(

@@ -219,6 +219,7 @@ describe("RedQueen orchestrator", () => {
     });
     h.pipelineState.create("PROJ-1", "coding");
     h.issueTracker.phases.set("PROJ-1", "coding");
+    h.issueTracker.specs.set("PROJ-1", "Implementation spec body.");
     h.queue.enqueue({ type: "coding", issueId: "PROJ-1" });
 
     await runUntil(h, () => runCount >= 2);
@@ -246,6 +247,7 @@ describe("RedQueen orchestrator", () => {
     });
     h.pipelineState.create("PROJ-RW1", "code-review");
     h.issueTracker.phases.set("PROJ-RW1", "code-review");
+    h.issueTracker.specs.set("PROJ-RW1", "Implementation spec body.");
     h.queue.enqueue({ type: "code-review", issueId: "PROJ-RW1" });
 
     await runUntil(
@@ -284,6 +286,7 @@ describe("RedQueen orchestrator", () => {
     });
     h.pipelineState.create("PROJ-RW2", "testing");
     h.issueTracker.phases.set("PROJ-RW2", "testing");
+    h.issueTracker.specs.set("PROJ-RW2", "Implementation spec body.");
     h.queue.enqueue({ type: "testing", issueId: "PROJ-RW2" });
 
     await runUntil(
@@ -316,6 +319,7 @@ describe("RedQueen orchestrator", () => {
     });
     h.pipelineState.create("PROJ-RW3", "coding");
     h.issueTracker.phases.set("PROJ-RW3", "coding");
+    h.issueTracker.specs.set("PROJ-RW3", "Implementation spec body.");
     h.queue.enqueue({ type: "coding", issueId: "PROJ-RW3" });
 
     await runUntil(h, () => prompts.some((c) => c.includes("phaseName: coding")));
@@ -362,6 +366,7 @@ describe("RedQueen orchestrator", () => {
     });
     h.pipelineState.create("PROJ-1", "coding");
     h.issueTracker.phases.set("PROJ-1", "coding");
+    h.issueTracker.specs.set("PROJ-1", "Implementation spec body.");
     h.queue.enqueue({ type: "coding", issueId: "PROJ-1" });
 
     await runUntilAfterRuns(h, 3, 3000);
@@ -388,6 +393,7 @@ describe("RedQueen orchestrator", () => {
     });
     h.pipelineState.create("PROJ-NR", "code-review");
     h.issueTracker.phases.set("PROJ-NR", "code-review");
+    h.issueTracker.specs.set("PROJ-NR", "Implementation spec body.");
     h.queue.enqueue({ type: "code-review", issueId: "PROJ-NR" });
 
     await runUntil(h, () => prompts.some((c) => c.includes("phaseName: coding")));
@@ -425,6 +431,7 @@ describe("RedQueen orchestrator", () => {
     });
     h.pipelineState.create("PROJ-1", "code-review");
     h.issueTracker.phases.set("PROJ-1", "code-review");
+    h.issueTracker.specs.set("PROJ-1", "Implementation spec body.");
     h.queue.enqueue({ type: "code-review", issueId: "PROJ-1" });
 
     // The orchestrator should respect the agent-changed phase and move pipeline state to coding
@@ -483,6 +490,7 @@ describe("RedQueen orchestrator", () => {
     h.orchestratorState.setCurrentTaskId(task.id);
     h.pipelineState.create("PROJ-1", "coding");
     h.issueTracker.phases.set("PROJ-1", "coding");
+    h.issueTracker.specs.set("PROJ-1", "Implementation spec body.");
 
     await runUntil(h, () => h.queue.getTask(task.id)?.status === "complete");
 
@@ -614,6 +622,7 @@ describe("RedQueen orchestrator", () => {
     });
     h.pipelineState.create("PROJ-1", "coding");
     h.issueTracker.phases.set("PROJ-1", "coding");
+    h.issueTracker.specs.set("PROJ-1", "Implementation spec body.");
     const task = h.queue.enqueue({ type: "coding", issueId: "PROJ-1" });
 
     await runUntil(h, () => h.queue.getTask(task.id)?.status === "failed");
@@ -635,6 +644,7 @@ describe("RedQueen orchestrator", () => {
     );
     h.pipelineState.create("PROJ-1", "coding");
     h.issueTracker.phases.set("PROJ-1", "coding");
+    h.issueTracker.specs.set("PROJ-1", "Implementation spec body.");
     h.queue.enqueue({ type: "coding", issueId: "PROJ-1" });
 
     await runUntilAfterRuns(h, 1);
@@ -656,6 +666,7 @@ describe("RedQueen orchestrator", () => {
     h.pipelineState.create("PROJ-1", "coding");
     // Issue is in testing but queue has a coding task — tracker is out of sync but not at a human gate
     h.issueTracker.phases.set("PROJ-1", "testing");
+    h.issueTracker.specs.set("PROJ-1", "Implementation spec body.");
     h.queue.enqueue({ type: "coding", issueId: "PROJ-1" });
 
     await runUntil(h, () => h.issueTracker.calls.some((c) => c === "setPhase:PROJ-1:coding"));
@@ -675,6 +686,7 @@ describe("RedQueen orchestrator", () => {
     );
     h.issueTracker.listByPhaseResults.set("coding", [makeIssue("PROJ-99", "coding")]);
     h.issueTracker.phases.set("PROJ-99", "coding");
+    h.issueTracker.specs.set("PROJ-99", "Implementation spec body.");
     h.pipelineState.create("PROJ-99", "coding");
 
     await runUntilAfterRuns(h, 1, 3000);
@@ -1068,6 +1080,7 @@ describe("RedQueen orchestrator", () => {
     h.pipelineState.create("PROJ-101", "coding");
     h.pipelineState.updatePrNumber("PROJ-101", 78);
     h.issueTracker.phases.set("PROJ-101", "coding");
+    h.issueTracker.specs.set("PROJ-101", "Implementation spec body.");
     h.queue.enqueue({ type: "coding", issueId: "PROJ-101" });
 
     await runUntilAfterRuns(h, 1);
@@ -1162,6 +1175,7 @@ describe("RedQueen orchestrator", () => {
     );
     h.pipelineState.create("PROJ-201", "coding");
     h.issueTracker.phases.set("PROJ-201", "coding");
+    h.issueTracker.specs.set("PROJ-201", "Implementation spec body.");
     h.queue.enqueue({ type: "coding", issueId: "PROJ-201" });
 
     await runUntilAfterRuns(h, 1);
@@ -1181,6 +1195,7 @@ describe("RedQueen orchestrator", () => {
     );
     h.pipelineState.create("PROJ-202", "coding");
     h.issueTracker.phases.set("PROJ-202", "coding");
+    h.issueTracker.specs.set("PROJ-202", "Implementation spec body.");
     h.issueTracker.markInProgressThrowsFor.add("PROJ-202");
     h.queue.enqueue({ type: "coding", issueId: "PROJ-202" });
 
@@ -1303,6 +1318,7 @@ describe("RedQueen orchestrator", () => {
     h.pipelineState.incrementReviewIterations("PROJ-304");
     h.pipelineState.incrementReviewIterations("PROJ-304");
     h.issueTracker.phases.set("PROJ-304", "coding");
+    h.issueTracker.specs.set("PROJ-304", "Implementation spec body.");
     h.queue.enqueue({ type: "coding", issueId: "PROJ-304" });
 
     await runUntil(h, () => h.pipelineState.get("PROJ-304")?.currentPhase === "human-review", {
@@ -1377,6 +1393,7 @@ describe("RedQueen orchestrator", () => {
     });
     h.pipelineState.create("PROJ-402", "coding", "reporter-99");
     h.issueTracker.phases.set("PROJ-402", "coding");
+    h.issueTracker.specs.set("PROJ-402", "Implementation spec body.");
     h.queue.enqueue({ type: "coding", issueId: "PROJ-402" });
 
     await runUntil(h, () =>
@@ -1384,5 +1401,192 @@ describe("RedQueen orchestrator", () => {
     );
 
     expect(h.issueTracker.calls).toContain("assignToHuman:PROJ-402:reporter-99");
+  });
+
+  it("kicks coding back to spec-writing when no spec exists, without launching the coder", async () => {
+    const prompts: string[] = [];
+    const h = setupHarness((opts) => {
+      const content = readDispatchedPrompt(opts);
+      if (content !== null) {
+        prompts.push(content);
+      }
+      return Promise.resolve({
+        success: false,
+        exitCode: 1,
+        elapsed: 0,
+        summary: "",
+        error: "stop cascade",
+        usage: null,
+      });
+    });
+    // The bug: a ticket moved straight to coding with no spec in cache or tracker.
+    h.pipelineState.create("PROJ-NOSPEC", "coding");
+    h.issueTracker.phases.set("PROJ-NOSPEC", "coding");
+    const codingTask = h.queue.enqueue({ type: "coding", issueId: "PROJ-NOSPEC" });
+
+    await runUntil(h, () => h.queue.getTask(codingTask.id)?.status === "complete");
+
+    const stored = h.queue.getTask(codingTask.id);
+    expect(stored?.status).toBe("complete");
+    expect(stored?.result).toContain("kicked");
+    // The coder never ran for this ticket — only the kicked-back spec-writing did.
+    expect(prompts.some((c) => c.includes("phaseName: coding"))).toBe(false);
+    expect(h.issueTracker.calls).toContain("setPhase:PROJ-NOSPEC:spec-writing");
+  });
+
+  it("aborts an in-flight worker when the ticket is moved out of its phase", async () => {
+    let runCount = 0;
+    const h = setupHarness(
+      (opts) => {
+        runCount += 1;
+        if (runCount === 1) {
+          // Coder is running; simulate a human moving the ticket off coding.
+          h.issueTracker.phases.set("PROJ-ABORT", "spec-writing");
+          return new Promise<WorkerResult>((resolve) => {
+            opts.signal?.addEventListener(
+              "abort",
+              () => {
+                resolve({
+                  success: false,
+                  exitCode: -1,
+                  elapsed: 1,
+                  summary: "",
+                  error: "Aborted — ticket left the phase",
+                  usage: null,
+                });
+              },
+              { once: true },
+            );
+          });
+        }
+        // The follow-up spec-writing run fails fast so nothing hangs.
+        return Promise.resolve({
+          success: false,
+          exitCode: 1,
+          elapsed: 0,
+          summary: "",
+          error: "stop cascade",
+          usage: null,
+        });
+      },
+      // Tiny grace so a persistent (human-move) drift aborts within the test window.
+      { extra: { phaseWatchIntervalMs: 5, phaseDriftGraceMs: 1 } },
+    );
+    h.pipelineState.create("PROJ-ABORT", "coding");
+    h.pipelineState.updateSpec("PROJ-ABORT", "real spec");
+    h.issueTracker.phases.set("PROJ-ABORT", "coding");
+    h.issueTracker.specs.set("PROJ-ABORT", "real spec");
+    const codingTask = h.queue.enqueue({ type: "coding", issueId: "PROJ-ABORT" });
+
+    await runUntil(h, () => h.queue.getTask(codingTask.id)?.status === "complete");
+
+    const stored = h.queue.getTask(codingTask.id);
+    // Aborted — marked complete, not failed/retried.
+    expect(stored?.status).toBe("complete");
+    expect(stored?.result).toContain("Aborted");
+    const audit = readFileSync(auditPath, "utf8");
+    expect(audit).toContain("aborting worker");
+  });
+
+  it("does not abort when the ticket advances to the phase's own next", async () => {
+    let runCount = 0;
+    const h = setupHarness(
+      () => {
+        runCount += 1;
+        if (runCount === 1) {
+          // Coder self-advances to code-review (coding.next) and keeps running
+          // briefly so the watch ticks while the tracker sits on next.
+          h.issueTracker.phases.set("PROJ-NEXT", "code-review");
+          return new Promise<WorkerResult>((resolve) => {
+            setTimeout(() => {
+              resolve({
+                success: true,
+                exitCode: 0,
+                elapsed: 1,
+                summary: "coded",
+                error: null,
+                usage: null,
+              });
+            }, 40);
+          });
+        }
+        // Downstream phases succeed fast; advanceNormal drives the tracker phase
+        // forward so no spurious drift is detected.
+        return Promise.resolve({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "ok",
+          error: null,
+          usage: null,
+        });
+      },
+      { extra: { phaseWatchIntervalMs: 5 } },
+    );
+    h.pipelineState.create("PROJ-NEXT", "coding");
+    h.pipelineState.updateSpec("PROJ-NEXT", "real spec");
+    h.issueTracker.phases.set("PROJ-NEXT", "coding");
+    h.issueTracker.specs.set("PROJ-NEXT", "real spec");
+    const codingTask = h.queue.enqueue({ type: "coding", issueId: "PROJ-NEXT" });
+
+    await runUntil(h, () => h.queue.getTask(codingTask.id)?.status === "complete");
+
+    const stored = h.queue.getTask(codingTask.id);
+    expect(stored?.status).toBe("complete");
+    // Completed via the normal success path — the watch did not abort on next.
+    expect(stored?.result).not.toContain("Aborted");
+    const audit = readFileSync(auditPath, "utf8");
+    expect(audit).not.toContain("aborting worker");
+  });
+
+  it("does not abort a self-route to an escape phase that finishes within the grace", async () => {
+    let runCount = 0;
+    const h = setupHarness(
+      () => {
+        runCount += 1;
+        if (runCount === 1) {
+          // Coder self-routes to `blocked` (an escape phase, not coding.next) as its
+          // final act, then keeps running briefly while it "emits its summary" — the
+          // wrap-up window the watch must not kill. The long grace outlasts the worker,
+          // so it lands on the success path and its real summary survives.
+          h.issueTracker.phases.set("PROJ-SELF", "blocked");
+          return new Promise<WorkerResult>((resolve) => {
+            setTimeout(() => {
+              resolve({
+                success: true,
+                exitCode: 0,
+                elapsed: 1,
+                summary: "Blocked — needs human input",
+                error: null,
+                usage: null,
+              });
+            }, 30);
+          });
+        }
+        return Promise.resolve({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "ok",
+          error: null,
+          usage: null,
+        });
+      },
+      { extra: { phaseWatchIntervalMs: 5, phaseDriftGraceMs: 10_000 } },
+    );
+    h.pipelineState.create("PROJ-SELF", "coding");
+    h.pipelineState.updateSpec("PROJ-SELF", "real spec");
+    h.issueTracker.phases.set("PROJ-SELF", "coding");
+    h.issueTracker.specs.set("PROJ-SELF", "real spec");
+    const codingTask = h.queue.enqueue({ type: "coding", issueId: "PROJ-SELF" });
+
+    await runUntil(h, () => h.queue.getTask(codingTask.id)?.status === "complete");
+
+    const stored = h.queue.getTask(codingTask.id);
+    expect(stored?.status).toBe("complete");
+    // Not aborted: the worker's real summary survives, not the generic "Aborted …".
+    expect(stored?.result).toBe("Blocked — needs human input");
+    const audit = readFileSync(auditPath, "utf8");
+    expect(audit).not.toContain("aborting worker");
   });
 });

@@ -180,6 +180,61 @@ echo '{"result":"ok"}'
     expect(heartbeatCount).toBeGreaterThanOrEqual(1);
   });
 
+  it("terminates the worker when the abort signal fires mid-run", async () => {
+    const script = writeScript(
+      "worker.sh",
+      `#!/bin/sh
+exec sleep 30
+`,
+    );
+    const controller = new AbortController();
+    const resultPromise = runWorker({
+      claudeBin: script,
+      prompt: "",
+      cwd: tempDir,
+      timeoutMs: 30000,
+      stallThresholdMs: 120000,
+      model: "opus",
+      effort: "high",
+      heartbeatIntervalMs: 5000,
+      stallGracePeriodMs: 60000,
+      killGracePeriodMs: 100,
+      signal: controller.signal,
+    });
+    setTimeout(() => {
+      controller.abort();
+    }, 100);
+    const result = await resultPromise;
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Aborted");
+  }, 10000);
+
+  it("terminates immediately when the signal is already aborted", async () => {
+    const script = writeScript(
+      "worker.sh",
+      `#!/bin/sh
+exec sleep 30
+`,
+    );
+    const controller = new AbortController();
+    controller.abort();
+    const result = await runWorker({
+      claudeBin: script,
+      prompt: "",
+      cwd: tempDir,
+      timeoutMs: 30000,
+      stallThresholdMs: 120000,
+      model: "opus",
+      effort: "high",
+      heartbeatIntervalMs: 5000,
+      stallGracePeriodMs: 60000,
+      killGracePeriodMs: 100,
+      signal: controller.signal,
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Aborted");
+  }, 10000);
+
   it("treats non-JSON stdout as raw summary", async () => {
     const script = writeScript(
       "worker.sh",

@@ -48,6 +48,10 @@ export const DEFAULT_PHASES: PhaseDefinition[] = [
     // coding re-enters from code-review (and testing) on failure; review_iterations
     // is bumped before the transition, so the coder sees the correct rework round.
     iterationCounter: "review",
+    // The coder needs a spec to work from. If a ticket reaches coding without one
+    // (e.g. moved straight to coding by a human), the orchestrator kicks it back to
+    // spec-writing instead of launching the worker.
+    requiresSpec: true,
   },
   {
     name: "code-review",

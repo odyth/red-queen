@@ -36,6 +36,7 @@ const PhaseDefinitionSchema = z
     requiresPr: z.boolean().optional(),
     resetReviewIterationsOnPass: z.boolean().optional(),
     producesSpec: z.boolean().optional(),
+    requiresSpec: z.boolean().optional(),
   })
   .strict();
 
