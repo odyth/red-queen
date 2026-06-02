@@ -22,8 +22,6 @@ export const JiraConfigSchema = z.object({
   customFields: z.object({
     phase: z.string().min(1),
     spec: z.string().min(1),
-    totalCost: z.string().min(1).optional(),
-    costBreakdown: z.string().min(1).optional(),
   }),
   phaseMapping: z.record(
     z.string(),

@@ -1,7 +1,8 @@
-import { describe, it, expect } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { describe, it, expect, vi } from "vitest";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   ConfigError,
   loadConfig,
@@ -753,37 +754,18 @@ project:
     expect(config.pipeline.cost.pricing).toEqual({});
   });
 
-  it("rejects cost.enabled=true on Jira without the two custom field IDs", () => {
+  it("accepts cost.enabled=true on Jira without custom field IDs (marker comment path)", () => {
     const yaml = `${baseYamlHeader}
 pipeline:
   cost:
     enabled: true
 `;
-    expect(() => parseConfig(yaml)).toThrow(/customFields\.totalCost/);
+    const config = parseConfig(yaml);
+    expect(config.pipeline.cost.enabled).toBe(true);
   });
 
-  it("accepts cost.enabled=true on Jira when both custom field IDs are set", () => {
-    const yaml = `
-issueTracker:
-  type: jira
-  config:
-    baseUrl: "https://example.atlassian.net"
-    email: "bot@example.com"
-    apiToken: "secret"
-    projectKey: "TEST"
-    customFields:
-      phase: "customfield_1"
-      spec: "customfield_2"
-      totalCost: "customfield_3"
-      costBreakdown: "customfield_4"
-    phaseMapping:
-      coding:
-        optionId: "10001"
-sourceControl:
-  type: github
-project:
-  buildCommand: "npm run build"
-  testCommand: "npm test"
+  it("accepts cost.enabled=true on Jira with pricing overrides", () => {
+    const yaml = `${baseYamlHeader}
 pipeline:
   cost:
     enabled: true
@@ -826,5 +808,50 @@ pipeline:
 `;
     const config = parseConfig(yaml);
     expect(config.pipeline.cost.enabled).toBe(true);
+  });
+});
+
+describe("shipped example configs", () => {
+  // Guards against config/example drift: every shipped config must parse under
+  // the current schema. Examples reference env vars, so stub them; loadConfig
+  // does not read privateKeyPath, so a non-existent PEM path is fine here.
+  const examplesDir = join(dirname(fileURLToPath(import.meta.url)), "../../../examples");
+  const stubEnv: Record<string, string> = {
+    JIRA_TOKEN: "test-token",
+    JIRA_WEBHOOK_SECRET: "test-jira-secret",
+    GITHUB_PAT: "ghp_test",
+    GITHUB_APP_ID: "123456",
+    GITHUB_APP_INSTALLATION_ID: "7890",
+    GITHUB_WEBHOOK_SECRET: "test-gh-secret",
+  };
+
+  function findConfigYaml(dir: string): string[] {
+    const found: string[] = [];
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        found.push(...findConfigYaml(full));
+      } else if (entry.name.endsWith(".yaml") || entry.name.endsWith(".yml")) {
+        found.push(full);
+      }
+    }
+    return found;
+  }
+
+  const exampleFiles = findConfigYaml(examplesDir);
+
+  it("ships at least one example config", () => {
+    expect(exampleFiles.length).toBeGreaterThan(0);
+  });
+
+  it.each(exampleFiles)("loads %s without error", (file) => {
+    for (const [key, value] of Object.entries(stubEnv)) {
+      vi.stubEnv(key, value);
+    }
+    try {
+      expect(() => loadConfig(file)).not.toThrow();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
