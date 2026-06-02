@@ -300,31 +300,75 @@ export class JiraIssueTrackerAdapter implements IssueTracker {
     // Upsert a single cost comment: find ours by its marker title and update it
     // in place so re-running phases refreshes one comment instead of stacking a
     // new one each time. No custom fields required.
+    //
+    // Jira returns comments oldest-first in bounded pages, so a single GET can
+    // miss our comment on a long thread and we'd POST a fresh duplicate every
+    // run. Page through all comments (capped) the way listIssuesByPhase does.
     const body = renderBreakdownAdf(breakdown);
-    const existing = await this.client.request<{ comments?: JiraCommentRaw[] }>(
-      "GET",
-      `/rest/api/3/issue/${encodeURIComponent(issueId)}/comment`,
-    );
-    const found = findCostComment(
-      (existing.comments ?? []).map((c) => ({ id: c.id, body: c.body, created: c.created })),
-    );
-    if (found.duplicateCount > 0) {
-      this.audit("Jira setCostBreakdown: multiple cost comments found, updating newest", {
-        issueId,
-        duplicateCount: found.duplicateCount,
+    const all: JiraCommentRaw[] = [];
+    let startAt = 0;
+    let pages = 0;
+    let done = false;
+    while (done === false) {
+      pages++;
+      if (pages > LIST_MAX_PAGES) {
+        throw new Error(
+          `Jira setCostBreakdown comment page cap (${String(LIST_MAX_PAGES)}) exceeded for issue '${issueId}' — runaway comment thread.`,
+        );
+      }
+      const params = new URLSearchParams({
+        startAt: String(startAt),
+        maxResults: String(LIST_PAGE_SIZE),
       });
+      const page = await this.client.request<{ comments?: JiraCommentRaw[]; total?: number }>(
+        "GET",
+        `/rest/api/3/issue/${encodeURIComponent(issueId)}/comment?${params.toString()}`,
+      );
+      const comments = page.comments ?? [];
+      all.push(...comments);
+      startAt += comments.length;
+      done = comments.length === 0 || startAt >= (page.total ?? all.length);
     }
-    if (found.commentId !== null) {
+    const found = findCostComment(all.map((c) => ({ id: c.id, body: c.body, created: c.created })));
+    if (found.commentId === null) {
       await this.client.request(
-        "PUT",
-        `/rest/api/3/issue/${encodeURIComponent(issueId)}/comment/${encodeURIComponent(found.commentId)}`,
-        { body },
+        "POST",
+        `/rest/api/3/issue/${encodeURIComponent(issueId)}/comment`,
+        {
+          body,
+        },
       );
       return;
     }
-    await this.client.request("POST", `/rest/api/3/issue/${encodeURIComponent(issueId)}/comment`, {
-      body,
-    });
+    await this.client.request(
+      "PUT",
+      `/rest/api/3/issue/${encodeURIComponent(issueId)}/comment/${encodeURIComponent(found.commentId)}`,
+      { body },
+    );
+    // Reconcile older duplicates (e.g. left by the pre-pagination bug) so they
+    // stop lingering with stale numbers. Best-effort: the kept comment is
+    // already current, so a failed delete only leaves a cosmetic extra.
+    if (found.duplicateIds.length > 0) {
+      this.audit("Jira setCostBreakdown: removing duplicate cost comments", {
+        issueId,
+        duplicateCount: found.duplicateIds.length,
+      });
+      for (const dupId of found.duplicateIds) {
+        try {
+          await this.client.request(
+            "DELETE",
+            `/rest/api/3/issue/${encodeURIComponent(issueId)}/comment/${encodeURIComponent(dupId)}`,
+          );
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          this.audit("Jira setCostBreakdown: failed to delete duplicate cost comment", {
+            issueId,
+            commentId: dupId,
+            error: message,
+          });
+        }
+      }
+    }
   }
 
   async getComments(issueId: string): Promise<Comment[]> {

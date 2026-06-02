@@ -43,7 +43,7 @@ describe("findCostComment", () => {
     expect(found.duplicateCount).toBe(0);
   });
 
-  it("keeps the newest and counts the rest as duplicates", () => {
+  it("keeps the newest and reports the rest as duplicate ids", () => {
     const found = findCostComment([
       costComment("old", "2026-05-01T00:00:00Z"),
       costComment("new", "2026-05-10T00:00:00Z"),
@@ -51,11 +51,19 @@ describe("findCostComment", () => {
     ]);
     expect(found.commentId).toBe("new");
     expect(found.duplicateCount).toBe(2);
+    expect([...found.duplicateIds].sort()).toEqual(["mid", "old"]);
   });
 
   it("does not match when the marker is not at the start of the comment", () => {
     const found = findCostComment([
       humanComment("1", `quoting you: ${JIRA_COST_MARKER} (model: opus)`, "2026-05-01T00:00:00Z"),
+    ]);
+    expect(found.commentId).toBeNull();
+  });
+
+  it("does not match a human comment that only opens with the marker phrase", () => {
+    const found = findCostComment([
+      humanComment("1", `${JIRA_COST_MARKER} looks high this sprint`, "2026-05-01T00:00:00Z"),
     ]);
     expect(found.commentId).toBeNull();
   });

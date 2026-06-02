@@ -48,7 +48,7 @@ pipeline:
   cost:
     # Post an estimated per-phase + total cost comment on each ticket (upserted
     # in place). Works on Bedrock and Claude Max — cost comes from Claude Code's
-    # reported usage. Off by default.
+    # reported usage. Off by default; enabled here to demonstrate.
     enabled: true
     # Optional per-model rate overrides (USD per 1M tokens), used only when the
     # CLI reports no cost (e.g. some Bedrock setups):

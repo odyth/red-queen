@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { JiraClient } from "../client.js";
 import { JiraIssueTrackerAdapter } from "../adapter.js";
 import type { JiraAdapterConfig } from "../adapter.js";
+import type { CostBreakdown } from "../../../core/types.js";
 
 type FetchFn = typeof fetch;
 
@@ -387,6 +388,93 @@ describe("JiraIssueTrackerAdapter", () => {
     const result = h.adapter.parseWebhookEvent({}, body);
     expect(result?.type).toBe("phase-change");
     expect(result?.payload.phase).toBe("coding");
+  });
+});
+
+const costBreakdown: CostBreakdown = {
+  totalCostUsd: 1.23,
+  model: "opus",
+  currency: "USD",
+  phases: [],
+  updatedAt: "2026-05-29T00:00:00Z",
+};
+
+// Minimal ADF whose leading text matches the upsert marker prefix.
+function costMarkerBody(): unknown {
+  return {
+    type: "doc",
+    content: [
+      {
+        type: "paragraph",
+        content: [{ type: "text", text: "Red Queen cost summary (model: opus)" }],
+      },
+    ],
+  };
+}
+
+function plainBody(text: string): unknown {
+  return { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text }] }] };
+}
+
+describe("JiraIssueTrackerAdapter setCostBreakdown", () => {
+  let h: ReturnType<typeof mkHarness>;
+
+  beforeEach(() => {
+    h = mkHarness();
+  });
+
+  it("POSTs a new comment when none carries the marker", async () => {
+    h.setResponse((c) => c.method === "GET" && c.url.includes("startAt=0"), {
+      comments: [],
+      total: 0,
+    });
+    h.setResponse((c) => c.method === "POST" && c.url.endsWith("/comment"), { id: "c-new" });
+    await h.adapter.setCostBreakdown("RQ-1", costBreakdown);
+    const post = h.calls.find((c) => c.method === "POST" && c.url.endsWith("/comment"));
+    expect(post?.body).toContain("Red Queen cost summary");
+    expect(h.calls.some((c) => c.method === "PUT")).toBe(false);
+  });
+
+  it("PUTs the existing cost comment in place", async () => {
+    h.setResponse((c) => c.method === "GET" && c.url.includes("startAt=0"), {
+      comments: [{ id: "c-1", created: "2026-05-02T00:00:00Z", body: costMarkerBody() }],
+      total: 1,
+    });
+    h.setResponse((c) => c.method === "PUT" && c.url.endsWith("/comment/c-1"), {}, 204);
+    await h.adapter.setCostBreakdown("RQ-1", costBreakdown);
+    expect(h.calls.some((c) => c.method === "PUT" && c.url.endsWith("/comment/c-1"))).toBe(true);
+    expect(h.calls.some((c) => c.method === "POST")).toBe(false);
+  });
+
+  it("paginates and finds the marker on a later page", async () => {
+    h.setResponse((c) => c.method === "GET" && c.url.includes("startAt=0"), {
+      comments: [{ id: "h-1", created: "2026-05-01T00:00:00Z", body: plainBody("discussion") }],
+      total: 2,
+    });
+    h.setResponse((c) => c.method === "GET" && c.url.includes("startAt=1"), {
+      comments: [{ id: "c-2", created: "2026-05-09T00:00:00Z", body: costMarkerBody() }],
+      total: 2,
+    });
+    h.setResponse((c) => c.method === "PUT" && c.url.endsWith("/comment/c-2"), {}, 204);
+    await h.adapter.setCostBreakdown("RQ-1", costBreakdown);
+    expect(h.calls.filter((c) => c.method === "GET" && c.url.includes("/comment?")).length).toBe(2);
+    expect(h.calls.some((c) => c.method === "PUT" && c.url.endsWith("/comment/c-2"))).toBe(true);
+    expect(h.calls.some((c) => c.method === "POST")).toBe(false);
+  });
+
+  it("deletes older duplicate cost comments after updating the newest", async () => {
+    h.setResponse((c) => c.method === "GET" && c.url.includes("startAt=0"), {
+      comments: [
+        { id: "old", created: "2026-05-01T00:00:00Z", body: costMarkerBody() },
+        { id: "new", created: "2026-05-10T00:00:00Z", body: costMarkerBody() },
+      ],
+      total: 2,
+    });
+    h.setResponse((c) => c.method === "PUT" && c.url.endsWith("/comment/new"), {}, 204);
+    h.setResponse((c) => c.method === "DELETE" && c.url.endsWith("/comment/old"), {}, 204);
+    await h.adapter.setCostBreakdown("RQ-1", costBreakdown);
+    expect(h.calls.some((c) => c.method === "PUT" && c.url.endsWith("/comment/new"))).toBe(true);
+    expect(h.calls.some((c) => c.method === "DELETE" && c.url.endsWith("/comment/old"))).toBe(true);
   });
 });
 

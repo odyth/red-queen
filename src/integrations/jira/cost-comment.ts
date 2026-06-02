@@ -14,7 +14,13 @@ export interface RawJiraComment {
 export interface CostCommentLookup {
   commentId: string | null;
   duplicateCount: number;
+  duplicateIds: string[];
 }
+
+// The cost comment's first line renders as `<marker> (model: <model>)`. We match
+// that full templated prefix — not just the marker words — so the upsert can't
+// target (and overwrite) a human comment that merely opens with the same phrase.
+const COST_MARKER_PREFIX = `${JIRA_COST_MARKER} (model: `;
 
 // Finds the existing cost comment (if any) so the adapter can update it in
 // place instead of stacking a fresh comment after every phase. When more than
@@ -22,17 +28,22 @@ export interface CostCommentLookup {
 export function findCostComment(comments: RawJiraComment[]): CostCommentLookup {
   const matches = comments.filter((c) => hasCostMarker(c.body));
   if (matches.length === 0) {
-    return { commentId: null, duplicateCount: 0 };
+    return { commentId: null, duplicateCount: 0, duplicateIds: [] };
   }
   const newestFirst = [...matches].sort((a, b) => (b.created ?? "").localeCompare(a.created ?? ""));
-  return { commentId: newestFirst[0]?.id ?? null, duplicateCount: matches.length - 1 };
+  const [newest, ...rest] = newestFirst;
+  return {
+    commentId: newest?.id ?? null,
+    duplicateCount: rest.length,
+    duplicateIds: rest.map((c) => c.id),
+  };
 }
 
 function hasCostMarker(body: AdfNode | undefined): boolean {
   if (body === undefined) {
     return false;
   }
-  return adfPlainText(body).trimStart().startsWith(JIRA_COST_MARKER);
+  return adfPlainText(body).trimStart().startsWith(COST_MARKER_PREFIX);
 }
 
 function adfPlainText(node: AdfNode): string {
