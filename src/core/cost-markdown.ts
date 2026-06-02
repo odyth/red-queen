@@ -1,5 +1,5 @@
 import type { CostBreakdown, PhaseCostRow } from "./types.js";
-import { formatTokens, formatUsd } from "./cost-format.js";
+import { COST_DISCLAIMER, formatTokens, formatUsd } from "./cost-format.js";
 
 export function renderBreakdownMarkdown(breakdown: CostBreakdown): string {
   const lines: string[] = [];
@@ -16,6 +16,7 @@ export function renderBreakdownMarkdown(breakdown: CostBreakdown): string {
   }
   lines.push(`| **Total** | | | | | | **${formatUsd(breakdown.totalCostUsd)}** |`);
   lines.push("");
+  lines.push(`_${COST_DISCLAIMER}_`);
   lines.push(`_Updated ${breakdown.updatedAt}_`);
   return lines.join("\n");
 }

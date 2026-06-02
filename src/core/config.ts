@@ -229,38 +229,6 @@ const ConfigSchema = z
         message: `issueTracker and sourceControl webhook paths collide ("${config.pipeline.webhooks.paths.issueTracker}")`,
       });
     }
-  })
-  .superRefine((config, ctx) => {
-    if (config.pipeline.cost.enabled === false) {
-      return;
-    }
-    // When cost tracking writes to Jira, both custom field IDs must be
-    // provided — otherwise setCostBreakdown would throw at runtime for every
-    // phase transition. GitHub uses a marker comment, so no fields needed.
-    if (config.issueTracker.type === "jira") {
-      const customFields = (config.issueTracker.config.customFields ?? {}) as Record<
-        string,
-        unknown
-      >;
-      const totalField = customFields.totalCost;
-      const breakdownField = customFields.costBreakdown;
-      if (typeof totalField !== "string" || totalField.length === 0) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["issueTracker", "config", "customFields", "totalCost"],
-          message:
-            "pipeline.cost.enabled is true but issueTracker.config.customFields.totalCost is missing — add the Jira number custom field ID (e.g. customfield_10200) or disable cost tracking",
-        });
-      }
-      if (typeof breakdownField !== "string" || breakdownField.length === 0) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["issueTracker", "config", "customFields", "costBreakdown"],
-          message:
-            "pipeline.cost.enabled is true but issueTracker.config.customFields.costBreakdown is missing — add the Jira rich-text custom field ID (e.g. customfield_10201) or disable cost tracking",
-        });
-      }
-    }
   });
 
 export type RedQueenConfig = z.infer<typeof ConfigSchema>;

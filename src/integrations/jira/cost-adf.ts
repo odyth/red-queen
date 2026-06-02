@@ -1,6 +1,7 @@
 import type { AdfDocument, AdfNode } from "./adf.js";
 import type { CostBreakdown, PhaseCostRow } from "../../core/types.js";
-import { formatTokens, formatUsd } from "../../core/cost-format.js";
+import { COST_DISCLAIMER, formatTokens, formatUsd } from "../../core/cost-format.js";
+import { JIRA_COST_MARKER } from "./cost-comment.js";
 
 // toAdf() doesn't support markdown tables, so running the pipe-table string
 // through it produces a wall of hardBreak-separated literals in the Jira
@@ -38,10 +39,11 @@ export function renderBreakdownAdf(breakdown: CostBreakdown): AdfDocument {
     version: 1,
     content: [
       paragraph([
-        textNode("Cost summary", [{ type: "strong" }]),
+        textNode(JIRA_COST_MARKER, [{ type: "strong" }]),
         textNode(` (model: ${breakdown.model})`),
       ]),
       table,
+      paragraph([textNode(COST_DISCLAIMER, [{ type: "em" }])]),
       paragraph([textNode(`Updated ${breakdown.updatedAt}`, [{ type: "em" }])]),
     ],
   };

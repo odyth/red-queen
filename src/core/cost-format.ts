@@ -2,6 +2,12 @@
 // rendering, Jira/GitHub adapters) and the dashboard client bundle — keep
 // this module free of Node imports so tsconfig.client.json can include it.
 
+// Shown on every cost comment. Cost is Claude Code's reported usage cost (or a
+// token×pricing estimate when the CLI reports none), not your invoiced bill —
+// flat-rate plans like Claude Max aren't charged per task.
+export const COST_DISCLAIMER =
+  "Estimated API-equivalent cost; actual billing depends on your plan (flat-rate plans like Claude Max aren't charged per task).";
+
 export function formatUsd(n: number): string {
   if (n < 0.01 && n > 0) {
     return `<$0.01`;

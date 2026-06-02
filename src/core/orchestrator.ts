@@ -988,7 +988,15 @@ export class RedQueen {
       return;
     }
     const model = this.deps.runtime.config.pipeline.model;
-    const cost = computeCost(result.usage, model, costConfig.pricing);
+    // Prefer Claude Code's own total_cost_usd (accurate across model mixes and
+    // billing modes). Fall back to token×pricing only when the CLI reports no
+    // cost — e.g. some Bedrock setups, where pipeline.cost.pricing carries the
+    // enterprise rates.
+    const reported = result.reportedCostUsd;
+    const cost =
+      reported !== null && reported > 0
+        ? reported
+        : computeCost(result.usage, model, costConfig.pricing);
     try {
       this.deps.phaseUsage.recordRun(issueId, phase.name, result.usage, cost);
     } catch (err) {

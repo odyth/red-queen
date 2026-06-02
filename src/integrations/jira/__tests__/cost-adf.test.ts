@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { renderBreakdownAdf } from "../cost-adf.js";
+import { JIRA_COST_MARKER } from "../cost-comment.js";
+import { COST_DISCLAIMER } from "../../../core/cost-format.js";
 import type { CostBreakdown } from "../../../core/types.js";
 import type { AdfNode } from "../adf.js";
 
@@ -98,6 +100,20 @@ describe("renderBreakdownAdf", () => {
     const totalCells = (totalRow.content ?? []).map(cellText);
     expect(totalCells[0]).toBe("Total");
     expect(totalCells[totalCells.length - 1]).toBe("$1.23");
+  });
+
+  it("leads with the upsert marker and includes the estimate disclaimer", () => {
+    const breakdown: CostBreakdown = {
+      totalCostUsd: 1.23,
+      model: "opus",
+      currency: "USD",
+      phases: [row("coding", 1, 1.23)],
+      updatedAt: "2026-05-29T00:00:00Z",
+    };
+    const doc = renderBreakdownAdf(breakdown);
+    const firstParagraph = expectNode(findFirst(doc, "paragraph"), "paragraph");
+    expect(cellText(firstParagraph).startsWith(JIRA_COST_MARKER)).toBe(true);
+    expect(cellText(doc)).toContain(COST_DISCLAIMER);
   });
 
   it("renders an empty state when no phases are recorded", () => {
