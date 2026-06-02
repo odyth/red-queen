@@ -416,6 +416,12 @@ function plainBody(text: string): unknown {
   return { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text }] }] };
 }
 
+// A cost comment as the bot (accountId "bot-1", per mkHarness) would have left
+// it: marker body + bot author, so the author-filtered upsert recognizes it.
+function botCostComment(id: string, created: string): Record<string, unknown> {
+  return { id, created, author: { accountId: "bot-1" }, body: costMarkerBody() };
+}
+
 describe("JiraIssueTrackerAdapter setCostBreakdown", () => {
   let h: ReturnType<typeof mkHarness>;
 
@@ -437,7 +443,7 @@ describe("JiraIssueTrackerAdapter setCostBreakdown", () => {
 
   it("PUTs the existing cost comment in place", async () => {
     h.setResponse((c) => c.method === "GET" && c.url.includes("startAt=0"), {
-      comments: [{ id: "c-1", created: "2026-05-02T00:00:00Z", body: costMarkerBody() }],
+      comments: [botCostComment("c-1", "2026-05-02T00:00:00Z")],
       total: 1,
     });
     h.setResponse((c) => c.method === "PUT" && c.url.endsWith("/comment/c-1"), {}, 204);
@@ -452,7 +458,7 @@ describe("JiraIssueTrackerAdapter setCostBreakdown", () => {
       total: 2,
     });
     h.setResponse((c) => c.method === "GET" && c.url.includes("startAt=1"), {
-      comments: [{ id: "c-2", created: "2026-05-09T00:00:00Z", body: costMarkerBody() }],
+      comments: [botCostComment("c-2", "2026-05-09T00:00:00Z")],
       total: 2,
     });
     h.setResponse((c) => c.method === "PUT" && c.url.endsWith("/comment/c-2"), {}, 204);
@@ -465,8 +471,8 @@ describe("JiraIssueTrackerAdapter setCostBreakdown", () => {
   it("deletes older duplicate cost comments after updating the newest", async () => {
     h.setResponse((c) => c.method === "GET" && c.url.includes("startAt=0"), {
       comments: [
-        { id: "old", created: "2026-05-01T00:00:00Z", body: costMarkerBody() },
-        { id: "new", created: "2026-05-10T00:00:00Z", body: costMarkerBody() },
+        botCostComment("old", "2026-05-01T00:00:00Z"),
+        botCostComment("new", "2026-05-10T00:00:00Z"),
       ],
       total: 2,
     });
@@ -475,6 +481,31 @@ describe("JiraIssueTrackerAdapter setCostBreakdown", () => {
     await h.adapter.setCostBreakdown("RQ-1", costBreakdown);
     expect(h.calls.some((c) => c.method === "PUT" && c.url.endsWith("/comment/new"))).toBe(true);
     expect(h.calls.some((c) => c.method === "DELETE" && c.url.endsWith("/comment/old"))).toBe(true);
+  });
+
+  it("leaves a human-pasted cost comment untouched and updates only the bot's own", async () => {
+    // A human pastes the marker text in a newer comment. Marker-only matching
+    // would overwrite it (it's newest) and delete the bot's real comment as a
+    // duplicate; author filtering must update the bot comment and touch nothing
+    // the human wrote.
+    h.setResponse((c) => c.method === "GET" && c.url.includes("startAt=0"), {
+      comments: [
+        botCostComment("c-bot", "2026-05-01T00:00:00Z"),
+        {
+          id: "human-paste",
+          created: "2026-05-10T00:00:00Z",
+          author: { accountId: "intruder" },
+          body: costMarkerBody(),
+        },
+      ],
+      total: 2,
+    });
+    h.setResponse((c) => c.method === "PUT" && c.url.endsWith("/comment/c-bot"), {}, 204);
+    await h.adapter.setCostBreakdown("RQ-1", costBreakdown);
+    expect(h.calls.some((c) => c.method === "PUT" && c.url.endsWith("/comment/c-bot"))).toBe(true);
+    expect(h.calls.some((c) => c.url.endsWith("/comment/human-paste"))).toBe(false);
+    expect(h.calls.some((c) => c.method === "DELETE")).toBe(false);
+    expect(h.calls.some((c) => c.method === "POST")).toBe(false);
   });
 });
 

@@ -9,6 +9,7 @@ export interface RawJiraComment {
   id: string;
   body?: AdfNode;
   created?: string;
+  accountId?: string;
 }
 
 export interface CostCommentLookup {
@@ -25,8 +26,19 @@ const COST_MARKER_PREFIX = `${JIRA_COST_MARKER} (model: `;
 // Finds the existing cost comment (if any) so the adapter can update it in
 // place instead of stacking a fresh comment after every phase. When more than
 // one match exists we keep the newest and report the rest as duplicates.
-export function findCostComment(comments: RawJiraComment[]): CostCommentLookup {
-  const matches = comments.filter((c) => hasCostMarker(c.body));
+//
+// When botAccountId is set, only comments authored by the bot can match — the
+// marker is human-readable text, so a human comment that pastes/quotes it could
+// otherwise be overwritten (PUT) or deleted (duplicate cleanup) by the upsert.
+// When null (botAccountId not configured), fall back to marker-only matching.
+export function findCostComment(
+  comments: RawJiraComment[],
+  botAccountId: string | null,
+): CostCommentLookup {
+  const matches = comments.filter((c) => {
+    const authoredByBot = botAccountId === null || c.accountId === botAccountId;
+    return authoredByBot && hasCostMarker(c.body);
+  });
   if (matches.length === 0) {
     return { commentId: null, duplicateCount: 0, duplicateIds: [] };
   }
