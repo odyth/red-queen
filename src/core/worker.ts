@@ -38,6 +38,10 @@ export interface WorkerOptions {
   maxBufferBytes?: number;
   onHeartbeat?: (info: HeartbeatInfo) => void;
   onStart?: (pid: number) => void;
+  // Aborting terminates the worker (SIGTERM → SIGKILL after the grace period),
+  // routed through the same kill path as timeout/stall. The orchestrator aborts
+  // when the ticket is moved out of the phase this worker is running.
+  signal?: AbortSignal;
 }
 
 const DEFAULT_HEARTBEAT_MS = 60_000;
@@ -145,6 +149,19 @@ export function runWorker(options: WorkerOptions): Promise<WorkerResult> {
 
     if (options.onStart && worker.pid !== undefined) {
       options.onStart(worker.pid);
+    }
+
+    if (options.signal) {
+      const onAbort = (): void => {
+        killed = true;
+        killReason = "Aborted — ticket left the phase";
+        terminateWorker(worker, killGracePeriodMs);
+      };
+      if (options.signal.aborted) {
+        onAbort();
+      } else {
+        options.signal.addEventListener("abort", onAbort, { once: true });
+      }
     }
 
     let lastCpuTime: number | null = null;
