@@ -34,6 +34,12 @@ export interface PhaseDefinition {
   // it would re-run the reviewer (and re-post the review) maxRetries times on
   // every rework cycle. The onFail iteration counting + escalation still apply.
   skipRetryOnFailure?: boolean;
+  // When true, this phase authors the spec artifact (the prompt-writer phases).
+  // On success the orchestrator verifies a non-empty spec actually landed on the
+  // tracker before advancing; a phase that exits 0 without writing one is routed
+  // through the failure path (retry → onFail) instead of parking an empty spec
+  // at the next human gate.
+  producesSpec?: boolean;
 }
 
 export class PhaseGraph {

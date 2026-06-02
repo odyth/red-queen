@@ -505,6 +505,7 @@ describe("RedQueen orchestrator", () => {
     );
     h.pipelineState.create("PROJ-1", "spec-writing");
     h.issueTracker.phases.set("PROJ-1", "spec-writing");
+    h.issueTracker.specs.set("PROJ-1", "Implementation spec body.");
     h.queue.enqueue({ type: "spec-writing", issueId: "PROJ-1" });
 
     await runUntil(h, () => h.issueTracker.assignments.get("PROJ-1") === "human");
@@ -544,6 +545,7 @@ describe("RedQueen orchestrator", () => {
     h.pipelineState.create("PROJ-SKIP", "spec-writing");
     h.pipelineState.setOpenQuestionCount("PROJ-SKIP", 0);
     h.issueTracker.phases.set("PROJ-SKIP", "spec-writing");
+    h.issueTracker.specs.set("PROJ-SKIP", "Implementation spec body.");
     h.queue.enqueue({ type: "spec-writing", issueId: "PROJ-SKIP" });
 
     await runUntil(h, () => h.issueTracker.calls.includes("setPhase:PROJ-SKIP:coding"));
@@ -570,6 +572,7 @@ describe("RedQueen orchestrator", () => {
     h.pipelineState.create("PROJ-HOLD", "spec-writing");
     h.pipelineState.setOpenQuestionCount("PROJ-HOLD", 2);
     h.issueTracker.phases.set("PROJ-HOLD", "spec-writing");
+    h.issueTracker.specs.set("PROJ-HOLD", "Implementation spec body.");
     h.queue.enqueue({ type: "spec-writing", issueId: "PROJ-HOLD" });
 
     await runUntil(h, () => h.issueTracker.assignments.get("PROJ-HOLD") === "human");
@@ -595,6 +598,7 @@ describe("RedQueen orchestrator", () => {
     h.pipelineState.create("PROJ-OFF", "spec-writing");
     h.pipelineState.setOpenQuestionCount("PROJ-OFF", 0);
     h.issueTracker.phases.set("PROJ-OFF", "spec-writing");
+    h.issueTracker.specs.set("PROJ-OFF", "Implementation spec body.");
     h.queue.enqueue({ type: "spec-writing", issueId: "PROJ-OFF" });
 
     await runUntil(h, () => h.issueTracker.assignments.get("PROJ-OFF") === "human");
@@ -713,6 +717,7 @@ describe("RedQueen orchestrator", () => {
     );
     h.pipelineState.create("PROJ-50", "spec-writing", "justin-50");
     h.issueTracker.phases.set("PROJ-50", "spec-writing");
+    h.issueTracker.specs.set("PROJ-50", "Implementation spec body.");
     h.queue.enqueue({ type: "spec-writing", issueId: "PROJ-50" });
 
     await runUntil(
@@ -773,6 +778,96 @@ describe("RedQueen orchestrator", () => {
 
     const record = h.pipelineState.get("PROJ-71");
     expect(record?.specContent).toBeNull();
+  });
+
+  it("clears stale cached spec when re-entering spec-writing", async () => {
+    // Human cleared the tracker spec field and moved the ticket back to
+    // spec-writing. The stale cached spec from the prior cycle must be dropped
+    // on dispatch so the writer authors fresh instead of being handed last
+    // cycle's prompt as context.
+    let capturedPrompt: string | null = null;
+    const h = setupHarness((opts) => {
+      const promptMatch = /Read and follow (.+) exactly/.exec(opts.prompt);
+      if (promptMatch?.[1] !== undefined) {
+        capturedPrompt = readFileSync(promptMatch[1], "utf8");
+      }
+      return Promise.resolve({
+        success: false,
+        exitCode: 1,
+        elapsed: 1,
+        summary: "",
+        error: "stop cascade",
+      });
+    });
+    h.pipelineState.create("PROJ-REENTRY", "spec-writing");
+    h.pipelineState.updateSpec("PROJ-REENTRY", "STALE prompt from last cycle");
+    h.issueTracker.phases.set("PROJ-REENTRY", "spec-writing");
+    // Tracker spec field is intentionally empty — the human deleted it.
+    h.queue.enqueue({ type: "spec-writing", issueId: "PROJ-REENTRY" });
+
+    await runUntilAfterRuns(h, 1);
+
+    expect(h.pipelineState.get("PROJ-REENTRY")?.specContent).toBeNull();
+    expect(capturedPrompt).not.toContain("STALE prompt from last cycle");
+  });
+
+  it("does not advance to spec-review when spec-writing produces an empty spec", async () => {
+    // spec-writing exits 0 but never writes a spec to the tracker. The empty-spec
+    // guard treats this as a failed run (retry → onFail) rather than parking an
+    // empty prompt at the spec-review human gate.
+    const h = setupHarness(() =>
+      Promise.resolve({
+        success: true,
+        exitCode: 0,
+        elapsed: 1,
+        summary: "claims done but wrote no spec",
+        error: null,
+      }),
+    );
+    h.pipelineState.create("PROJ-EMPTY", "spec-writing");
+    h.issueTracker.phases.set("PROJ-EMPTY", "spec-writing");
+    // No specs.set — the tracker spec field stays empty.
+    h.queue.enqueue({ type: "spec-writing", issueId: "PROJ-EMPTY" });
+
+    // maxRetries=2: one initial run plus two retries, then onFail routes the
+    // ticket to spec-awaiting-info instead of spec-review.
+    await runUntil(h, () => h.issueTracker.phases.get("PROJ-EMPTY") === "spec-awaiting-info");
+
+    expect(h.issueTracker.calls).not.toContain("setPhase:PROJ-EMPTY:spec-review");
+    expect(h.issueTracker.phases.get("PROJ-EMPTY")).toBe("spec-awaiting-info");
+    expect(h.runs.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("overrides a self-advance to spec-review when the worker wrote no spec", async () => {
+    // Skills are LLM-driven: the prompt-writer is told to self-route only to the
+    // escape phases, but if it instead pushes the tracker forward to spec-review
+    // while writing no spec, that's the empty-spec failure wearing a phase-change
+    // disguise. The retry path can't recover it (a re-dispatch is stale once the
+    // tracker sits on a gate), so the guard routes straight to onFail and assigns
+    // the human there rather than parking an empty prompt at spec-review.
+    const h = setupHarness(() => {
+      void h.issueTracker.setPhase("PROJ-SELF", "spec-review");
+      return Promise.resolve({
+        success: true,
+        exitCode: 0,
+        elapsed: 1,
+        summary: "self-routed to review but wrote no spec",
+        error: null,
+      });
+    });
+    h.pipelineState.create("PROJ-SELF", "spec-writing");
+    h.issueTracker.phases.set("PROJ-SELF", "spec-writing");
+    // No specs.set — the tracker spec field stays empty.
+    h.queue.enqueue({ type: "spec-writing", issueId: "PROJ-SELF" });
+
+    await runUntil(h, () => h.issueTracker.phases.get("PROJ-SELF") === "spec-awaiting-info");
+
+    expect(h.issueTracker.phases.get("PROJ-SELF")).toBe("spec-awaiting-info");
+    // Human is assigned at the escape gate — not left silently parked at the
+    // review gate the worker jumped to.
+    expect(h.issueTracker.calls).toContain("assignToHuman:PROJ-SELF:none");
+    // skipRetry: escalated on the single run rather than enqueuing a doomed retry.
+    expect(h.runs.length).toBe(1);
   });
 
   it("auto-transitions human-review -> code-feedback when PR exists", async () => {

@@ -203,6 +203,14 @@ export class PipelineStateStore {
     return result.changes > 0;
   }
 
+  clearSpec(issueId: string): boolean {
+    const now = new Date().toISOString();
+    const result = this.db
+      .prepare("UPDATE pipeline_state SET spec_content = NULL, updated_at = ? WHERE issue_id = ?")
+      .run(now, issueId);
+    return result.changes > 0;
+  }
+
   updatePriorContext(issueId: string, priorContext: string): boolean {
     const now = new Date().toISOString();
     const result = this.db

@@ -524,6 +524,25 @@ export class RedQueen {
     phaseName: string,
     taskId: string,
   ): Promise<void> {
+    // Entry phases (spec-writing) author the spec fresh, so the cached spec must
+    // start blank: a re-entry — a human moving the ticket back to the writer,
+    // often after emptying the spec field — must not hand last cycle's spec to
+    // the writer as context (and must not let an emptied field hide behind a
+    // stale cache). Clear here so every dispatch trigger is covered: webhook
+    // phase-change / assignment-change, poller, reconciler, retry.
+    if (this.deps.runtime.phaseGraph.getEntryPhases().some((p) => p.name === phaseName)) {
+      const record = this.deps.pipelineState.get(issueId);
+      if (record !== null && record.specContent !== null) {
+        this.deps.pipelineState.clearSpec(issueId);
+        this.deps.audit.log({
+          component: "orchestrator",
+          issueId,
+          message: `Re-entry to entry phase ${phaseName} — cleared stale cached spec for a fresh write`,
+          metadata: { taskId, phase: phaseName },
+        });
+      }
+      return;
+    }
     // Only re-read when the phase is downstream of a human gate (the gate's
     // `next` or `rework` target). Those are the moments humans can inline-edit
     // the spec on the tracker. Skipping mid-automation phases avoids a tracker
@@ -572,20 +591,13 @@ export class RedQueen {
   }
 
   private isPhaseAfterHumanGate(phaseName: string): boolean {
-    // Entry phases (the ones with no inbound `next` edge, i.e. spec-writing)
-    // author the spec fresh, so there's nothing to re-sync on their first
-    // dispatch — skip them regardless of which gate points here. Every other
-    // phase reachable from a gate's `next`/`rework` is a spot a human may
-    // have inline-edited the spec on the tracker, so we re-read it before
-    // dispatch. This keeps blocked → coding covered (humans plausibly edit
-    // the spec there before unblocking) while still short-circuiting
-    // spec-awaiting-info → spec-writing.
-    const entryPhaseNames = new Set(
-      this.deps.runtime.phaseGraph.getEntryPhases().map((p) => p.name),
-    );
-    if (entryPhaseNames.has(phaseName)) {
-      return false;
-    }
+    // Precondition: the sole caller (syncSpecFromTracker) returns early for entry
+    // phases, so phaseName here is always a non-entry phase. Without that guard
+    // this would wrongly return true for spec-writing, since spec-awaiting-info is
+    // a human gate whose `next` is spec-writing. A phase reachable from a gate's
+    // `next`/`rework` is a spot a human may have inline-edited the spec on the
+    // tracker, so we re-read it before dispatch — this keeps blocked → coding
+    // covered (humans plausibly edit the spec there before unblocking).
     for (const gate of this.deps.runtime.phaseGraph.getHumanGates()) {
       if (gate.next === phaseName) {
         return true;
@@ -775,6 +787,67 @@ export class RedQueen {
       return;
     }
 
+    // Read the tracker phase up front: it gates both the empty-spec check below
+    // and the advance/respect decision at the end. A worker that routed itself
+    // elsewhere (prompt-writer → spec-awaiting-info / blocked) surfaces here as a
+    // phase that no longer matches the one we dispatched.
+    let postPhase: string | null;
+    try {
+      postPhase = await this.deps.issueTracker.getPhase(issueId);
+    } catch {
+      postPhase = null;
+    }
+    const advancingNormally = postPhase === null || postPhase === phase.name;
+    // A worker that self-routed forward to this phase's own `next` (the review
+    // gate) is heading to the same place the orchestrator would advance it — so
+    // the empty-spec check covers that disguise too, distinct from a deliberate
+    // escape route (awaiting-info via onFail, or blocked).
+    const selfAdvancedToNext = advancingNormally === false && postPhase === phase.next;
+
+    // Empty-spec guard: a spec-producing phase that exits 0 but left the tracker
+    // spec field empty has not actually succeeded — advancing (or letting the
+    // worker's own forward jump stand) would park an empty prompt at the human
+    // review gate (the "kicked back with no prompt" bug). A deliberate route to an
+    // escape phase legitimately leaves the spec empty, so it's excluded. Read the
+    // tracker, never the cache — the cache is the thing that may be stale.
+    if (phase.producesSpec === true && (advancingNormally || selfAdvancedToNext)) {
+      let trackerSpec: string | null = null;
+      let specRead = true;
+      try {
+        trackerSpec = await this.deps.issueTracker.getSpec(issueId);
+      } catch (err) {
+        specRead = false;
+        this.deps.audit.log({
+          component: "orchestrator",
+          issueId,
+          message: `Post-${phase.name} spec read failed (${errorMessage(err)}) — skipping empty-spec guard`,
+          metadata: { taskId: task.id },
+        });
+      }
+      if (specRead && (trackerSpec === null || trackerSpec.trim() === "")) {
+        // When the worker self-advanced to the gate, the retry path is a dead
+        // end: preDispatchValidation kills any re-dispatch as stale once the
+        // tracker sits on a human gate. Skip the retry and let handleFailure route
+        // straight to onFail, overriding the bogus advance. The normal case (still
+        // on this phase) keeps the retry → onFail → escalate ladder.
+        this.deps.audit.log({
+          component: "orchestrator",
+          issueId,
+          message: selfAdvancedToNext
+            ? `${phase.name} self-advanced to ${phase.next} but wrote no spec — overriding to onFail instead of parking an empty prompt at the gate`
+            : `${phase.name} exited 0 but the tracker spec is empty — routing through onFail instead of advancing to ${phase.next}`,
+          metadata: { taskId: task.id },
+        });
+        await this.handleFailure(
+          task,
+          phase,
+          { ...result, success: false, error: `${phase.name} produced an empty spec` },
+          { skipRetry: selfAdvancedToNext },
+        );
+        return;
+      }
+    }
+
     await this.recordUsageAndPublish(issueId, phase, result);
 
     this.deps.queue.markComplete(task.id, result.summary);
@@ -811,13 +884,6 @@ export class RedQueen {
           });
         }
       }
-    }
-
-    let postPhase: string | null;
-    try {
-      postPhase = await this.deps.issueTracker.getPhase(issueId);
-    } catch {
-      postPhase = null;
     }
 
     if (postPhase !== null && postPhase !== phase.name) {
@@ -1029,6 +1095,7 @@ export class RedQueen {
     task: Task,
     phase: PhaseDefinition,
     result: WorkerResult,
+    opts: { skipRetry?: boolean } = {},
   ): Promise<void> {
     const issueId = task.issueId;
     if (issueId === null) {
@@ -1049,7 +1116,7 @@ export class RedQueen {
     const priorRetries = typeof metadata.retries === "number" ? metadata.retries : 0;
     const nextRetries = priorRetries + 1;
 
-    const retriesSkipped = phase.skipRetryOnFailure === true;
+    const retriesSkipped = phase.skipRetryOnFailure === true || opts.skipRetry === true;
     if (retriesSkipped === false && nextRetries <= this.deps.runtime.config.pipeline.maxRetries) {
       this.deps.queue.enqueue({
         type: task.type,
