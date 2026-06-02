@@ -327,15 +327,7 @@ export class JiraIssueTrackerAdapter implements IssueTracker {
       startAt += comments.length;
       done = comments.length === 0 || startAt >= (page.total ?? all.length);
     }
-    const found = findCostComment(
-      all.map((c) => ({
-        id: c.id,
-        body: c.body,
-        created: c.created,
-        accountId: c.author?.accountId,
-      })),
-      this.botAccountId,
-    );
+    const found = findCostComment(all.map((c) => ({ id: c.id, body: c.body, created: c.created })));
     if (found.commentId === null) {
       await this.client.request(
         "POST",
