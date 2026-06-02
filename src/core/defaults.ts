@@ -9,6 +9,7 @@ export const DEFAULT_PHASES: PhaseDefinition[] = [
     next: "spec-review",
     onFail: "spec-awaiting-info",
     assignTo: "ai",
+    producesSpec: true,
   },
   {
     name: "spec-review",
@@ -28,6 +29,7 @@ export const DEFAULT_PHASES: PhaseDefinition[] = [
     escalateTo: "blocked",
     assignTo: "ai",
     requiresPr: false,
+    producesSpec: true,
   },
   {
     name: "spec-awaiting-info",

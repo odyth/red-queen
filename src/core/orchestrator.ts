@@ -524,6 +524,25 @@ export class RedQueen {
     phaseName: string,
     taskId: string,
   ): Promise<void> {
+    // Entry phases (spec-writing) author the spec fresh, so the cached spec must
+    // start blank: a re-entry — a human moving the ticket back to the writer,
+    // often after emptying the spec field — must not hand last cycle's spec to
+    // the writer as context (and must not let an emptied field hide behind a
+    // stale cache). Clear here so every dispatch trigger is covered: webhook
+    // phase-change / assignment-change, poller, reconciler, retry.
+    if (this.deps.runtime.phaseGraph.getEntryPhases().some((p) => p.name === phaseName)) {
+      const record = this.deps.pipelineState.get(issueId);
+      if (record !== null && record.specContent !== null) {
+        this.deps.pipelineState.clearSpec(issueId);
+        this.deps.audit.log({
+          component: "orchestrator",
+          issueId,
+          message: `Re-entry to entry phase ${phaseName} — cleared stale cached spec for a fresh write`,
+          metadata: { taskId, phase: phaseName },
+        });
+      }
+      return;
+    }
     // Only re-read when the phase is downstream of a human gate (the gate's
     // `next` or `rework` target). Those are the moments humans can inline-edit
     // the spec on the tracker. Skipping mid-automation phases avoids a tracker
@@ -775,6 +794,55 @@ export class RedQueen {
       return;
     }
 
+    // Read the tracker phase up front: it gates both the empty-spec check below
+    // and the advance/respect decision at the end. A worker that routed itself
+    // elsewhere (prompt-writer → spec-awaiting-info / blocked) surfaces here as a
+    // phase that no longer matches the one we dispatched.
+    let postPhase: string | null;
+    try {
+      postPhase = await this.deps.issueTracker.getPhase(issueId);
+    } catch {
+      postPhase = null;
+    }
+    const advancingNormally = postPhase === null || postPhase === phase.name;
+
+    // Empty-spec guard: a spec-producing phase that exits 0 but left the tracker
+    // spec field empty has not actually succeeded — advancing would park an
+    // empty prompt at the human review gate (the "kicked back with no prompt"
+    // bug). Only trips when the worker means to advance normally; a deliberate
+    // route to awaiting-info/blocked legitimately leaves the spec empty. Read the
+    // tracker, never the cache — the cache is the thing that may be stale. Treat
+    // the miss as a failed run so retry → onFail → escalate handle it.
+    if (phase.producesSpec === true && advancingNormally) {
+      let trackerSpec: string | null = null;
+      let specRead = true;
+      try {
+        trackerSpec = await this.deps.issueTracker.getSpec(issueId);
+      } catch (err) {
+        specRead = false;
+        this.deps.audit.log({
+          component: "orchestrator",
+          issueId,
+          message: `Post-${phase.name} spec read failed (${errorMessage(err)}) — skipping empty-spec guard`,
+          metadata: { taskId: task.id },
+        });
+      }
+      if (specRead && (trackerSpec === null || trackerSpec.trim() === "")) {
+        this.deps.audit.log({
+          component: "orchestrator",
+          issueId,
+          message: `${phase.name} exited 0 but the tracker spec is empty — routing through onFail instead of advancing to ${phase.next}`,
+          metadata: { taskId: task.id },
+        });
+        await this.handleFailure(task, phase, {
+          ...result,
+          success: false,
+          error: `${phase.name} produced an empty spec`,
+        });
+        return;
+      }
+    }
+
     await this.recordUsageAndPublish(issueId, phase, result);
 
     this.deps.queue.markComplete(task.id, result.summary);
@@ -811,13 +879,6 @@ export class RedQueen {
           });
         }
       }
-    }
-
-    let postPhase: string | null;
-    try {
-      postPhase = await this.deps.issueTracker.getPhase(issueId);
-    } catch {
-      postPhase = null;
     }
 
     if (postPhase !== null && postPhase !== phase.name) {

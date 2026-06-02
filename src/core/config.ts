@@ -35,6 +35,7 @@ const PhaseDefinitionSchema = z
     iterationCounter: z.enum(["review", "feedback", "none"]).optional(),
     requiresPr: z.boolean().optional(),
     resetReviewIterationsOnPass: z.boolean().optional(),
+    producesSpec: z.boolean().optional(),
   })
   .strict();
 

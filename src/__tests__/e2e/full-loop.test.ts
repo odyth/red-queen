@@ -129,7 +129,23 @@ describe("E2E: orchestrator full pipeline loop", () => {
         workerCalls.push(call.phaseName);
         return null; // fall through to phaseRule matchers below
       },
-      phaseRule("spec-writing", "Spec drafted"),
+      // spec-writing writes the spec to the tracker as a simulated side effect
+      // of the skill (the real prompt-writer calls `redqueen spec set`). The
+      // orchestrator's empty-spec guard requires a non-empty spec to advance.
+      (call) => {
+        if (call.phaseName !== "spec-writing") {
+          return null;
+        }
+        void issueTracker.setSpec("TEST-1", "## Spec\nImplement the widget.");
+        return {
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "Spec drafted",
+          error: null,
+          usage: null,
+        };
+      },
       // Coding creates a branch and PR as a simulated side effect of the skill.
       (call) => {
         if (call.phaseName !== "coding") {
