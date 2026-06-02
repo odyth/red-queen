@@ -838,6 +838,38 @@ describe("RedQueen orchestrator", () => {
     expect(h.runs.length).toBeGreaterThanOrEqual(2);
   });
 
+  it("overrides a self-advance to spec-review when the worker wrote no spec", async () => {
+    // Skills are LLM-driven: the prompt-writer is told to self-route only to the
+    // escape phases, but if it instead pushes the tracker forward to spec-review
+    // while writing no spec, that's the empty-spec failure wearing a phase-change
+    // disguise. The retry path can't recover it (a re-dispatch is stale once the
+    // tracker sits on a gate), so the guard routes straight to onFail and assigns
+    // the human there rather than parking an empty prompt at spec-review.
+    const h = setupHarness(() => {
+      void h.issueTracker.setPhase("PROJ-SELF", "spec-review");
+      return Promise.resolve({
+        success: true,
+        exitCode: 0,
+        elapsed: 1,
+        summary: "self-routed to review but wrote no spec",
+        error: null,
+      });
+    });
+    h.pipelineState.create("PROJ-SELF", "spec-writing");
+    h.issueTracker.phases.set("PROJ-SELF", "spec-writing");
+    // No specs.set — the tracker spec field stays empty.
+    h.queue.enqueue({ type: "spec-writing", issueId: "PROJ-SELF" });
+
+    await runUntil(h, () => h.issueTracker.phases.get("PROJ-SELF") === "spec-awaiting-info");
+
+    expect(h.issueTracker.phases.get("PROJ-SELF")).toBe("spec-awaiting-info");
+    // Human is assigned at the escape gate — not left silently parked at the
+    // review gate the worker jumped to.
+    expect(h.issueTracker.calls).toContain("assignToHuman:PROJ-SELF:none");
+    // skipRetry: escalated on the single run rather than enqueuing a doomed retry.
+    expect(h.runs.length).toBe(1);
+  });
+
   it("auto-transitions human-review -> code-feedback when PR exists", async () => {
     const h = setupHarness(() =>
       Promise.resolve({
