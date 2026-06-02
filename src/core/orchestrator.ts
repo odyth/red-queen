@@ -52,6 +52,7 @@ export interface RedQueenDeps {
   now?: () => number;
   sleepFn?: (ms: number) => Promise<void>;
   phaseWatchIntervalMs?: number;
+  phaseDriftGraceMs?: number;
   installSignalHandlers?: boolean;
   serviceManager?: ServiceManager;
   serviceContext?: ServiceInstallContext;
@@ -64,6 +65,13 @@ const TEMP_PREFIX = "rq-";
 // runs. A worker can run for many minutes; one tracker read per tick (single
 // active worker at a time) is negligible.
 const PHASE_WATCH_INTERVAL_MS = 15_000;
+// How long a tracker phase must stay drifted off the running phase before the watch
+// aborts the worker. A worker's last act is often a self-route via `set-phase`; it
+// then takes a few seconds to emit its final JSON and exit, during which the tracker
+// reads as drifted. The grace lets that wrap-up finish (the worker exits and the
+// watch is torn down) so only a persistent drift — a human moving the ticket while
+// the worker grinds on now-moot work — actually aborts.
+const PHASE_DRIFT_GRACE_MS = 30_000;
 
 export class RedQueen {
   private readonly deps: RedQueenDeps;
@@ -686,13 +694,15 @@ export class RedQueen {
     return "kicked-back";
   }
 
+  // Only a spec-producing entry phase can satisfy a kicked-back requiresSpec ticket.
+  // Falling back to entries[0] when none produces a spec would re-dispatch coding into
+  // the same empty-spec kickback every cycle, unbounded. Returning null instead routes
+  // the caller to fail the task with a clear config error.
   private resolveSpecEntryPhase(): string | null {
-    const entries = this.deps.runtime.phaseGraph.getEntryPhases();
-    const producer = entries.find((p) => p.producesSpec === true);
-    if (producer !== undefined) {
-      return producer.name;
-    }
-    return entries[0]?.name ?? null;
+    return (
+      this.deps.runtime.phaseGraph.getEntryPhases().find((p) => p.producesSpec === true)?.name ??
+      null
+    );
   }
 
   private async dispatchWorkerForTask(task: Task, phase: PhaseDefinition): Promise<void> {
@@ -884,47 +894,79 @@ export class RedQueen {
     abort: AbortController,
   ): () => void {
     let checking = false;
+    let driftSince: number | null = null;
     const intervalMs = this.deps.phaseWatchIntervalMs ?? PHASE_WATCH_INTERVAL_MS;
+    const graceMs = this.deps.phaseDriftGraceMs ?? PHASE_DRIFT_GRACE_MS;
     const handle = setInterval(() => {
       if (checking || abort.signal.aborted) {
         return;
       }
       checking = true;
-      void this.checkPhaseDrift(issueId, task, phase, abort).finally(() => {
-        checking = false;
-      });
+      void this.checkPhaseDrift(issueId, task, phase, abort, driftSince, graceMs)
+        .then((next) => {
+          driftSince = next;
+        })
+        .finally(() => {
+          checking = false;
+        });
     }, intervalMs);
     return () => {
       clearInterval(handle);
     };
   }
 
-  // Abort iff the tracker phase drifted off the running phase AND isn't a forward
-  // self-advance to this phase's own `next` (which handleSuccess handles as
-  // selfAdvancedToNext — let it finish so cost/usage attribution survives). A
-  // transient read error is swallowed: re-checked next tick, never aborts on a read.
+  // Decide whether a worker whose ticket left its phase should be aborted. A worker's
+  // last act before exit is often a self-route via `set-phase` (coder → blocked /
+  // spec-writing, tester → coding, reviewer → blocked, prompt-writer → awaiting-info);
+  // for the few seconds it then takes to emit its final JSON and exit, the tracker
+  // reads as drifted even though the worker is cleanly wrapping up. Aborting there
+  // kills the process before that JSON lands, destroying the run's usage/cost/summary
+  // and routing it through handleAbortedByPhaseChange instead of handleSuccess. So we
+  // don't abort on first sight of drift: we start a grace clock and abort only once
+  // the drift has outlasted it — by then a self-route has exited (this watch is torn
+  // down in the dispatch finally and stops ticking), so a still-running drift means a
+  // human moved the ticket and the worker is grinding on now-moot work. A forward
+  // self-advance to `next` is never drift (handleSuccess owns it as selfAdvancedToNext).
+  // Returns the next driftSince: null while on-phase, the first-seen timestamp once
+  // drifted. A transient read error is swallowed and leaves the clock untouched.
   private async checkPhaseDrift(
     issueId: string,
     task: Task,
     phase: PhaseDefinition,
     abort: AbortController,
-  ): Promise<void> {
+    driftSince: number | null,
+    graceMs: number,
+  ): Promise<number | null> {
     let current: string | null;
     try {
       current = await this.deps.issueTracker.getPhase(issueId);
     } catch {
-      return;
+      return driftSince;
     }
     if (current === null || current === phase.name || current === phase.next) {
-      return;
+      return null;
+    }
+    const now = this.now();
+    if (driftSince === null) {
+      this.deps.audit.log({
+        component: "orchestrator",
+        issueId,
+        message: `Ticket moved to ${current} while ${phase.name} worker was running — holding ${String(Math.round(graceMs / 1000))}s in case the worker is self-routing before exit`,
+        metadata: { taskId: task.id, runningPhase: phase.name, currentPhase: current },
+      });
+      return now;
+    }
+    if (now - driftSince < graceMs) {
+      return driftSince;
     }
     this.deps.audit.log({
       component: "orchestrator",
       issueId,
-      message: `Ticket moved to ${current} while ${phase.name} worker was running — aborting worker`,
+      message: `Ticket on ${current} for ${String(Math.round((now - driftSince) / 1000))}s while ${phase.name} worker still runs — aborting worker (human move, not a self-route)`,
       metadata: { taskId: task.id, runningPhase: phase.name, currentPhase: current },
     });
     abort.abort();
+    return driftSince;
   }
 
   // The phase watch aborted the worker because the ticket left the running phase.

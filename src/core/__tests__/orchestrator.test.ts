@@ -1469,7 +1469,8 @@ describe("RedQueen orchestrator", () => {
           usage: null,
         });
       },
-      { extra: { phaseWatchIntervalMs: 5 } },
+      // Tiny grace so a persistent (human-move) drift aborts within the test window.
+      { extra: { phaseWatchIntervalMs: 5, phaseDriftGraceMs: 1 } },
     );
     h.pipelineState.create("PROJ-ABORT", "coding");
     h.pipelineState.updateSpec("PROJ-ABORT", "real spec");
@@ -1534,6 +1535,57 @@ describe("RedQueen orchestrator", () => {
     expect(stored?.status).toBe("complete");
     // Completed via the normal success path — the watch did not abort on next.
     expect(stored?.result).not.toContain("Aborted");
+    const audit = readFileSync(auditPath, "utf8");
+    expect(audit).not.toContain("aborting worker");
+  });
+
+  it("does not abort a self-route to an escape phase that finishes within the grace", async () => {
+    let runCount = 0;
+    const h = setupHarness(
+      () => {
+        runCount += 1;
+        if (runCount === 1) {
+          // Coder self-routes to `blocked` (an escape phase, not coding.next) as its
+          // final act, then keeps running briefly while it "emits its summary" — the
+          // wrap-up window the watch must not kill. The long grace outlasts the worker,
+          // so it lands on the success path and its real summary survives.
+          h.issueTracker.phases.set("PROJ-SELF", "blocked");
+          return new Promise<WorkerResult>((resolve) => {
+            setTimeout(() => {
+              resolve({
+                success: true,
+                exitCode: 0,
+                elapsed: 1,
+                summary: "Blocked — needs human input",
+                error: null,
+                usage: null,
+              });
+            }, 30);
+          });
+        }
+        return Promise.resolve({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "ok",
+          error: null,
+          usage: null,
+        });
+      },
+      { extra: { phaseWatchIntervalMs: 5, phaseDriftGraceMs: 10_000 } },
+    );
+    h.pipelineState.create("PROJ-SELF", "coding");
+    h.pipelineState.updateSpec("PROJ-SELF", "real spec");
+    h.issueTracker.phases.set("PROJ-SELF", "coding");
+    h.issueTracker.specs.set("PROJ-SELF", "real spec");
+    const codingTask = h.queue.enqueue({ type: "coding", issueId: "PROJ-SELF" });
+
+    await runUntil(h, () => h.queue.getTask(codingTask.id)?.status === "complete");
+
+    const stored = h.queue.getTask(codingTask.id);
+    expect(stored?.status).toBe("complete");
+    // Not aborted: the worker's real summary survives, not the generic "Aborted …".
+    expect(stored?.result).toBe("Blocked — needs human input");
     const audit = readFileSync(auditPath, "utf8");
     expect(audit).not.toContain("aborting worker");
   });

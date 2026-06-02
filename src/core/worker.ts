@@ -151,11 +151,16 @@ export function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       options.onStart(worker.pid);
     }
 
+    // Holds the pending SIGKILL escalation so a clean post-SIGTERM exit can cancel it
+    // (close/error clear it). Otherwise it lingers up to killGracePeriodMs, holding the
+    // event loop open and risking a stray group-kill against a reused PID.
+    let killTimer: ReturnType<typeof setTimeout> | null = null;
+
     if (options.signal) {
       const onAbort = (): void => {
         killed = true;
         killReason = "Aborted — ticket left the phase";
-        terminateWorker(worker, killGracePeriodMs);
+        killTimer = terminateWorker(worker, killGracePeriodMs);
       };
       if (options.signal.aborted) {
         onAbort();
@@ -197,7 +202,7 @@ export function runWorker(options: WorkerOptions): Promise<WorkerResult> {
         if (Date.now() - lastMeaningfulWorkAt > options.stallThresholdMs) {
           killed = true;
           killReason = `Worker stalled (no CPU work for ${String(idleSeconds)}s)`;
-          terminateWorker(worker, killGracePeriodMs);
+          killTimer = terminateWorker(worker, killGracePeriodMs);
         }
       }
       lastCpuTime = cpuTimeSecs;
@@ -206,12 +211,15 @@ export function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     const timeoutTimer = setTimeout(() => {
       killed = true;
       killReason = `Worker timeout (${String(Math.round(options.timeoutMs / 1000))}s)`;
-      terminateWorker(worker, killGracePeriodMs);
+      killTimer = terminateWorker(worker, killGracePeriodMs);
     }, options.timeoutMs);
 
     worker.on("close", (code) => {
       clearInterval(heartbeat);
       clearTimeout(timeoutTimer);
+      if (killTimer !== null) {
+        clearTimeout(killTimer);
+      }
       const elapsed = Math.round((Date.now() - startTime) / 1000);
       const exitCode = code ?? -1;
 
@@ -244,6 +252,9 @@ export function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     worker.on("error", (err: Error) => {
       clearInterval(heartbeat);
       clearTimeout(timeoutTimer);
+      if (killTimer !== null) {
+        clearTimeout(killTimer);
+      }
       const elapsed = Math.round((Date.now() - startTime) / 1000);
       resolve({
         success: false,
@@ -258,9 +269,12 @@ export function runWorker(options: WorkerOptions): Promise<WorkerResult> {
   });
 }
 
-function terminateWorker(worker: ReturnType<typeof spawn>, killGracePeriodMs: number): void {
+function terminateWorker(
+  worker: ReturnType<typeof spawn>,
+  killGracePeriodMs: number,
+): ReturnType<typeof setTimeout> {
   signalWorker(worker, "SIGTERM");
-  setTimeout(() => {
+  return setTimeout(() => {
     signalWorker(worker, "SIGKILL");
   }, killGracePeriodMs);
 }
