@@ -1377,16 +1377,16 @@ export class RedQueen {
           escalateTo !== undefined &&
           escalateTo !== "done"
         ) {
-          await this.transitionTo(issueId, escalateTo, task);
+          await this.failInto(issueId, escalateTo, task, phase, error);
           return;
         }
       }
-      await this.transitionTo(issueId, onFail, task);
+      await this.failInto(issueId, onFail, task, phase, error);
       return;
     }
 
     if (escalateTo !== undefined && escalateTo !== "done") {
-      await this.transitionTo(issueId, escalateTo, task);
+      await this.failInto(issueId, escalateTo, task, phase, error);
       return;
     }
 
@@ -1396,6 +1396,35 @@ export class RedQueen {
       message: `${phase.name} gave up — no onFail or escalation configured`,
       metadata: { taskId: task.id },
     });
+  }
+
+  // A failure route into a human-gate hands the ticket to a person who never saw
+  // the worker run. Post a comment naming the failed phase and the last error so
+  // an infra failure (stall, crash, network) isn't mistaken for the prompt-writer
+  // deliberately asking the reporter for clarification — that path posts its own
+  // questions and exits 0, never reaching here. Best-effort: a failed comment is
+  // logged, never blocks the transition.
+  private async failInto(
+    issueId: string,
+    phaseName: string,
+    task: Task,
+    failedPhase: PhaseDefinition,
+    error: string,
+  ): Promise<void> {
+    const dest = this.deps.runtime.phaseGraph.getPhase(phaseName);
+    if (dest?.type === "human-gate") {
+      try {
+        await this.deps.issueTracker.addComment(issueId, failureNotice(failedPhase, error));
+      } catch (err) {
+        this.deps.audit.log({
+          component: "orchestrator",
+          issueId,
+          message: `Failed to post failure notice for ${failedPhase.name}: ${errorMessage(err)}`,
+          metadata: { taskId: task.id, phase: failedPhase.name },
+        });
+      }
+    }
+    await this.transitionTo(issueId, phaseName, task);
   }
 
   private async transitionTo(issueId: string, phaseName: string, task: Task): Promise<void> {
@@ -1692,6 +1721,16 @@ function killWorkerPid(pid: number, signal: NodeJS.Signals): void {
       // Worker already exited
     }
   }
+}
+
+function failureNotice(phase: PhaseDefinition, error: string): string {
+  return [
+    `⚠️ Automated **${phase.label}** did not complete — Red Queen exhausted its automated attempts and parked this ticket for a human.`,
+    "",
+    `Last error: \`${error}\``,
+    "",
+    "This was routed here by the failure handler; it is not, by itself, a request for clarification from the reporter. If the error looks transient (e.g. a worker stall or LLM/network timeout), hand the ticket back to the AI to retry — otherwise it needs a human to resolve.",
+  ].join("\n");
 }
 
 function errorMessage(err: unknown): string {
