@@ -284,3 +284,21 @@ describe("cmdSpec meta", () => {
     );
   });
 });
+
+describe("cmdIssue comment", () => {
+  // Regression: a coder that ran `issue comment` with no body posted a bare "-"
+  // to Jira instead of its block reason. An empty body must fail loudly.
+  it("rejects an empty --body", async () => {
+    await expect(cmdIssue(["comment", "ISSUE-1", "--body", ""])).rejects.toThrow(/empty/);
+  });
+
+  it("rejects a whitespace-only --body", async () => {
+    await expect(cmdIssue(["comment", "ISSUE-1", "--body", "   \n  "])).rejects.toThrow(/empty/);
+  });
+
+  it("posts a non-empty comment", async () => {
+    await cmdIssue(["comment", "ISSUE-1", "--body", "Blocked — npm ci returns HTTP 401"]);
+    const parsed = JSON.parse(stdoutCapture.join("")) as { ok: boolean };
+    expect(parsed.ok).toBe(true);
+  });
+});
