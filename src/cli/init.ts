@@ -744,6 +744,7 @@ function updateGitignore(projectDir: string): void {
     ".redqueen/redqueen.pid",
     ".redqueen/worktrees/",
     ".redqueen/attachments/",
+    ".redqueen/tmp/",
     "",
   ].join("\n");
 
