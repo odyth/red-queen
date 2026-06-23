@@ -7,6 +7,7 @@ import type { RedQueenConfig } from "./config.js";
 import type { OrchestratorStateStore, PipelineStateStore } from "./pipeline-state.js";
 import type { PhaseUsageStore } from "./phase-usage.js";
 import { computeCost } from "./cost.js";
+import { buildFailureNotice } from "./failure-notice.js";
 import { Poller } from "./poller.js";
 import type { TaskQueue } from "./queue.js";
 import { reconcile } from "./reconciler.js";
@@ -1377,16 +1378,16 @@ export class RedQueen {
           escalateTo !== undefined &&
           escalateTo !== "done"
         ) {
-          await this.transitionTo(issueId, escalateTo, task);
+          await this.failOver(issueId, phase, escalateTo, result, nextRetries, task);
           return;
         }
       }
-      await this.transitionTo(issueId, onFail, task);
+      await this.failOver(issueId, phase, onFail, result, nextRetries, task);
       return;
     }
 
     if (escalateTo !== undefined && escalateTo !== "done") {
-      await this.transitionTo(issueId, escalateTo, task);
+      await this.failOver(issueId, phase, escalateTo, result, nextRetries, task);
       return;
     }
 
@@ -1396,6 +1397,59 @@ export class RedQueen {
       message: `${phase.name} gave up — no onFail or escalation configured`,
       metadata: { taskId: task.id },
     });
+  }
+
+  // Route a failed task to its next phase, first posting a human-readable notice
+  // when that next phase is a human gate. We only comment on gate landings: a
+  // failure that bounces back to an automated phase (e.g. code-review → coding)
+  // is a normal feedback loop, and the reconciler re-enqueues automated phases
+  // every poll — commenting there would spam the ticket on a stuck loop. A
+  // human gate stops the pipeline, so the notice lands exactly once.
+  private async failOver(
+    issueId: string,
+    fromPhase: PhaseDefinition,
+    destination: string,
+    result: WorkerResult,
+    attempts: number,
+    task: Task,
+  ): Promise<void> {
+    if (this.deps.runtime.phaseGraph.isHumanGate(destination)) {
+      await this.postFailureNotice(issueId, fromPhase, destination, result, attempts, task);
+    }
+    await this.transitionTo(issueId, destination, task);
+  }
+
+  // Best-effort failure comment so a human looking at the ticket (not the logs)
+  // can see why it stalled — especially auth/401 failures that silently park
+  // every ticket at a gate. A comment failure is swallowed: it must never block
+  // the transition (and if the worker died on auth, the tracker may be reachable
+  // even when Claude isn't).
+  private async postFailureNotice(
+    issueId: string,
+    fromPhase: PhaseDefinition,
+    destination: string,
+    result: WorkerResult,
+    attempts: number,
+    task: Task,
+  ): Promise<void> {
+    const destinationLabel =
+      this.deps.runtime.phaseGraph.getPhase(destination)?.label ?? destination;
+    const body = buildFailureNotice({
+      phaseLabel: fromPhase.label,
+      destinationLabel,
+      attempts,
+      result,
+    });
+    try {
+      await this.deps.issueTracker.addComment(issueId, body);
+    } catch (err) {
+      this.deps.audit.log({
+        component: "orchestrator",
+        issueId,
+        message: `Failed to post failure notice comment: ${errorMessage(err)}`,
+        metadata: { taskId: task.id, phase: fromPhase.name, destination },
+      });
+    }
   }
 
   private async transitionTo(issueId: string, phaseName: string, task: Task): Promise<void> {

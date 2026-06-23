@@ -850,6 +850,54 @@ describe("RedQueen orchestrator", () => {
     expect(h.runs.length).toBeGreaterThanOrEqual(2);
   });
 
+  it("posts a failure notice to the ticket when a worker failure parks it at a human gate", async () => {
+    // A 401 from the Claude worker would otherwise dump the ticket at
+    // spec-awaiting-info with no explanation — the reported bug. The notice gives
+    // a human looking at the ticket (not the logs) the reason.
+    const h = setupHarness(() =>
+      Promise.resolve({
+        success: false,
+        exitCode: 1,
+        elapsed: 1,
+        summary: "",
+        error: 'API Error: 401 {"type":"authentication_error","message":"invalid x-api-key"}',
+      }),
+    );
+    h.pipelineState.create("PROJ-401", "spec-writing");
+    h.issueTracker.phases.set("PROJ-401", "spec-writing");
+    h.queue.enqueue({ type: "spec-writing", issueId: "PROJ-401" });
+
+    await runUntil(h, () => h.issueTracker.phases.get("PROJ-401") === "spec-awaiting-info");
+
+    const comments = h.issueTracker.commentsById.get("PROJ-401") ?? [];
+    // Exactly one — posted on the terminal gate landing, not on each retry.
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("authenticate");
+    expect(comments[0]?.body).toContain("401");
+  });
+
+  it("does not post a failure notice when a failure bounces to an automated phase", async () => {
+    // code-review -> coding is a normal feedback loop; commenting there would
+    // spam the ticket every reconcile cycle, so no notice is posted.
+    const h = setupHarness(() =>
+      Promise.resolve({
+        success: false,
+        exitCode: 1,
+        elapsed: 0,
+        summary: "",
+        error: "blockers found",
+      }),
+    );
+    h.pipelineState.create("PROJ-NC", "code-review");
+    h.issueTracker.phases.set("PROJ-NC", "code-review");
+    h.issueTracker.specs.set("PROJ-NC", "Implementation spec body.");
+    h.queue.enqueue({ type: "code-review", issueId: "PROJ-NC" });
+
+    await runUntil(h, () => h.pipelineState.get("PROJ-NC")?.currentPhase === "coding");
+
+    expect(h.issueTracker.commentsById.get("PROJ-NC") ?? []).toHaveLength(0);
+  });
+
   it("overrides a self-advance to spec-review when the worker wrote no spec", async () => {
     // Skills are LLM-driven: the prompt-writer is told to self-route only to the
     // escape phases, but if it instead pushes the tracker forward to spec-review
