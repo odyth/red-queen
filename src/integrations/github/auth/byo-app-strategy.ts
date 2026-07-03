@@ -179,10 +179,47 @@ export class ByoAppAuthStrategy implements GitHubAuthStrategy {
     if (slug === null || id === null) {
       throw new AdapterError("GitHub /app returned unexpected shape");
     }
+    // The `/app` id is the *App* id, not the bot user id. Comparisons against
+    // webhook `sender.id` / `review.user.id` need the bot user id, which lives
+    // on the public Users API under the `<slug>[bot]` login.
+    const login = `${slug}[bot]`;
+    const botUserId = await this.fetchBotUserId(login);
     return {
-      login: `${slug}[bot]`,
-      accountId: String(id),
+      login,
+      accountId: String(botUserId),
       isBot: true,
     };
+  }
+
+  private async fetchBotUserId(login: string): Promise<number> {
+    // Use the installation token (not the App JWT — a raw JWT is only accepted
+    // on `/app*` endpoints) so we avoid the unauthenticated rate limit.
+    const token = await this.getToken();
+    const response = await this.fetchImpl(`${this.apiBase}/users/${encodeURIComponent(login)}`, {
+      method: "GET",
+      headers: {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${token}`,
+        "User-Agent": this.userAgent,
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+    });
+    if (response.status === 401 || response.status === 403) {
+      throw new AuthError(
+        `GitHub bot user lookup failed (HTTP ${String(response.status)}) for ${login}.`,
+      );
+    }
+    if (response.ok === false) {
+      const body = await response.text().catch(() => "");
+      throw new AdapterError(
+        `GitHub /users/${login} returned HTTP ${String(response.status)}: ${redactSecrets(body.slice(0, 200))}`,
+      );
+    }
+    const data = (await response.json()) as { id?: unknown };
+    const id = typeof data.id === "number" ? data.id : null;
+    if (id === null) {
+      throw new AdapterError(`GitHub /users/${login} returned unexpected shape`);
+    }
+    return id;
   }
 }

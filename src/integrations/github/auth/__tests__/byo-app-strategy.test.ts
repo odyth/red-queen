@@ -287,7 +287,13 @@ describe("ByoAppAuthStrategy", () => {
     it("returns ${slug}[bot] with isBot true", async () => {
       const { fn } = recordingFetch((call) => {
         if (call.url.endsWith("/app")) {
-          return makeResponse(200, { slug: "my-app", id: 12345 });
+          return makeResponse(200, { slug: "my-app", id: 111 });
+        }
+        if (call.url.includes("/access_tokens")) {
+          return makeResponse(201, { token: "ghs_x", expires_at: futureIso(60 * 60 * 1000) });
+        }
+        if (call.url.includes("/users/")) {
+          return makeResponse(200, { id: 999, login: "my-app[bot]", type: "Bot" });
         }
         throw new Error(`unexpected ${call.url}`);
       });
@@ -300,13 +306,51 @@ describe("ByoAppAuthStrategy", () => {
       const id = await strategy.getIdentity();
       expect(id).toEqual({
         login: "my-app[bot]",
-        accountId: "12345",
+        accountId: "999",
         isBot: true,
       });
     });
 
+    it("resolves accountId from the bot user, not the App id", async () => {
+      const { fn, calls } = recordingFetch((call) => {
+        if (call.url.endsWith("/app")) {
+          return makeResponse(200, { slug: "my-app", id: 111 });
+        }
+        if (call.url.includes("/access_tokens")) {
+          return makeResponse(201, { token: "ghs_x", expires_at: futureIso(60 * 60 * 1000) });
+        }
+        if (call.url.includes("/users/")) {
+          return makeResponse(200, { id: 999, login: "my-app[bot]", type: "Bot" });
+        }
+        throw new Error(`unexpected ${call.url}`);
+      });
+      const strategy = new ByoAppAuthStrategy({
+        appId: "123",
+        installationId: "789",
+        privateKeyPem: pkcs1Pem,
+        fetchImpl: fn,
+      });
+      const id = await strategy.getIdentity();
+      // App id is 111; the bot user id is 999. accountId must be the user id.
+      expect(id.accountId).toBe("999");
+      expect(id.accountId).not.toBe("111");
+      const userCall = calls.find((c) => c.url.includes("/users/"));
+      expect(userCall?.url).toContain("/users/my-app%5Bbot%5D");
+    });
+
     it("caches identity across calls", async () => {
-      const { fn, calls } = recordingFetch(() => makeResponse(200, { slug: "my-app", id: 12345 }));
+      const { fn, calls } = recordingFetch((call) => {
+        if (call.url.endsWith("/app")) {
+          return makeResponse(200, { slug: "my-app", id: 111 });
+        }
+        if (call.url.includes("/access_tokens")) {
+          return makeResponse(201, { token: "ghs_x", expires_at: futureIso(60 * 60 * 1000) });
+        }
+        if (call.url.includes("/users/")) {
+          return makeResponse(200, { id: 999, login: "my-app[bot]", type: "Bot" });
+        }
+        throw new Error(`unexpected ${call.url}`);
+      });
       const strategy = new ByoAppAuthStrategy({
         appId: "123",
         installationId: "789",
@@ -316,7 +360,9 @@ describe("ByoAppAuthStrategy", () => {
       const id1 = await strategy.getIdentity();
       const id2 = await strategy.getIdentity();
       expect(id1).toEqual(id2);
-      expect(calls).toHaveLength(1);
+      // First resolution issues /app + token mint + /users; second is cached.
+      expect(calls).toHaveLength(3);
+      expect(calls.filter((c) => c.url.includes("/users/"))).toHaveLength(1);
     });
 
     it("throws AuthError on identity 401", async () => {
@@ -332,6 +378,50 @@ describe("ByoAppAuthStrategy", () => {
 
     it("throws AdapterError on identity unexpected shape", async () => {
       const { fn } = recordingFetch(() => makeResponse(200, { unexpected: true }));
+      const strategy = new ByoAppAuthStrategy({
+        appId: "123",
+        installationId: "789",
+        privateKeyPem: pkcs1Pem,
+        fetchImpl: fn,
+      });
+      await expect(strategy.getIdentity()).rejects.toBeInstanceOf(AdapterError);
+    });
+
+    it("throws AuthError when the bot user lookup returns 401", async () => {
+      const { fn } = recordingFetch((call) => {
+        if (call.url.endsWith("/app")) {
+          return makeResponse(200, { slug: "my-app", id: 111 });
+        }
+        if (call.url.includes("/access_tokens")) {
+          return makeResponse(201, { token: "ghs_x", expires_at: futureIso(60 * 60 * 1000) });
+        }
+        if (call.url.includes("/users/")) {
+          return makeResponse(401, { message: "Bad credentials" });
+        }
+        throw new Error(`unexpected ${call.url}`);
+      });
+      const strategy = new ByoAppAuthStrategy({
+        appId: "123",
+        installationId: "789",
+        privateKeyPem: pkcs1Pem,
+        fetchImpl: fn,
+      });
+      await expect(strategy.getIdentity()).rejects.toBeInstanceOf(AuthError);
+    });
+
+    it("throws AdapterError when the bot user lookup has no numeric id", async () => {
+      const { fn } = recordingFetch((call) => {
+        if (call.url.endsWith("/app")) {
+          return makeResponse(200, { slug: "my-app", id: 111 });
+        }
+        if (call.url.includes("/access_tokens")) {
+          return makeResponse(201, { token: "ghs_x", expires_at: futureIso(60 * 60 * 1000) });
+        }
+        if (call.url.includes("/users/")) {
+          return makeResponse(200, {});
+        }
+        throw new Error(`unexpected ${call.url}`);
+      });
       const strategy = new ByoAppAuthStrategy({
         appId: "123",
         installationId: "789",
