@@ -284,13 +284,23 @@ describe("ByoAppAuthStrategy", () => {
   });
 
   describe("identity", () => {
-    it("returns ${slug}[bot] with isBot true", async () => {
-      const { fn } = recordingFetch((call) => {
-        if (call.url.endsWith("/app")) {
-          return makeResponse(200, { slug: "my-app", id: 12345 });
-        }
-        throw new Error(`unexpected ${call.url}`);
-      });
+    // GET /app returns the App registration id (12345); webhook sender.id
+    // reports the machine user's id (67890). Identity must carry the latter.
+    function identityHandler(call: FetchCall): Response {
+      if (call.url.endsWith("/app")) {
+        return makeResponse(200, { slug: "my-app", id: 12345 });
+      }
+      if (call.url.includes("/access_tokens")) {
+        return makeResponse(201, { token: "ghs_identity", expires_at: futureIso(60 * 60 * 1000) });
+      }
+      if (call.url.endsWith("/users/my-app%5Bbot%5D")) {
+        return makeResponse(200, { login: "my-app[bot]", id: 67890, type: "Bot" });
+      }
+      throw new Error(`unexpected ${call.url}`);
+    }
+
+    it("returns ${slug}[bot] with the bot user id, not the App registration id", async () => {
+      const { fn, calls } = recordingFetch(identityHandler);
       const strategy = new ByoAppAuthStrategy({
         appId: "123",
         installationId: "789",
@@ -300,13 +310,15 @@ describe("ByoAppAuthStrategy", () => {
       const id = await strategy.getIdentity();
       expect(id).toEqual({
         login: "my-app[bot]",
-        accountId: "12345",
+        accountId: "67890",
         isBot: true,
       });
+      const userCall = calls.find((c) => c.url.endsWith("/users/my-app%5Bbot%5D"));
+      expect(userCall?.headers.Authorization).toBe("Bearer ghs_identity");
     });
 
     it("caches identity across calls", async () => {
-      const { fn, calls } = recordingFetch(() => makeResponse(200, { slug: "my-app", id: 12345 }));
+      const { fn, calls } = recordingFetch(identityHandler);
       const strategy = new ByoAppAuthStrategy({
         appId: "123",
         installationId: "789",
@@ -316,7 +328,24 @@ describe("ByoAppAuthStrategy", () => {
       const id1 = await strategy.getIdentity();
       const id2 = await strategy.getIdentity();
       expect(id1).toEqual(id2);
-      expect(calls).toHaveLength(1);
+      // /app + installation token + /users lookup, none repeated.
+      expect(calls).toHaveLength(3);
+    });
+
+    it("throws AdapterError when the bot user lookup fails", async () => {
+      const { fn } = recordingFetch((call) => {
+        if (call.url.endsWith("/users/my-app%5Bbot%5D")) {
+          return makeResponse(404, { message: "Not Found" });
+        }
+        return identityHandler(call);
+      });
+      const strategy = new ByoAppAuthStrategy({
+        appId: "123",
+        installationId: "789",
+        privateKeyPem: pkcs1Pem,
+        fetchImpl: fn,
+      });
+      await expect(strategy.getIdentity()).rejects.toBeInstanceOf(AdapterError);
     });
 
     it("throws AuthError on identity 401", async () => {

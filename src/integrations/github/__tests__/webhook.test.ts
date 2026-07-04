@@ -55,6 +55,65 @@ describe("parseGitHubWebhookEvent", () => {
     expect(result).toBeNull();
   });
 
+  it("returns null for self-echo by login when the id does not match", () => {
+    // Identity resolved from the wrong id namespace (the pre-fix BYO-App bug):
+    // sender.id is the bot user id, accountId holds the App registration id.
+    const payload = JSON.stringify({
+      action: "created",
+      sender: { login: "bot", id: 299345411 },
+      issue: { number: 5 },
+    });
+    const result = parseGitHubWebhookEvent(
+      { identity },
+      { "x-github-event": "issue_comment" },
+      payload,
+    );
+    expect(result).toBeNull();
+  });
+
+  it("ignores edited issue_comment", () => {
+    const payload = JSON.stringify({
+      action: "edited",
+      sender: { login: "human", id: 2 },
+      issue: { number: 42 },
+    });
+    const result = parseGitHubWebhookEvent(
+      { identity },
+      { "x-github-event": "issue_comment" },
+      payload,
+    );
+    expect(result).toBeNull();
+  });
+
+  it("returns pr-feedback for submitted pull_request_review", () => {
+    const payload = JSON.stringify({
+      action: "submitted",
+      sender: { login: "human", id: 2 },
+      pull_request: { head: { ref: "feature/7" } },
+    });
+    const result = parseGitHubWebhookEvent(
+      { identity },
+      { "x-github-event": "pull_request_review" },
+      payload,
+    );
+    expect(result?.type).toBe("pr-feedback");
+    expect(result?.issueId).toBe("#7");
+  });
+
+  it("ignores dismissed pull_request_review", () => {
+    const payload = JSON.stringify({
+      action: "dismissed",
+      sender: { login: "human", id: 2 },
+      pull_request: { head: { ref: "feature/7" } },
+    });
+    const result = parseGitHubWebhookEvent(
+      { identity },
+      { "x-github-event": "pull_request_review" },
+      payload,
+    );
+    expect(result).toBeNull();
+  });
+
   it("returns pr-feedback for foreign issue_comment", () => {
     const payload = JSON.stringify({
       action: "created",
