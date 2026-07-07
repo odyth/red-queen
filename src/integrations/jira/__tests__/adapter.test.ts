@@ -302,7 +302,7 @@ describe("JiraIssueTrackerAdapter", () => {
   });
 
   it("getComments renders body via fromAdf", async () => {
-    h.setResponse((c) => c.url.endsWith("/comment") && c.method === "GET", {
+    h.setResponse((c) => c.url.includes("/comment?") && c.method === "GET", {
       comments: [
         {
           id: "c-1",
@@ -314,10 +314,40 @@ describe("JiraIssueTrackerAdapter", () => {
           created: "2026-01-01",
         },
       ],
+      total: 1,
     });
     const comments = await h.adapter.getComments("RQ-1");
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toBe("hi");
+  });
+
+  it("getComments paginates the full thread across pages", async () => {
+    h.setResponse((c) => c.method === "GET" && c.url.includes("startAt=0"), {
+      comments: [
+        {
+          id: "c-1",
+          author: { displayName: "alice" },
+          body: plainBody("first"),
+          created: "2026-05-01",
+        },
+      ],
+      total: 2,
+    });
+    h.setResponse((c) => c.method === "GET" && c.url.includes("startAt=1"), {
+      comments: [
+        {
+          id: "c-2",
+          author: { displayName: "bob" },
+          body: plainBody("second"),
+          created: "2026-05-02",
+        },
+      ],
+      total: 2,
+    });
+    const comments = await h.adapter.getComments("RQ-1");
+    expect(comments.map((c) => c.id)).toEqual(["c-1", "c-2"]);
+    expect(comments.map((c) => c.body)).toEqual(["first", "second"]);
+    expect(h.calls.filter((c) => c.method === "GET" && c.url.includes("/comment?")).length).toBe(2);
   });
 
   it("listAttachments maps raw shape", async () => {
