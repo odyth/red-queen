@@ -179,7 +179,13 @@ describe("Orchestrator.reload", () => {
     const port = await getFreePort();
     const dashboard = new DashboardServer(
       { queue, orchestratorState, audit },
-      { host: "127.0.0.1", port, enableDashboardUi: true },
+      {
+        host: "127.0.0.1",
+        port,
+        enableDashboardUi: true,
+        allowNonLoopback: false,
+        allowedHosts: [],
+      },
     );
     await dashboard.start();
     const webhook = new WebhookServer({

@@ -169,8 +169,16 @@ const ConfigSchema = z
         enabled: z.boolean().default(true),
         port: z.number().default(4400),
         host: z.string().default("127.0.0.1"),
+        allowNonLoopback: z.boolean().default(false),
+        allowedHosts: z.array(z.string()).default([]),
       })
-      .default({ enabled: true, port: 4400, host: "127.0.0.1" }),
+      .default({
+        enabled: true,
+        port: 4400,
+        host: "127.0.0.1",
+        allowNonLoopback: false,
+        allowedHosts: [],
+      }),
     audit: z
       .object({
         logFile: z.string().default("audit.log"),
