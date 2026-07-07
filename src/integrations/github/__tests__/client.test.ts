@@ -45,6 +45,28 @@ describe("classifyOctokitError", () => {
     expect(() => classifyOctokitError(mkOctokitError(403))).toThrow(AuthError);
   });
 
+  it("retries 403 secondary rate limit signalled by retry-after header", () => {
+    const c = classifyOctokitError(mkOctokitError(403, { "retry-after": "30" }));
+    expect(c.kind).toBe("retry");
+    expect(c.retryAfterMs).toBe(30000);
+  });
+
+  it("retries 403 secondary rate limit signalled by body message", () => {
+    const c = classifyOctokitError(
+      mkOctokitError(403, {}, "", {
+        message:
+          "You have exceeded a secondary rate limit. Please wait a few minutes before you try again.",
+      }),
+    );
+    expect(c.kind).toBe("retry");
+  });
+
+  it("still throws AuthError for 401 even with a retry-after header", () => {
+    expect(() => classifyOctokitError(mkOctokitError(401, { "retry-after": "30" }))).toThrow(
+      AuthError,
+    );
+  });
+
   it("marks 4xx as fatal", () => {
     const c = classifyOctokitError(mkOctokitError(422, {}, "Unprocessable", { error: "bad" }));
     expect(c.kind).toBe("fatal");
