@@ -5,6 +5,9 @@ export async function readBodyFromStdinOrFlag(
   fieldName = "body",
 ): Promise<string> {
   if (bodyFlag !== undefined) {
+    if (bodyFlag.trim() === "") {
+      throw new CliError(`${fieldName} must not be empty`);
+    }
     return bodyFlag;
   }
   if (process.stdin.isTTY === true) {
@@ -14,7 +17,16 @@ export async function readBodyFromStdinOrFlag(
   for await (const chunk of process.stdin) {
     chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : (chunk as Buffer));
   }
-  return Buffer.concat(chunks).toString("utf8");
+  const body = Buffer.concat(chunks).toString("utf8");
+  // An empty/whitespace body renders as a bare "-" in Jira (toAdf produces an empty
+  // doc). Reject it so a skill that runs `issue comment` with no body fails loudly
+  // instead of silently posting a blank comment in place of its real reason.
+  if (body.trim() === "") {
+    throw new CliError(
+      `${fieldName} must not be empty — pass --body "<text>" or pipe non-empty content via stdin`,
+    );
+  }
+  return body;
 }
 
 export function writeJson(value: unknown, pretty = false): void {

@@ -1,5 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AuditLogger } from "./audit.js";
 import { buildPhaseGraph } from "./config.js";
@@ -61,7 +60,6 @@ export interface RedQueenDeps {
   projectRoot?: string;
 }
 
-const TEMP_PREFIX = "rq-";
 // How often the in-flight phase watch re-reads the tracker phase while a worker
 // runs. A worker can run for many minutes; one tracker read per tick (single
 // active worker at a time) is negligible.
@@ -121,7 +119,10 @@ export class RedQueen {
 
   async start(): Promise<void> {
     this.claudeBin = resolveClaudeBin(this.deps.runtime.config.pipeline.claudeBin);
-    this.tempDir = mkdtempSync(join(tmpdir(), TEMP_PREFIX));
+    // Live under the project's .redqueen/ instead of the OS tmp dir: systemd-tmpfiles
+    // reaps /tmp entries after ~10 days, deleting it under a long-running daemon. The
+    // per-write mkdirSync in dispatchWorkerForTask self-heals it if it vanishes anyway.
+    this.tempDir = join(this.deps.runtime.config.project.directory, ".redqueen", "tmp");
     this.performCrashRecovery();
 
     await this.startDashboardIfEnabled();
@@ -800,6 +801,9 @@ export class RedQueen {
     }
     const tempPath = join(this.tempDir, `${task.id}.md`);
     try {
+      // Recreate the temp dir before each write: a long-running daemon's dir can be
+      // reaped by the OS tmp-cleaner or manual cleanup. mkdirSync(recursive) is idempotent.
+      mkdirSync(this.tempDir, { recursive: true });
       writeFileSync(tempPath, promptBody, "utf8");
     } catch (err) {
       this.deps.queue.markWorking(task.id);

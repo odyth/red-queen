@@ -303,14 +303,19 @@ Trigger Blocked when:
 
 Steps:
 
-1. `redqueen issue comment "${issueId}"` with body:
+1. Post the block reason to the tracker. Pipe the body via a heredoc so it is
+   never empty — `redqueen issue comment` rejects an empty body, and this comment
+   is the only place the human sees _why_ the ticket is blocked. Use the same
+   reason text you put in your stdout summary:
 
    ```
+   cat <<'EOF' | redqueen issue comment "${issueId}"
    Blocked during coding.
 
    What I completed: <concrete list>.
    What blocks: <specific cause>.
    What is needed: <what the human must do>.
+   EOF
    ```
 
 2. If a PR exists, also `redqueen pr review <prNumber> --verdict request-changes`

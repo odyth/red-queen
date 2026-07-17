@@ -1692,6 +1692,43 @@ describe("RedQueen orchestrator", () => {
     expect(audit).not.toContain("aborting worker");
   });
 
+  it("self-heals the temp dir if it is reaped mid-life (tmp-cleaner regression)", async () => {
+    // Repro for the production outage: the daemon's prompt-file temp dir was
+    // created once at startup and reaped by systemd-tmpfiles after ~10 days, so
+    // every later dispatch ENOENT'd on writeFileSync and no worker ever ran.
+    const tmpRoot = join(tempDir, ".redqueen", "tmp");
+    let runCount = 0;
+    const prompts: (string | null)[] = [];
+    const h = setupHarness((opts) => {
+      runCount += 1;
+      prompts.push(readDispatchedPrompt(opts));
+      if (runCount === 1) {
+        // Delete the temp dir out from under the running daemon.
+        rmSync(tmpRoot, { recursive: true, force: true });
+      }
+      return Promise.resolve({
+        success: false,
+        exitCode: 1,
+        elapsed: 0,
+        summary: "",
+        error: "stop cascade",
+        usage: null,
+      });
+    });
+    h.pipelineState.create("PROJ-REAP", "coding");
+    h.issueTracker.phases.set("PROJ-REAP", "coding");
+    h.issueTracker.specs.set("PROJ-REAP", "Implementation spec body.");
+    h.queue.enqueue({ type: "coding", issueId: "PROJ-REAP" });
+
+    // The retry dispatches after the reap. Without the per-write self-heal its
+    // writeFileSync ENOENTs and the worker never runs again, so runCount stays 1.
+    await runUntilAfterRuns(h, 2, 3000);
+
+    expect(runCount).toBeGreaterThanOrEqual(2);
+    expect(prompts[1]).not.toBeNull();
+    expect(prompts[1]).toContain("phaseName: coding");
+  });
+
   it("prunes the audit log on startup and respects the interval gate", async () => {
     let nowMs = 1_700_000_000_000;
     const spy = new SpyAudit();

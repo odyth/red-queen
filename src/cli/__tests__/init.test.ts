@@ -42,6 +42,7 @@ describe("cmdInit --yes", () => {
     const gitignore = readFileSync(join(tmp, ".gitignore"), "utf8");
     expect(gitignore).toContain(".redqueen/redqueen.db");
     expect(gitignore).toContain(".redqueen/worktrees/");
+    expect(gitignore).toContain(".redqueen/tmp/");
     expect(gitignore).toContain(".redqueen/*.log");
 
     const yaml = readFileSync(join(tmp, "redqueen.yaml"), "utf8");
