@@ -121,6 +121,15 @@ export function classifyOctokitError(error: unknown): RetryClassification {
     return { kind: "success" };
   }
   if (status === 401 || status === 403) {
+    if (status === 403 && isSecondaryRateLimit(err)) {
+      return {
+        kind: "retry",
+        retryAfterMs:
+          parseHeaderSeconds(err.response?.headers, "retry-after") ??
+          rateLimitDelayMs(err.response?.headers),
+        reason: "GitHub secondary rate limit",
+      };
+    }
     const remaining = readHeaderNumber(err.response?.headers, "x-ratelimit-remaining");
     if (status === 403 && remaining === 0) {
       return {
@@ -148,6 +157,25 @@ export function classifyOctokitError(error: unknown): RetryClassification {
     kind: "fatal",
     reason: `GitHub HTTP ${String(status)} ${body}`.trim(),
   };
+}
+
+function isSecondaryRateLimit(err: OctokitRequestError): boolean {
+  if (err.response?.headers?.["retry-after"] !== undefined) {
+    return true;
+  }
+  const message = readBodyMessage(err.response?.data);
+  if (message?.toLowerCase().includes("secondary rate limit") === true) {
+    return true;
+  }
+  return false;
+}
+
+function readBodyMessage(data: unknown): string | null {
+  if (data !== null && typeof data === "object" && "message" in data) {
+    const message = (data as { message?: unknown }).message;
+    return typeof message === "string" ? message : null;
+  }
+  return null;
 }
 
 function isTransientNetworkMessage(message: string): boolean {

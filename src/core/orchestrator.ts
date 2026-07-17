@@ -73,6 +73,10 @@ const PHASE_WATCH_INTERVAL_MS = 15_000;
 // watch is torn down) so only a persistent drift — a human moving the ticket while
 // the worker grinds on now-moot work — actually aborts.
 const PHASE_DRIFT_GRACE_MS = 30_000;
+// How often the main loop prunes the audit log (DB rows + flat file) to the
+// configured retention window. Coarse on purpose — pruning is maintenance,
+// not a state transition, so it runs off the main loop rather than any phase.
+const AUDIT_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 export class RedQueen {
   private readonly deps: RedQueenDeps;
@@ -90,6 +94,7 @@ export class RedQueen {
   private signalHandlersInstalled = false;
   private sigHandler: ((sig: NodeJS.Signals) => void) | null = null;
   private tempDir: string | null = null;
+  private lastAuditPruneMs = 0;
 
   constructor(deps: RedQueenDeps) {
     this.deps = deps;
@@ -258,6 +263,7 @@ export class RedQueen {
     const pollIntervalMs = this.deps.runtime.config.pipeline.pollInterval * 1000;
     while (this.shuttingDown === false) {
       this.deps.orchestratorState.setLastPoll(new Date(this.now()).toISOString());
+      this.maybePruneAudit();
       let task: Task | null;
       try {
         task = this.deps.queue.dequeue();
@@ -1498,27 +1504,16 @@ export class RedQueen {
   }
 
   private performCrashRecovery(): void {
-    const state = this.deps.orchestratorState.get();
-    if (state.status !== "working" || state.currentTaskId === null) {
-      return;
+    const requeued = this.deps.queue.requeueAllWorking();
+    for (const task of requeued) {
+      this.deps.audit.log({
+        component: "orchestrator",
+        issueId: task.issueId,
+        message: `Crash recovery: re-queued task ${task.id}`,
+        metadata: { taskId: task.id, type: task.type },
+      });
     }
-    const task = this.deps.queue.getTask(state.currentTaskId);
-    if (task === null) {
-      this.deps.orchestratorState.setCurrentTaskId(null);
-      return;
-    }
-    if (task.status !== "working") {
-      this.deps.orchestratorState.setCurrentTaskId(null);
-      return;
-    }
-    this.deps.queue.requeue(task.id);
     this.deps.orchestratorState.setCurrentTaskId(null);
-    this.deps.audit.log({
-      component: "orchestrator",
-      issueId: task.issueId,
-      message: `Crash recovery: re-queued task ${task.id}`,
-      metadata: { taskId: task.id, type: task.type },
-    });
   }
 
   private removeTempDir(): void {
@@ -1579,6 +1574,8 @@ export class RedQueen {
         host: dashCfg.host,
         port: dashCfg.port,
         enableDashboardUi: dashboardEnabled,
+        allowNonLoopback: dashCfg.allowNonLoopback,
+        allowedHosts: dashCfg.allowedHosts,
       },
     );
     await this.dashboard.start();
@@ -1647,6 +1644,31 @@ export class RedQueen {
     process.off("SIGINT", this.sigHandler);
     this.signalHandlersInstalled = false;
     this.sigHandler = null;
+  }
+
+  // Interval-gated audit-log prune, driven off the main loop (not any phase
+  // transition, so the deterministic state machine stays untouched). Reads
+  // retentionDays from runtime.config at call time, so a live reload is honored
+  // on the next prune with no extra wiring.
+  private maybePruneAudit(): void {
+    const retentionDays = this.deps.runtime.config.audit.retentionDays;
+    if (retentionDays <= 0) {
+      return;
+    }
+    const now = this.now();
+    if (now - this.lastAuditPruneMs < AUDIT_PRUNE_INTERVAL_MS) {
+      return;
+    }
+    this.lastAuditPruneMs = now;
+    const removed = this.deps.audit.prune(retentionDays);
+    if (removed > 0) {
+      this.deps.audit.log({
+        component: "orchestrator",
+        issueId: null,
+        message: `Pruned ${String(removed)} audit entries older than ${String(retentionDays)} days`,
+        metadata: { removed, retentionDays },
+      });
+    }
   }
 
   private now(): number {

@@ -111,10 +111,10 @@ export class ByoAppAuthStrategy implements GitHubAuthStrategy {
       .sign(key);
   }
 
-  private appHeaders(jwt: string): HeadersInit {
+  private apiHeaders(bearer: string): HeadersInit {
     return {
       Accept: "application/vnd.github+json",
-      Authorization: `Bearer ${jwt}`,
+      Authorization: `Bearer ${bearer}`,
       "User-Agent": this.userAgent,
       "X-GitHub-Api-Version": "2022-11-28",
     };
@@ -125,7 +125,7 @@ export class ByoAppAuthStrategy implements GitHubAuthStrategy {
     const url = `${this.apiBase}/app/installations/${this.installationId}/access_tokens`;
     const response = await this.fetchImpl(url, {
       method: "POST",
-      headers: this.appHeaders(jwt),
+      headers: this.apiHeaders(jwt),
     });
     if (response.status === 401 || response.status === 403) {
       throw new AuthError(
@@ -160,7 +160,7 @@ export class ByoAppAuthStrategy implements GitHubAuthStrategy {
     const jwt = await this.signAppJwt();
     const response = await this.fetchImpl(`${this.apiBase}/app`, {
       method: "GET",
-      headers: this.appHeaders(jwt),
+      headers: this.apiHeaders(jwt),
     });
     if (response.status === 401 || response.status === 403) {
       throw new AuthError(
@@ -179,10 +179,41 @@ export class ByoAppAuthStrategy implements GitHubAuthStrategy {
     if (slug === null || id === null) {
       throw new AdapterError("GitHub /app returned unexpected shape");
     }
+    const login = `${slug}[bot]`;
+    // Webhook sender.id and PR review user.id attribute the App's actions to
+    // its machine user (<slug>[bot]), whose id lives in the users namespace —
+    // not the App registration id GET /app returns. Self-echo filtering and
+    // stale-review dismissal compare against those fields, so the machine
+    // user's id is the identity.
+    const botUserId = await this.fetchBotUserId(login);
     return {
-      login: `${slug}[bot]`,
-      accountId: String(id),
+      login,
+      accountId: String(botUserId),
       isBot: true,
     };
+  }
+
+  private async fetchBotUserId(login: string): Promise<number> {
+    const token = await this.getToken();
+    const response = await this.fetchImpl(`${this.apiBase}/users/${encodeURIComponent(login)}`, {
+      method: "GET",
+      headers: this.apiHeaders(token),
+    });
+    if (response.status === 401 || response.status === 403) {
+      throw new AuthError(
+        `GitHub bot user lookup for ${login} failed (HTTP ${String(response.status)}). Check appId, installationId, and private key.`,
+      );
+    }
+    if (response.ok === false) {
+      const body = await response.text().catch(() => "");
+      throw new AdapterError(
+        `GitHub /users/${login} returned HTTP ${String(response.status)}: ${redactSecrets(body.slice(0, 200))}`,
+      );
+    }
+    const data = (await response.json()) as { id?: unknown };
+    if (typeof data.id !== "number") {
+      throw new AdapterError(`GitHub /users/${login} returned unexpected shape`);
+    }
+    return data.id;
   }
 }

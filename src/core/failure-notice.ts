@@ -59,6 +59,8 @@ export function buildFailureNotice(input: FailureNoticeInput): string {
     "",
     `Red Queen's **${input.phaseLabel}** worker failed${attemptsNote}, so this ticket has been moved to **${input.destinationLabel}** for a human to take a look.`,
     "",
+    "This was routed here by the failure handler; it is not, by itself, a request for clarification from the reporter. If the error looks transient (e.g. a worker stall or LLM/network timeout), hand the ticket back to the AI to retry — otherwise it needs a human to resolve.",
+    "",
     "Worker output:",
     codeBlock(details),
   ].join("\n");

@@ -1,14 +1,20 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import type BetterSqlite3 from "better-sqlite3";
-import { mkdtempSync, rmSync } from "node:fs";
+import { request as httpRequestRaw } from "node:http";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SCHEMA_SQL } from "../../core/database.js";
 import { SqliteTaskQueue } from "../../core/queue.js";
 import { OrchestratorStateStore } from "../../core/pipeline-state.js";
 import { DualWriteAuditLogger } from "../../core/audit.js";
+import { buildPhaseGraph } from "../../core/config.js";
+import { DEFAULT_PHASES } from "../../core/defaults.js";
+import { RuntimeState } from "../../core/runtime-state.js";
+import { makeTestConfig } from "../../core/__tests__/fixtures/test-config.js";
 import { DashboardServer } from "../server.js";
+import type { DashboardEditorDeps } from "../server.js";
 
 let db: BetterSqlite3.Database;
 let tempDir: string;
@@ -41,6 +47,54 @@ async function fetchText(path: string): Promise<{ status: number; text: string }
   return { status: res.status, text };
 }
 
+// fetch/undici forbids overriding the Host header, so spoofed-host tests must
+// use the node:http client directly.
+function httpRequest(
+  method: string,
+  path: string,
+  hostHeader: string,
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const req = httpRequestRaw(
+      { host: "127.0.0.1", port, path, method, headers: { host: hostHeader } },
+      (res) => {
+        let data = "";
+        res.on("data", (chunk: Buffer) => {
+          data += chunk.toString();
+        });
+        res.on("end", () => {
+          resolvePromise({ status: res.statusCode ?? 0, body: data });
+        });
+      },
+    );
+    req.on("error", rejectPromise);
+    req.end();
+  });
+}
+
+function httpGet(path: string, hostHeader: string): Promise<{ status: number; body: string }> {
+  return httpRequest("GET", path, hostHeader);
+}
+
+// Minimal editor deps so control-plane routes register. The handlers only need
+// to run without throwing 404 — a valid config file backs configPath.
+function makeEditorDeps(): DashboardEditorDeps {
+  const configPath = join(tempDir, "redqueen.yaml");
+  writeFileSync(configPath, "issueTracker:\n  type: mock\n  config: {}\n", "utf8");
+  mkdirSync(join(tempDir, ".redqueen", "skills"), { recursive: true });
+  const runtime = new RuntimeState(
+    buildPhaseGraph(DEFAULT_PHASES),
+    makeTestConfig({ phases: DEFAULT_PHASES }),
+  );
+  return {
+    runtime,
+    configPath,
+    projectRoot: tempDir,
+    builtInSkillsDir: join(tempDir, "bundled-skills"),
+    reload: () => ({ applied: [], restartRequired: [] }),
+  };
+}
+
 describe("DashboardServer", () => {
   beforeEach(async () => {
     tempDir = mkdtempSync(join(tmpdir(), "rq-dash-"));
@@ -52,7 +106,13 @@ describe("DashboardServer", () => {
     port = await getFreePort();
     server = new DashboardServer(
       { queue, orchestratorState, audit },
-      { host: "127.0.0.1", port, enableDashboardUi: true },
+      {
+        host: "127.0.0.1",
+        port,
+        enableDashboardUi: true,
+        allowNonLoopback: false,
+        allowedHosts: [],
+      },
     );
     await server.start();
   });
@@ -142,12 +202,97 @@ describe("DashboardServer", () => {
     const audit = new DualWriteAuditLogger(db, join(tempDir, "audit2.log"));
     server = new DashboardServer(
       { queue, orchestratorState, audit },
-      { host: "127.0.0.1", port, enableDashboardUi: false },
+      {
+        host: "127.0.0.1",
+        port,
+        enableDashboardUi: false,
+        allowNonLoopback: false,
+        allowedHosts: [],
+      },
     );
     await server.start();
     const root = await fetchText("/");
     expect(root.status).toBe(404);
     const health = await fetchJson("/health");
     expect(health.status).toBe(200);
+  });
+
+  it("rejects a foreign Host header (DNS rebinding blocked)", async () => {
+    const { status } = await httpGet("/health", "evil.com");
+    expect(status).toBe(403);
+  });
+
+  it("allows loopback Host headers", async () => {
+    const byIp = await httpGet("/health", `127.0.0.1:${String(port)}`);
+    expect(byIp.status).toBe(200);
+    const byName = await httpGet("/health", `localhost:${String(port)}`);
+    expect(byName.status).toBe(200);
+  });
+
+  it("honors configured allowedHosts", async () => {
+    await server.stop();
+    port = await getFreePort();
+    const queue = new SqliteTaskQueue(db);
+    const orchestratorState = new OrchestratorStateStore(db);
+    const audit = new DualWriteAuditLogger(db, join(tempDir, "audit-allow.log"));
+    server = new DashboardServer(
+      { queue, orchestratorState, audit },
+      {
+        host: "127.0.0.1",
+        port,
+        enableDashboardUi: true,
+        allowNonLoopback: false,
+        allowedHosts: ["dash.internal"],
+      },
+    );
+    await server.start();
+    const allowed = await httpGet("/health", "dash.internal");
+    expect(allowed.status).toBe(200);
+    const denied = await httpGet("/health", "other.internal");
+    expect(denied.status).toBe(403);
+  });
+
+  it("exempts custom (webhook) routes from the host allowlist", async () => {
+    server.registerRoute("POST", "/webhook/test", (_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const { status, body } = await httpRequest("POST", "/webhook/test", "evil.com");
+    expect(status).toBe(200);
+    expect(body).toContain("ok");
+  });
+
+  it("does not serve the control plane on a non-loopback bind by default", async () => {
+    await server.stop();
+    port = await getFreePort();
+    const queue = new SqliteTaskQueue(db);
+    const orchestratorState = new OrchestratorStateStore(db);
+    const audit = new DualWriteAuditLogger(db, join(tempDir, "audit-closed.log"));
+    server = new DashboardServer(
+      { queue, orchestratorState, audit, editor: makeEditorDeps() },
+      { host: "0.0.0.0", port, enableDashboardUi: true, allowNonLoopback: false, allowedHosts: [] },
+    );
+    await server.start();
+    const config = await httpGet("/api/config", `127.0.0.1:${String(port)}`);
+    expect(config.status).toBe(404);
+    const skill = await httpRequest("PUT", "/api/skills/foo", `127.0.0.1:${String(port)}`);
+    expect(skill.status).toBe(404);
+    const health = await httpGet("/health", `127.0.0.1:${String(port)}`);
+    expect(health.status).toBe(200);
+  });
+
+  it("serves the control plane on a non-loopback bind when opted in", async () => {
+    await server.stop();
+    port = await getFreePort();
+    const queue = new SqliteTaskQueue(db);
+    const orchestratorState = new OrchestratorStateStore(db);
+    const audit = new DualWriteAuditLogger(db, join(tempDir, "audit-open.log"));
+    server = new DashboardServer(
+      { queue, orchestratorState, audit, editor: makeEditorDeps() },
+      { host: "0.0.0.0", port, enableDashboardUi: true, allowNonLoopback: true, allowedHosts: [] },
+    );
+    await server.start();
+    const config = await httpGet("/api/config", `127.0.0.1:${String(port)}`);
+    expect(config.status).not.toBe(404);
   });
 });
