@@ -112,7 +112,13 @@ describe("Dashboard workflow API", () => {
           },
         },
       },
-      { host: "127.0.0.1", port, enableDashboardUi: true },
+      {
+        host: "127.0.0.1",
+        port,
+        enableDashboardUi: true,
+        allowNonLoopback: false,
+        allowedHosts: [],
+      },
     );
     await server.start();
   });

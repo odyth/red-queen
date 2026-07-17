@@ -160,5 +160,53 @@ describe("DualWriteAuditLogger", () => {
       expect(pruned).toBe(0);
       expect(logger.query({})).toHaveLength(1);
     });
+
+    it("bounds the flat file to the surviving DB rows", () => {
+      logger.log({
+        component: "orchestrator",
+        issueId: "PROJ-1",
+        message: "Old entry",
+        metadata: {},
+      });
+      logger.log({
+        component: "orchestrator",
+        issueId: "PROJ-2",
+        message: "Recent entry",
+        metadata: {},
+      });
+
+      // Backdate only the old entry past the window.
+      const thirtyOneDaysAgo = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString();
+      db.prepare("UPDATE audit_log SET timestamp = ? WHERE message = ?").run(
+        thirtyOneDaysAgo,
+        "Old entry",
+      );
+
+      const pruned = logger.prune(30);
+      expect(pruned).toBe(1);
+
+      const contents = readFileSync(logFilePath, "utf8");
+      expect(contents).toContain("Recent entry");
+      expect(contents).not.toContain("Old entry");
+      // One line per surviving DB row (trailing newline yields a trailing empty).
+      expect(contents.split("\n").filter((l) => l.length > 0)).toHaveLength(
+        logger.query({}).length,
+      );
+    });
+
+    it("empties the flat file when everything is pruned", () => {
+      logger.log({
+        component: "orchestrator",
+        issueId: "PROJ-1",
+        message: "Old entry",
+        metadata: {},
+      });
+
+      const thirtyOneDaysAgo = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString();
+      db.prepare("UPDATE audit_log SET timestamp = ?").run(thirtyOneDaysAgo);
+
+      logger.prune(30);
+      expect(readFileSync(logFilePath, "utf8")).toBe("");
+    });
   });
 });

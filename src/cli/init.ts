@@ -745,6 +745,7 @@ function updateGitignore(projectDir: string): void {
     ".redqueen/worktrees/",
     ".redqueen/attachments/",
     ".redqueen/tmp/",
+    ".redqueen/*.log",
     "",
   ].join("\n");
 
@@ -753,10 +754,18 @@ function updateGitignore(projectDir: string): void {
     return;
   }
   const existing = readFileSync(gitignorePath, "utf8");
-  if (existing.includes(".redqueen/redqueen.db") && existing.includes(".env")) {
+  const hasBase = existing.includes(".redqueen/redqueen.db") && existing.includes(".env");
+  const hasLogIgnore = existing.includes(".redqueen/*.log");
+  if (hasBase && hasLogIgnore) {
     return;
   }
-  appendFileSync(gitignorePath, block);
+  if (hasBase === false) {
+    appendFileSync(gitignorePath, block);
+    return;
+  }
+  // Base block already present but predates the log rule — self-heal existing
+  // installs by appending just the log rule.
+  appendFileSync(gitignorePath, ["", "# Red Queen logs", ".redqueen/*.log", ""].join("\n"));
 }
 
 async function regenerateMapOnly(projectDir: string): Promise<void> {

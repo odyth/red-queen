@@ -163,6 +163,43 @@ describe("SqliteTaskQueue", () => {
     });
   });
 
+  describe("requeueAllWorking", () => {
+    it("flips only working rows and returns them", () => {
+      const w1 = queue.enqueue({ type: "coding", issueId: "PROJ-1" });
+      const w2 = queue.enqueue({ type: "testing", issueId: "PROJ-2" });
+      const readyTask = queue.enqueue({ type: "coding", issueId: "PROJ-3" });
+      const doneTask = queue.enqueue({ type: "coding", issueId: "PROJ-4" });
+      queue.markWorking(w1.id);
+      queue.markWorking(w2.id);
+      queue.markWorking(doneTask.id);
+      queue.markComplete(doneTask.id, "done");
+
+      const requeued = queue.requeueAllWorking();
+
+      expect(requeued.map((t) => t.id).sort()).toEqual([w1.id, w2.id].sort());
+      for (const id of [w1.id, w2.id]) {
+        const updated = queue.getTask(id);
+        expect(updated?.status).toBe("ready");
+        expect(updated?.startedAt).toBeNull();
+      }
+      expect(queue.getTask(readyTask.id)?.status).toBe("ready");
+      expect(queue.getTask(doneTask.id)?.status).toBe("complete");
+    });
+
+    it("returns [] and changes nothing when no working tasks exist", () => {
+      const readyTask = queue.enqueue({ type: "coding", issueId: "PROJ-1" });
+      const doneTask = queue.enqueue({ type: "coding", issueId: "PROJ-2" });
+      queue.markWorking(doneTask.id);
+      queue.markComplete(doneTask.id, "done");
+
+      const requeued = queue.requeueAllWorking();
+
+      expect(requeued).toEqual([]);
+      expect(queue.getTask(readyTask.id)?.status).toBe("ready");
+      expect(queue.getTask(doneTask.id)?.status).toBe("complete");
+    });
+  });
+
   describe("dedup", () => {
     it("detects open task for same issue+type", () => {
       queue.enqueue({ type: "coding", issueId: "PROJ-1" });

@@ -66,7 +66,13 @@ describe("WebhookServer", () => {
     port = await getFreePort();
     dashboard = new DashboardServer(
       { queue, orchestratorState, audit },
-      { host: "127.0.0.1", port, enableDashboardUi: true },
+      {
+        host: "127.0.0.1",
+        port,
+        enableDashboardUi: true,
+        allowNonLoopback: false,
+        allowedHosts: [],
+      },
     );
     await dashboard.start();
     const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
@@ -522,7 +528,13 @@ describe("WebhookServer pr-merged cleanup", () => {
     port3 = await getFreePort();
     dashboard3 = new DashboardServer(
       { queue: queue3, orchestratorState: orchestratorState3, audit: audit3 },
-      { host: "127.0.0.1", port: port3, enableDashboardUi: true },
+      {
+        host: "127.0.0.1",
+        port: port3,
+        enableDashboardUi: true,
+        allowNonLoopback: false,
+        allowedHosts: [],
+      },
     );
     await dashboard3.start();
     const config = makeTestConfig({
@@ -631,7 +643,13 @@ describe("WebhookServer custom paths", () => {
     port2 = await getFreePort();
     dashboard2 = new DashboardServer(
       { queue: queue2, orchestratorState: orchestratorState2, audit: audit2 },
-      { host: "127.0.0.1", port: port2, enableDashboardUi: true },
+      {
+        host: "127.0.0.1",
+        port: port2,
+        enableDashboardUi: true,
+        allowNonLoopback: false,
+        allowedHosts: [],
+      },
     );
     await dashboard2.start();
     const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());

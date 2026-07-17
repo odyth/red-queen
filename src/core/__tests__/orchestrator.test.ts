@@ -7,6 +7,7 @@ import { SqliteTaskQueue } from "../queue.js";
 import { PipelineStateStore, OrchestratorStateStore } from "../pipeline-state.js";
 import { PhaseUsageStore } from "../phase-usage.js";
 import { DualWriteAuditLogger } from "../audit.js";
+import type { AuditLogger, AuditEntry } from "../audit.js";
 import { buildPhaseGraph } from "../config.js";
 import { DEFAULT_PHASES } from "../defaults.js";
 import { RedQueen } from "../orchestrator.js";
@@ -499,6 +500,32 @@ describe("RedQueen orchestrator", () => {
     expect(stored?.status).toBe("complete");
   });
 
+  it("recovers a working task the current_task_id pointer never named", async () => {
+    // Regression: a crash between markWorking and setCurrentTaskId leaves a
+    // "working" task the pointer never named. Pointer-based recovery skipped it
+    // and reconcile then saw hasOpenTask=true, stranding the issue forever.
+    const h = setupHarness(() =>
+      Promise.resolve({
+        success: true,
+        exitCode: 0,
+        elapsed: 1,
+        summary: "done",
+        error: null,
+      }),
+    );
+    const task = h.queue.enqueue({ type: "coding", issueId: "PROJ-1" });
+    h.queue.markWorking(task.id);
+    // Crash gap: neither the status nor the pointer was written.
+    h.orchestratorState.setCurrentTaskId(null);
+    h.pipelineState.create("PROJ-1", "coding");
+    h.issueTracker.phases.set("PROJ-1", "coding");
+    h.issueTracker.specs.set("PROJ-1", "Implementation spec body.");
+
+    await runUntil(h, () => h.queue.getTask(task.id)?.status === "complete");
+
+    expect(h.queue.getTask(task.id)?.status).toBe("complete");
+  });
+
   it("assigns to human when advancing to human gate", async () => {
     // spec-writing -> spec-review (human). spec-writing succeeds and the
     // orchestrator parks the ticket at the spec-review human gate.
@@ -850,6 +877,54 @@ describe("RedQueen orchestrator", () => {
     expect(h.runs.length).toBeGreaterThanOrEqual(2);
   });
 
+  it("posts a failure notice to the ticket when a worker failure parks it at a human gate", async () => {
+    // A 401 from the Claude worker would otherwise dump the ticket at
+    // spec-awaiting-info with no explanation — the reported bug. The notice gives
+    // a human looking at the ticket (not the logs) the reason.
+    const h = setupHarness(() =>
+      Promise.resolve({
+        success: false,
+        exitCode: 1,
+        elapsed: 1,
+        summary: "",
+        error: 'API Error: 401 {"type":"authentication_error","message":"invalid x-api-key"}',
+      }),
+    );
+    h.pipelineState.create("PROJ-401", "spec-writing");
+    h.issueTracker.phases.set("PROJ-401", "spec-writing");
+    h.queue.enqueue({ type: "spec-writing", issueId: "PROJ-401" });
+
+    await runUntil(h, () => h.issueTracker.phases.get("PROJ-401") === "spec-awaiting-info");
+
+    const comments = h.issueTracker.commentsById.get("PROJ-401") ?? [];
+    // Exactly one — posted on the terminal gate landing, not on each retry.
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("authenticate");
+    expect(comments[0]?.body).toContain("401");
+  });
+
+  it("does not post a failure notice when a failure bounces to an automated phase", async () => {
+    // code-review -> coding is a normal feedback loop; commenting there would
+    // spam the ticket every reconcile cycle, so no notice is posted.
+    const h = setupHarness(() =>
+      Promise.resolve({
+        success: false,
+        exitCode: 1,
+        elapsed: 0,
+        summary: "",
+        error: "blockers found",
+      }),
+    );
+    h.pipelineState.create("PROJ-NC", "code-review");
+    h.issueTracker.phases.set("PROJ-NC", "code-review");
+    h.issueTracker.specs.set("PROJ-NC", "Implementation spec body.");
+    h.queue.enqueue({ type: "code-review", issueId: "PROJ-NC" });
+
+    await runUntil(h, () => h.pipelineState.get("PROJ-NC")?.currentPhase === "coding");
+
+    expect(h.issueTracker.commentsById.get("PROJ-NC") ?? []).toHaveLength(0);
+  });
+
   it("overrides a self-advance to spec-review when the worker wrote no spec", async () => {
     // Skills are LLM-driven: the prompt-writer is told to self-route only to the
     // escape phases, but if it instead pushes the tracker forward to spec-review
@@ -880,6 +955,33 @@ describe("RedQueen orchestrator", () => {
     expect(h.issueTracker.calls).toContain("assignToHuman:PROJ-SELF:none");
     // skipRetry: escalated on the single run rather than enqueuing a doomed retry.
     expect(h.runs.length).toBe(1);
+  });
+
+  it("posts a failure-notice comment when a worker exhausts retries into a human-gate", async () => {
+    // A stalled/crashed worker produces no output and is routed to spec-awaiting-info
+    // via onFail — the same gate the prompt-writer uses to deliberately ask the
+    // reporter for clarification, but with no question attached. Without a comment the
+    // human can't tell an infra failure from a real clarification request. The notice
+    // names the failed phase and surfaces the worker error.
+    const h = setupHarness(() =>
+      Promise.resolve({
+        success: false,
+        exitCode: -1,
+        elapsed: 1,
+        summary: "",
+        error: "Worker stalled (no CPU work for 300s)",
+      }),
+    );
+    h.pipelineState.create("PROJ-STALL", "spec-writing");
+    h.issueTracker.phases.set("PROJ-STALL", "spec-writing");
+    h.queue.enqueue({ type: "spec-writing", issueId: "PROJ-STALL" });
+
+    await runUntil(h, () => h.issueTracker.phases.get("PROJ-STALL") === "spec-awaiting-info");
+
+    const comments = h.issueTracker.commentsById.get("PROJ-STALL") ?? [];
+    expect(comments.length).toBe(1);
+    expect(comments[0]?.body).toContain("Worker stalled (no CPU work for 300s)");
+    expect(comments[0]?.body).toContain("Spec Writing");
   });
 
   it("auto-transitions human-review -> code-feedback when PR exists", async () => {
@@ -1626,4 +1728,63 @@ describe("RedQueen orchestrator", () => {
     expect(prompts[1]).not.toBeNull();
     expect(prompts[1]).toContain("phaseName: coding");
   });
+
+  it("prunes the audit log on startup and respects the interval gate", async () => {
+    let nowMs = 1_700_000_000_000;
+    const spy = new SpyAudit();
+    const h = setupHarness(
+      () =>
+        Promise.resolve({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "done",
+          error: null,
+        }),
+      { extra: { audit: spy, now: () => nowMs } },
+    );
+
+    const waitFor = async (predicate: () => boolean): Promise<void> => {
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline && predicate() === false) {
+        await new Promise((r) => setTimeout(r, 10));
+      }
+    };
+
+    const startPromise = h.rq.start();
+    try {
+      // Startup prune fires on the first tick, with the configured retention.
+      await waitFor(() => spy.pruneCalls.length >= 1);
+      expect(spy.pruneCalls).toEqual([30]);
+
+      // Within the interval, no second prune however many ticks run.
+      nowMs += 60 * 60 * 1000; // +1h, well under the 24h interval
+      await new Promise((r) => setTimeout(r, 50));
+      expect(spy.pruneCalls).toEqual([30]);
+
+      // Past the interval, it prunes again.
+      nowMs += 24 * 60 * 60 * 1000;
+      await waitFor(() => spy.pruneCalls.length >= 2);
+      expect(spy.pruneCalls).toEqual([30, 30]);
+    } finally {
+      await h.rq.stop();
+      await startPromise.catch(() => {
+        // Shutdown clears the main loop
+      });
+    }
+  });
 });
+
+class SpyAudit implements AuditLogger {
+  pruneCalls: number[] = [];
+  log(): void {
+    // no-op: this spy only cares about prune()
+  }
+  query(): AuditEntry[] {
+    return [];
+  }
+  prune(days: number): number {
+    this.pruneCalls.push(days);
+    return 0;
+  }
+}

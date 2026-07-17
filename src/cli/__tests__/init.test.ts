@@ -43,6 +43,7 @@ describe("cmdInit --yes", () => {
     expect(gitignore).toContain(".redqueen/redqueen.db");
     expect(gitignore).toContain(".redqueen/worktrees/");
     expect(gitignore).toContain(".redqueen/tmp/");
+    expect(gitignore).toContain(".redqueen/*.log");
 
     const yaml = readFileSync(join(tmp, "redqueen.yaml"), "utf8");
     // The generated yaml references ${GITHUB_PAT}; set it so parseConfig
@@ -63,6 +64,18 @@ describe("cmdInit --yes", () => {
 
     // .gitignore must include .env.
     expect(gitignore).toContain(".env");
+  });
+
+  it("appends the log rule to a pre-existing Red Queen gitignore", async () => {
+    writeFileSync(join(tmp, "package.json"), "{}");
+    // A gitignore that has the base block but predates the log rule.
+    writeFileSync(join(tmp, ".gitignore"), ".env\n.redqueen/redqueen.db\n");
+    await cmdInit(["--yes"]);
+
+    const gitignore = readFileSync(join(tmp, ".gitignore"), "utf8");
+    expect(gitignore).toContain(".redqueen/*.log");
+    // Base lines are not duplicated.
+    expect(gitignore.match(/\.redqueen\/redqueen\.db\b/g)).toHaveLength(1);
   });
 
   it("refuses to run twice without --force", async () => {

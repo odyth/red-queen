@@ -1,5 +1,5 @@
 import type BetterSqlite3 from "better-sqlite3";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, writeFileSync, renameSync } from "node:fs";
 
 // --- Types ---
 
@@ -64,10 +64,19 @@ export class DualWriteAuditLogger implements AuditLogger {
 
     // Flat file write — sanitize message so embedded newlines/pipes can't forge
     // a fake log record in the pipe-delimited format.
-    const issueIdPart = entry.issueId ?? "-";
-    const safeMessage = entry.message.replace(/[\r\n|]/g, " ");
-    const line = `[${timestamp}] ${entry.component} | ${issueIdPart} | ${safeMessage}\n`;
+    const line = this.formatLine(timestamp, entry.component, entry.issueId, entry.message);
     appendFileSync(this.logFilePath, line);
+  }
+
+  private formatLine(
+    timestamp: string,
+    component: string,
+    issueId: string | null,
+    message: string,
+  ): string {
+    const issueIdPart = issueId ?? "-";
+    const safeMessage = message.replace(/[\r\n|]/g, " ");
+    return `[${timestamp}] ${component} | ${issueIdPart} | ${safeMessage}\n`;
   }
 
   query(filter: AuditFilter): AuditEntry[] {
@@ -101,7 +110,25 @@ export class DualWriteAuditLogger implements AuditLogger {
   prune(olderThanDays: number): number {
     const cutoff = new Date(Date.now() - olderThanDays * 24 * 60 * 60 * 1000).toISOString();
     const result = this.db.prepare("DELETE FROM audit_log WHERE timestamp < ?").run(cutoff);
+    this.rewriteLogFile();
     return result.changes;
+  }
+
+  // Regenerate the flat file from the surviving DB rows so it stays bounded to
+  // the same retention window as the DB. The DB is the source of truth and the
+  // line format is deterministic, so this rebuild is byte-identical to what
+  // log() would have appended — no fragile parsing of the flat text.
+  private rewriteLogFile(): void {
+    const rows = this.db
+      .prepare("SELECT * FROM audit_log ORDER BY timestamp ASC, id ASC")
+      .all() as AuditRow[];
+    const contents = rows
+      .map((row) => this.formatLine(row.timestamp, row.component, row.issue_id, row.message))
+      .join("");
+    // Write-tmp-then-rename so a crash mid-prune can't leave a truncated file.
+    const tmpPath = `${this.logFilePath}.tmp`;
+    writeFileSync(tmpPath, contents);
+    renameSync(tmpPath, this.logFilePath);
   }
 }
 

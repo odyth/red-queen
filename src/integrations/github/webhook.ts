@@ -54,14 +54,31 @@ export function parseGitHubWebhookEvent(
   if (typeof senderId === "number" && String(senderId) === context.identity.accountId) {
     return null;
   }
+  // Backstop for an identity whose accountId was resolved from a different id
+  // namespace (e.g. a GitHub App registration id): the rendered login is also self.
+  const senderLogin = extractNested(payload, ["sender", "login"]);
+  if (typeof senderLogin === "string" && senderLogin === context.identity.login) {
+    return null;
+  }
 
   const nowIso = new Date().toISOString();
   const resolver = context.resolveIssueIdFromBranch ?? defaultBranchIssueResolver;
 
   switch (eventType) {
     case "issue_comment":
-    case "pull_request_review":
     case "pull_request_review_comment": {
+      // Only new comments are feedback. The adapters edit spec and cost
+      // comments in place, and those edits fire this same event type.
+      if (extractString(payload, "action") !== "created") {
+        return null;
+      }
+      return buildFeedbackEvent(payload, resolver, nowIso);
+    }
+    case "pull_request_review": {
+      // edited/dismissed reviews are not new feedback.
+      if (extractString(payload, "action") !== "submitted") {
+        return null;
+      }
       return buildFeedbackEvent(payload, resolver, nowIso);
     }
     case "pull_request": {

@@ -135,6 +135,8 @@ export interface DashboardServerOptions {
   host: string;
   port: number;
   enableDashboardUi: boolean;
+  allowNonLoopback: boolean;
+  allowedHosts: string[];
 }
 
 export class DashboardServer {
@@ -172,13 +174,19 @@ export class DashboardServer {
       server.on("error", rejectStart);
       server.listen(this.options.port, this.options.host, () => {
         this.server = server;
-        if (this.deps.editor !== undefined && isNonLoopbackHost(this.options.host)) {
-          // Editor endpoints can mutate config, skills, and workflow. There is
-          // no auth layer — binding to a non-loopback interface exposes an
-          // unauthenticated control plane to anything that can reach the port.
-          process.stderr.write(
-            `warning (dashboard): binding editor endpoints to ${this.options.host} — there is no auth; only use a loopback address unless you've put a reverse proxy with auth in front.\n`,
-          );
+        const hasControlPlane = this.deps.editor !== undefined || this.deps.service !== undefined;
+        if (hasControlPlane && isNonLoopbackHost(this.options.host)) {
+          // The control plane (editor/service) can mutate config, skills, and
+          // workflow, or start/stop the OS service. There is no built-in auth.
+          if (this.controlPlaneAllowed()) {
+            process.stderr.write(
+              `warning (dashboard): the mutating control plane (editor/service endpoints) is being served on non-loopback host ${this.options.host} with no built-in auth (dashboard.allowNonLoopback: true). Only run this behind a reverse proxy that adds authentication.\n`,
+            );
+          } else {
+            process.stderr.write(
+              `info (dashboard): control-plane (editor/service) endpoints are disabled because dashboard.host ${this.options.host} is non-loopback. Set dashboard.allowNonLoopback: true to re-enable them (only behind an auth proxy).\n`,
+            );
+          }
         }
         resolveStart();
       });
@@ -217,6 +225,14 @@ export class DashboardServer {
       }
     }
 
+    // Host allowlist sits after custom routes (webhooks authenticate by HMAC
+    // signature and carry the public proxy's Host header) and before every
+    // browser-reachable route. This is the DNS-rebinding defense.
+    if (isHostAllowed(req.headers.host, this.options) === false) {
+      this.sendText(res, 403, "Forbidden: host not allowed");
+      return;
+    }
+
     for (const route of this.builtInRoutes) {
       if (route.method !== lookupMethod) {
         continue;
@@ -228,7 +244,11 @@ export class DashboardServer {
       return;
     }
 
-    if (this.deps.editor !== undefined && skillMatchesRoute(pathOnly)) {
+    if (
+      this.deps.editor !== undefined &&
+      this.controlPlaneAllowed() &&
+      skillMatchesRoute(pathOnly)
+    ) {
       const editor = this.deps.editor;
       const skillsDeps = {
         runtime: editor.runtime,
@@ -468,7 +488,7 @@ export class DashboardServer {
       },
     });
 
-    if (this.deps.service !== undefined) {
+    if (this.deps.service !== undefined && this.controlPlaneAllowed()) {
       const service = this.deps.service;
       routes.push({
         method: "GET",
@@ -492,7 +512,7 @@ export class DashboardServer {
       });
     }
 
-    if (this.deps.editor !== undefined) {
+    if (this.deps.editor !== undefined && this.controlPlaneAllowed()) {
       const editor = this.deps.editor;
       const configDeps = {
         configPath: editor.configPath,
@@ -591,6 +611,13 @@ export class DashboardServer {
     return routes;
   }
 
+  private controlPlaneAllowed(): boolean {
+    if (isNonLoopbackHost(this.options.host) === false) {
+      return true;
+    }
+    return this.options.allowNonLoopback === true;
+  }
+
   private buildStatusPayload(): StatusPayload {
     const state = this.deps.orchestratorState.get();
     const ready = this.deps.queue.listByStatus("ready");
@@ -630,6 +657,43 @@ function isNonLoopbackHost(host: string): boolean {
     return false;
   }
   return true;
+}
+
+// Turn a raw Host header into a bare, comparable hostname (port stripped,
+// IPv6 brackets removed), or null when it can't be parsed. Bracket-aware so
+// `[::1]:4400` and bare `::1` both normalize to `::1` instead of being mangled
+// by a naive split(":").
+function extractHostname(hostHeader: string): string | null {
+  const normalized = hostHeader.trim().toLowerCase().replace(/\.$/, "");
+  if (normalized.startsWith("[")) {
+    const end = normalized.indexOf("]");
+    if (end === -1) {
+      return null;
+    }
+    const inner = normalized.slice(1, end);
+    return inner.length === 0 ? null : inner;
+  }
+  const colonCount = (normalized.match(/:/g) ?? []).length;
+  const result = colonCount === 1 ? normalized.slice(0, normalized.indexOf(":")) : normalized;
+  return result.length === 0 ? null : result;
+}
+
+function isHostAllowed(hostHeader: string | undefined, options: DashboardServerOptions): boolean {
+  if (hostHeader === undefined) {
+    return false;
+  }
+  const requestHost = extractHostname(hostHeader);
+  if (requestHost === null) {
+    return false;
+  }
+  const allowed = new Set(["localhost", "127.0.0.1", "::1"]);
+  for (const candidate of [options.host, ...options.allowedHosts]) {
+    const extracted = extractHostname(candidate);
+    if (extracted !== null) {
+      allowed.add(extracted);
+    }
+  }
+  return allowed.has(requestHost);
 }
 
 function summarizeTask(task: Task): TaskSummary {
