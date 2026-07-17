@@ -19,6 +19,7 @@ export interface ShellOptions {
   active: NavKey;
   content: string;
   version: string;
+  repo?: string;
 }
 
 const STYLES = `
@@ -62,7 +63,7 @@ const STYLES = `
     flex: 0 0 auto;
     display: block;
   }
-  header .tagline {
+  header .repo {
     color: var(--muted);
     font-size: 12px;
     letter-spacing: 0.02em;
@@ -229,8 +230,8 @@ export function renderShell(options: ShellOptions): string {
 <header>
   <img class="logo" src="/assets/brand/logo.png" alt="Red Queen" />
   <h1>Red Queen</h1>
-  <span class="tagline">Named for the AI that ran The Hive. Yours runs your SDLC.</span>
   <span id="status-line" class="muted">connecting...</span>
+  ${options.repo !== undefined && options.repo !== "" ? `<span class="repo">${escapeHtml(options.repo)}</span>` : ""}
   <span class="status" id="uptime"></span>
   <span class="version">v${escapeHtml(options.version)}</span>
 </header>

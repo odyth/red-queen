@@ -137,6 +137,7 @@ export interface DashboardServerOptions {
   enableDashboardUi: boolean;
   allowNonLoopback: boolean;
   allowedHosts: string[];
+  repoLabel?: string;
 }
 
 export class DashboardServer {
@@ -299,6 +300,7 @@ export class DashboardServer {
             active: "status",
             content: renderStatusPartial(),
             version: packageVersion(),
+            repo: this.options.repoLabel,
           }),
         );
       },

@@ -1592,6 +1592,7 @@ export class RedQueen {
         enableDashboardUi: dashboardEnabled,
         allowNonLoopback: dashCfg.allowNonLoopback,
         allowedHosts: dashCfg.allowedHosts,
+        repoLabel: sourceControlRepoLabel(this.deps.runtime.config),
       },
     );
     await this.dashboard.start();
@@ -1791,4 +1792,20 @@ function errorMessage(err: unknown): string {
     return err.message;
   }
   return String(err);
+}
+
+// Cosmetic header label. The adapter config shape is integration-specific, so
+// read owner/repo generically off the untyped record rather than importing
+// adapter types into core.
+function sourceControlRepoLabel(config: RedQueenConfig): string | undefined {
+  const sc = config.sourceControl.config;
+  const owner = sc.owner;
+  const repo = sc.repo;
+  if (typeof owner === "string" && typeof repo === "string") {
+    return `${owner}/${repo}`;
+  }
+  if (typeof repo === "string") {
+    return repo;
+  }
+  return undefined;
 }
