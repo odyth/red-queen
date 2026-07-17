@@ -7,6 +7,7 @@ import { SqliteTaskQueue } from "../queue.js";
 import { PipelineStateStore, OrchestratorStateStore } from "../pipeline-state.js";
 import { PhaseUsageStore } from "../phase-usage.js";
 import { DualWriteAuditLogger } from "../audit.js";
+import type { AuditLogger, AuditEntry } from "../audit.js";
 import { buildPhaseGraph } from "../config.js";
 import { DEFAULT_PHASES } from "../defaults.js";
 import { RedQueen } from "../orchestrator.js";
@@ -1616,4 +1617,63 @@ describe("RedQueen orchestrator", () => {
     const audit = readFileSync(auditPath, "utf8");
     expect(audit).not.toContain("aborting worker");
   });
+
+  it("prunes the audit log on startup and respects the interval gate", async () => {
+    let nowMs = 1_700_000_000_000;
+    const spy = new SpyAudit();
+    const h = setupHarness(
+      () =>
+        Promise.resolve({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "done",
+          error: null,
+        }),
+      { extra: { audit: spy, now: () => nowMs } },
+    );
+
+    const waitFor = async (predicate: () => boolean): Promise<void> => {
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline && predicate() === false) {
+        await new Promise((r) => setTimeout(r, 10));
+      }
+    };
+
+    const startPromise = h.rq.start();
+    try {
+      // Startup prune fires on the first tick, with the configured retention.
+      await waitFor(() => spy.pruneCalls.length >= 1);
+      expect(spy.pruneCalls).toEqual([30]);
+
+      // Within the interval, no second prune however many ticks run.
+      nowMs += 60 * 60 * 1000; // +1h, well under the 24h interval
+      await new Promise((r) => setTimeout(r, 50));
+      expect(spy.pruneCalls).toEqual([30]);
+
+      // Past the interval, it prunes again.
+      nowMs += 24 * 60 * 60 * 1000;
+      await waitFor(() => spy.pruneCalls.length >= 2);
+      expect(spy.pruneCalls).toEqual([30, 30]);
+    } finally {
+      await h.rq.stop();
+      await startPromise.catch(() => {
+        // Shutdown clears the main loop
+      });
+    }
+  });
 });
+
+class SpyAudit implements AuditLogger {
+  pruneCalls: number[] = [];
+  log(): void {
+    // no-op: this spy only cares about prune()
+  }
+  query(): AuditEntry[] {
+    return [];
+  }
+  prune(days: number): number {
+    this.pruneCalls.push(days);
+    return 0;
+  }
+}
