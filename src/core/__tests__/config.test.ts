@@ -39,6 +39,8 @@ project:
     expect(config.pipeline.skipSpecReviewIfReady).toBe(false);
     expect(config.dashboard.enabled).toBe(true);
     expect(config.dashboard.port).toBe(4400);
+    expect(config.dashboard.allowNonLoopback).toBe(false);
+    expect(config.dashboard.allowedHosts).toEqual([]);
     expect(config.audit.logFile).toBe("audit.log");
     expect(config.audit.retentionDays).toBe(30);
     expect(config.skills.directory).toBe(".redqueen/skills");

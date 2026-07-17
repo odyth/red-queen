@@ -91,7 +91,7 @@ async function boot(withService: boolean): Promise<void> {
       audit,
       service: withService ? { manager: fake, context: ctx } : undefined,
     },
-    { host: "127.0.0.1", port, enableDashboardUi: true },
+    { host: "127.0.0.1", port, enableDashboardUi: true, allowNonLoopback: false, allowedHosts: [] },
   );
   await server.start();
 }

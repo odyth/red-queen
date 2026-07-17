@@ -1549,6 +1549,8 @@ export class RedQueen {
         host: dashCfg.host,
         port: dashCfg.port,
         enableDashboardUi: dashboardEnabled,
+        allowNonLoopback: dashCfg.allowNonLoopback,
+        allowedHosts: dashCfg.allowedHosts,
       },
     );
     await this.dashboard.start();
