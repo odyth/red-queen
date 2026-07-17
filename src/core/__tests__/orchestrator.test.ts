@@ -882,6 +882,33 @@ describe("RedQueen orchestrator", () => {
     expect(h.runs.length).toBe(1);
   });
 
+  it("posts a failure-notice comment when a worker exhausts retries into a human-gate", async () => {
+    // A stalled/crashed worker produces no output and is routed to spec-awaiting-info
+    // via onFail — the same gate the prompt-writer uses to deliberately ask the
+    // reporter for clarification, but with no question attached. Without a comment the
+    // human can't tell an infra failure from a real clarification request. The notice
+    // names the failed phase and surfaces the worker error.
+    const h = setupHarness(() =>
+      Promise.resolve({
+        success: false,
+        exitCode: -1,
+        elapsed: 1,
+        summary: "",
+        error: "Worker stalled (no CPU work for 300s)",
+      }),
+    );
+    h.pipelineState.create("PROJ-STALL", "spec-writing");
+    h.issueTracker.phases.set("PROJ-STALL", "spec-writing");
+    h.queue.enqueue({ type: "spec-writing", issueId: "PROJ-STALL" });
+
+    await runUntil(h, () => h.issueTracker.phases.get("PROJ-STALL") === "spec-awaiting-info");
+
+    const comments = h.issueTracker.commentsById.get("PROJ-STALL") ?? [];
+    expect(comments.length).toBe(1);
+    expect(comments[0]?.body).toContain("Worker stalled (no CPU work for 300s)");
+    expect(comments[0]?.body).toContain("Spec Writing");
+  });
+
   it("auto-transitions human-review -> code-feedback when PR exists", async () => {
     const h = setupHarness(() =>
       Promise.resolve({
