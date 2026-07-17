@@ -303,30 +303,7 @@ export class JiraIssueTrackerAdapter implements IssueTracker {
     // miss our comment on a long thread and we'd POST a fresh duplicate every
     // run. Page through all comments (capped) the way listIssuesByPhase does.
     const body = renderBreakdownAdf(breakdown);
-    const all: JiraCommentRaw[] = [];
-    let startAt = 0;
-    let pages = 0;
-    let done = false;
-    while (done === false) {
-      pages++;
-      if (pages > LIST_MAX_PAGES) {
-        throw new Error(
-          `Jira setCostBreakdown comment page cap (${String(LIST_MAX_PAGES)}) exceeded for issue '${issueId}' — runaway comment thread.`,
-        );
-      }
-      const params = new URLSearchParams({
-        startAt: String(startAt),
-        maxResults: String(LIST_PAGE_SIZE),
-      });
-      const page = await this.client.request<{ comments?: JiraCommentRaw[]; total?: number }>(
-        "GET",
-        `/rest/api/3/issue/${encodeURIComponent(issueId)}/comment?${params.toString()}`,
-      );
-      const comments = page.comments ?? [];
-      all.push(...comments);
-      startAt += comments.length;
-      done = comments.length === 0 || startAt >= (page.total ?? all.length);
-    }
+    const all = await this.fetchAllCommentsRaw(issueId);
     const found = findCostComment(all.map((c) => ({ id: c.id, body: c.body, created: c.created })));
     if (found.commentId === null) {
       await this.client.request(
@@ -369,12 +346,40 @@ export class JiraIssueTrackerAdapter implements IssueTracker {
     }
   }
 
+  // Page through the whole comment thread (capped) the way listIssuesByPhase
+  // does. Jira returns comments oldest-first in bounded pages, so a single GET
+  // silently drops everything past the first page on a long thread.
+  private async fetchAllCommentsRaw(issueId: string): Promise<JiraCommentRaw[]> {
+    const all: JiraCommentRaw[] = [];
+    let startAt = 0;
+    let pages = 0;
+    let done = false;
+    while (done === false) {
+      pages++;
+      if (pages > LIST_MAX_PAGES) {
+        throw new Error(
+          `Jira getComments page cap (${String(LIST_MAX_PAGES)}) exceeded for issue '${issueId}' — runaway comment thread.`,
+        );
+      }
+      const params = new URLSearchParams({
+        startAt: String(startAt),
+        maxResults: String(LIST_PAGE_SIZE),
+      });
+      const page = await this.client.request<{ comments?: JiraCommentRaw[]; total?: number }>(
+        "GET",
+        `/rest/api/3/issue/${encodeURIComponent(issueId)}/comment?${params.toString()}`,
+      );
+      const comments = page.comments ?? [];
+      all.push(...comments);
+      startAt += comments.length;
+      done = comments.length === 0 || startAt >= (page.total ?? all.length);
+    }
+    return all;
+  }
+
   async getComments(issueId: string): Promise<Comment[]> {
-    const response = await this.client.request<{ comments?: JiraCommentRaw[] }>(
-      "GET",
-      `/rest/api/3/issue/${encodeURIComponent(issueId)}/comment`,
-    );
-    return (response.comments ?? []).map((c) => ({
+    const raw = await this.fetchAllCommentsRaw(issueId);
+    return raw.map((c) => ({
       id: c.id,
       author: c.author?.displayName ?? c.author?.accountId ?? "unknown",
       body:
