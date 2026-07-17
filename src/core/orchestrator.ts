@@ -1479,27 +1479,16 @@ export class RedQueen {
   }
 
   private performCrashRecovery(): void {
-    const state = this.deps.orchestratorState.get();
-    if (state.status !== "working" || state.currentTaskId === null) {
-      return;
+    const requeued = this.deps.queue.requeueAllWorking();
+    for (const task of requeued) {
+      this.deps.audit.log({
+        component: "orchestrator",
+        issueId: task.issueId,
+        message: `Crash recovery: re-queued task ${task.id}`,
+        metadata: { taskId: task.id, type: task.type },
+      });
     }
-    const task = this.deps.queue.getTask(state.currentTaskId);
-    if (task === null) {
-      this.deps.orchestratorState.setCurrentTaskId(null);
-      return;
-    }
-    if (task.status !== "working") {
-      this.deps.orchestratorState.setCurrentTaskId(null);
-      return;
-    }
-    this.deps.queue.requeue(task.id);
     this.deps.orchestratorState.setCurrentTaskId(null);
-    this.deps.audit.log({
-      component: "orchestrator",
-      issueId: task.issueId,
-      message: `Crash recovery: re-queued task ${task.id}`,
-      metadata: { taskId: task.id, type: task.type },
-    });
   }
 
   private removeTempDir(): void {

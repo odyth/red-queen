@@ -500,6 +500,32 @@ describe("RedQueen orchestrator", () => {
     expect(stored?.status).toBe("complete");
   });
 
+  it("recovers a working task the current_task_id pointer never named", async () => {
+    // Regression: a crash between markWorking and setCurrentTaskId leaves a
+    // "working" task the pointer never named. Pointer-based recovery skipped it
+    // and reconcile then saw hasOpenTask=true, stranding the issue forever.
+    const h = setupHarness(() =>
+      Promise.resolve({
+        success: true,
+        exitCode: 0,
+        elapsed: 1,
+        summary: "done",
+        error: null,
+      }),
+    );
+    const task = h.queue.enqueue({ type: "coding", issueId: "PROJ-1" });
+    h.queue.markWorking(task.id);
+    // Crash gap: neither the status nor the pointer was written.
+    h.orchestratorState.setCurrentTaskId(null);
+    h.pipelineState.create("PROJ-1", "coding");
+    h.issueTracker.phases.set("PROJ-1", "coding");
+    h.issueTracker.specs.set("PROJ-1", "Implementation spec body.");
+
+    await runUntil(h, () => h.queue.getTask(task.id)?.status === "complete");
+
+    expect(h.queue.getTask(task.id)?.status).toBe("complete");
+  });
+
   it("assigns to human when advancing to human gate", async () => {
     // spec-writing -> spec-review (human). spec-writing succeeds and the
     // orchestrator parks the ticket at the spec-review human gate.
