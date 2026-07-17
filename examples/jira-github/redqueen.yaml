@@ -45,6 +45,12 @@ project:
 
 pipeline:
   baseBranch: origin/main
+  # Which AI CLI runs workers: claude-code (default) or codex. Any phase can
+  # override agent/model/effort individually — see the phases docs.
+  # agent: codex
+  # codexBin: /usr/local/bin/codex   # if `codex` isn't on the service PATH
+  # model: opus                      # agent-specific; omit under codex to use ~/.codex/config.toml
+  # effort: high                     # minimal|low|medium|high|xhigh|max
   cost:
     # Post an estimated per-phase + total cost comment on each ticket (upserted
     # in place). Works on Bedrock and Claude Max — cost comes from Claude Code's

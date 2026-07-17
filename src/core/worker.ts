@@ -1,7 +1,7 @@
 import { spawn, execSync } from "node:child_process";
 import { accessSync, constants as fsConstants } from "node:fs";
 import { delimiter, join } from "node:path";
-import type { RunUsage } from "./types.js";
+import type { RunUsage, WorkerAgent, WorkerEffort } from "./types.js";
 
 export interface HeartbeatInfo {
   pid: number;
@@ -25,12 +25,16 @@ export interface WorkerResult {
 }
 
 export interface WorkerOptions {
-  claudeBin: string;
+  bin: string;
+  // Which CLI `bin` is. Selects arg building and output parsing; omitted means
+  // claude-code so pre-existing callers keep working.
+  agent?: WorkerAgent;
   prompt: string;
   cwd: string;
   timeoutMs: number;
   stallThresholdMs: number;
-  model: string;
+  // null omits the model flag entirely — the CLI's own config decides.
+  model: string | null;
   effort: string;
   heartbeatIntervalMs?: number;
   stallGracePeriodMs?: number;
@@ -54,6 +58,19 @@ const DEFAULT_MAX_BUFFER_BYTES = 10 * 1024 * 1024;
 const TRUNCATION_MARKER = "\n...[output truncated]...\n";
 
 export function resolveClaudeBin(configOverride?: string): string | null {
+  return resolveBin("claude", configOverride);
+}
+
+export function resolveAgentBin(
+  agent: WorkerAgent,
+  pipeline: { claudeBin?: string; codexBin?: string },
+): string | null {
+  return agent === "codex"
+    ? resolveBin("codex", pipeline.codexBin)
+    : resolveBin("claude", pipeline.claudeBin);
+}
+
+function resolveBin(binaryName: string, configOverride?: string): string | null {
   if (configOverride !== undefined && configOverride !== "") {
     return pathIsExecutable(configOverride) ? configOverride : null;
   }
@@ -63,12 +80,33 @@ export function resolveClaudeBin(configOverride?: string): string | null {
     if (dir === "") {
       continue;
     }
-    const candidate = join(dir, "claude");
+    const candidate = join(dir, binaryName);
     if (pathIsExecutable(candidate)) {
       return candidate;
     }
   }
   return null;
+}
+
+export interface ResolvedAgentSettings {
+  agent: WorkerAgent;
+  model: string | null;
+  effort: string;
+}
+
+// Phase-over-pipeline resolution for the worker's agent/model/effort. Model
+// names are agent-specific, so the pipeline model only inherits when the
+// resolved agent matches the pipeline agent — a phase that switches agents
+// falls back to that agent's default (claude-code → "opus", codex → null,
+// meaning ~/.codex/config.toml decides).
+export function resolveAgentSettings(
+  pipeline: { agent: WorkerAgent; model?: string; effort: string },
+  phase: { agent?: WorkerAgent; model?: string; effort?: WorkerEffort },
+): ResolvedAgentSettings {
+  const agent = phase.agent ?? pipeline.agent;
+  const inherited = agent === pipeline.agent ? pipeline.model : undefined;
+  const model = phase.model ?? inherited ?? (agent === "claude-code" ? "opus" : null);
+  return { agent, model, effort: phase.effort ?? pipeline.effort };
 }
 
 function pathIsExecutable(filePath: string): boolean {
@@ -80,6 +118,44 @@ function pathIsExecutable(filePath: string): boolean {
   }
 }
 
+// Each CLI's non-interactive invocation. Effort is clamped to the resolved
+// agent's supported scale here — the one place that knows which CLI the
+// string feeds. Both branches run unattended with full permissions: claude's
+// bypassPermissions ≙ codex's danger-full-access (skills need git push/npm),
+// and claude's --no-session-persistence ≙ codex's --ephemeral.
+export function buildWorkerArgs(options: WorkerOptions): string[] {
+  const agent = options.agent ?? "claude-code";
+  if (agent === "codex") {
+    const effort = options.effort === "max" ? "xhigh" : options.effort;
+    const modelArgs = options.model === null ? [] : ["-m", options.model];
+    return [
+      "exec",
+      "--json",
+      "--ephemeral",
+      "--sandbox",
+      "danger-full-access",
+      "-c",
+      `model_reasoning_effort=${effort}`,
+      ...modelArgs,
+      options.prompt,
+    ];
+  }
+  const effort = options.effort === "minimal" ? "low" : options.effort;
+  const modelArgs = options.model === null ? [] : ["--model", options.model];
+  return [
+    "-p",
+    options.prompt,
+    "--permission-mode",
+    "bypassPermissions",
+    "--output-format",
+    "json",
+    "--no-session-persistence",
+    ...modelArgs,
+    "--effort",
+    effort,
+  ];
+}
+
 export function runWorker(options: WorkerOptions): Promise<WorkerResult> {
   return new Promise<WorkerResult>((resolve) => {
     const startTime = Date.now();
@@ -88,21 +164,9 @@ export function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     const killGracePeriodMs = options.killGracePeriodMs ?? DEFAULT_KILL_GRACE_MS;
     const maxBufferBytes = options.maxBufferBytes ?? DEFAULT_MAX_BUFFER_BYTES;
 
-    const args = [
-      "-p",
-      options.prompt,
-      "--permission-mode",
-      "bypassPermissions",
-      "--output-format",
-      "json",
-      "--no-session-persistence",
-      "--model",
-      options.model,
-      "--effort",
-      options.effort,
-    ];
+    const args = buildWorkerArgs(options);
 
-    const worker = spawn(options.claudeBin, args, {
+    const worker = spawn(options.bin, args, {
       cwd: options.cwd,
       env: { ...process.env, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
       stdio: ["ignore", "pipe", "pipe"],
@@ -223,7 +287,10 @@ export function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       const elapsed = Math.round((Date.now() - startTime) / 1000);
       const exitCode = code ?? -1;
 
-      const { summary, usage, reportedCostUsd } = extractWorkerOutput(stdout);
+      const { summary, usage, reportedCostUsd } =
+        (options.agent ?? "claude-code") === "codex"
+          ? parseCodexOutput(stdout)
+          : extractWorkerOutput(stdout);
 
       if (exitCode === 0 && killed === false) {
         resolve({ success: true, exitCode, elapsed, summary, error: null, usage, reportedCostUsd });
@@ -388,6 +455,64 @@ export function extractWorkerOutput(stdout: string): ExtractedOutput {
     // Fall through to raw stdout handling
   }
   return { summary: truncate(stdout, SUMMARY_MAX_LEN), usage: null, reportedCostUsd: null };
+}
+
+// Codex `exec --json` emits JSONL events on stdout. The final message is the
+// last `item.completed` whose item is an agent_message; token usage rides the
+// last `turn.completed`. Unparseable lines (including the 10MB truncation
+// marker) are skipped; a stream with no recognizable events degrades to raw
+// stdout, mirroring the claude non-JSON fallback.
+export function parseCodexOutput(stdout: string): ExtractedOutput {
+  if (stdout.length === 0) {
+    return { summary: "Completed (no output)", usage: null, reportedCostUsd: null };
+  }
+  let lastMessage: string | null = null;
+  let usage: RunUsage | null = null;
+  for (const line of stdout.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed === "") {
+      continue;
+    }
+    let event: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      if (parsed === null || typeof parsed !== "object") {
+        continue;
+      }
+      event = parsed as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (event.type === "item.completed") {
+      const item = event.item;
+      if (item !== null && typeof item === "object") {
+        const itemObj = item as Record<string, unknown>;
+        if (itemObj.type === "agent_message" && typeof itemObj.text === "string") {
+          lastMessage = itemObj.text;
+        }
+      }
+    } else if (event.type === "turn.completed") {
+      const raw = event.usage;
+      if (raw !== null && typeof raw === "object") {
+        const u = raw as Record<string, unknown>;
+        const input = numericField(u, "input_tokens") ?? 0;
+        const cached = numericField(u, "cached_input_tokens") ?? 0;
+        usage = {
+          // Codex's input_tokens includes cached reads; the Anthropic-shaped
+          // RunUsage counts them separately.
+          inputTokens: Math.max(0, input - cached),
+          outputTokens: numericField(u, "output_tokens") ?? 0,
+          cacheReadTokens: cached,
+          cacheCreationTokens: 0,
+        };
+      }
+    }
+  }
+  const summary =
+    lastMessage !== null
+      ? truncate(lastMessage, SUMMARY_MAX_LEN)
+      : truncate(stdout, SUMMARY_MAX_LEN);
+  return { summary, usage, reportedCostUsd: null };
 }
 
 function extractUsage(obj: Record<string, unknown>): RunUsage | null {

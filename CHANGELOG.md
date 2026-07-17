@@ -5,6 +5,25 @@ All notable changes to Red Queen are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- OpenAI Codex can now run workers alongside Claude Code. `pipeline.agent`
+  picks the default CLI (`claude-code`, unchanged, or `codex`), and any phase
+  can override `agent` / `model` / `effort` individually — e.g. Claude plans
+  and reviews while Codex codes. Effort accepts a superset scale
+  (`minimal`→`max`) clamped to what each CLI supports, the pipeline model
+  never leaks across an agent switch, and Codex token usage flows into the
+  existing cost accounting (price via `pipeline.cost.pricing`). Set
+  `pipeline.codexBin` when `codex` isn't on the service PATH.
+
+### Fixed
+
+- `skipRetryOnFailure` was silently unusable from YAML: the strict phase
+  schema rejected it even though the default `code-review` phase relies on
+  it. Copying the default phases into `redqueen.yaml` no longer errors.
+
 ## [0.7.0] - 2026-06-02
 
 Spend now lands where people actually look — as a Jira comment — alongside

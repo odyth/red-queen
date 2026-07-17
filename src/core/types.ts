@@ -4,6 +4,15 @@ export type PhaseType = "automated" | "human-gate";
 
 export type AssignTo = "ai" | "human";
 
+// Which AI CLI runs a worker. Config-selectable globally (pipeline.agent) and
+// per-phase (PhaseDefinition.agent); resolution is phase-over-pipeline.
+export type WorkerAgent = "claude-code" | "codex";
+
+// Superset of both CLIs' reasoning-effort scales. Clamped to what the resolved
+// agent supports at arg-build time: codex has no "max" (→ xhigh), claude-code
+// has no "minimal" (→ low).
+export type WorkerEffort = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
 export interface PhaseDefinition {
   name: string;
   label: string;
@@ -45,6 +54,12 @@ export interface PhaseDefinition {
   // moved straight to coding without ever being specced — the worker is never
   // launched and the issue is kicked back to the spec-producing entry phase.
   requiresSpec?: boolean;
+  // Per-phase worker overrides. Omitted fields fall back to pipeline.agent /
+  // pipeline.model / pipeline.effort — except model, which never inherits across
+  // an agent boundary (model names are agent-specific).
+  agent?: WorkerAgent;
+  model?: string;
+  effort?: WorkerEffort;
 }
 
 export class PhaseGraph {

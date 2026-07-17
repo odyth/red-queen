@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractWorkerOutput } from "../worker.js";
+import { extractWorkerOutput, parseCodexOutput } from "../worker.js";
 
 describe("extractWorkerOutput", () => {
   it("extracts summary, usage, and reported cost from well-formed Claude Code JSON output", () => {
@@ -64,5 +64,97 @@ describe("extractWorkerOutput", () => {
       cacheReadTokens: 0,
       cacheCreationTokens: 0,
     });
+  });
+});
+
+function codexLine(event: Record<string, unknown>): string {
+  return JSON.stringify(event);
+}
+
+describe("parseCodexOutput", () => {
+  it("extracts the final agent message and mapped usage from a full event stream", () => {
+    const stdout = [
+      codexLine({ type: "thread.started", thread_id: "th_1" }),
+      codexLine({ type: "turn.started" }),
+      codexLine({
+        type: "item.completed",
+        item: { id: "item_1", type: "reasoning", text: "Considering approach" },
+      }),
+      codexLine({
+        type: "item.completed",
+        item: { id: "item_2", type: "command_execution", command: "npm test" },
+      }),
+      codexLine({
+        type: "item.completed",
+        item: { id: "item_3", type: "agent_message", text: "All tests pass, shipped it." },
+      }),
+      codexLine({
+        type: "turn.completed",
+        usage: { input_tokens: 5000, cached_input_tokens: 3000, output_tokens: 900 },
+      }),
+    ].join("\n");
+    const { summary, usage, reportedCostUsd } = parseCodexOutput(stdout);
+    expect(summary).toBe("All tests pass, shipped it.");
+    // Codex input_tokens includes cached reads; RunUsage separates them.
+    expect(usage).toEqual({
+      inputTokens: 2000,
+      outputTokens: 900,
+      cacheReadTokens: 3000,
+      cacheCreationTokens: 0,
+    });
+    expect(reportedCostUsd).toBeNull();
+  });
+
+  it("uses the last agent message when there are several", () => {
+    const stdout = [
+      codexLine({
+        type: "item.completed",
+        item: { id: "1", type: "agent_message", text: "first" },
+      }),
+      codexLine({ type: "item.completed", item: { id: "2", type: "agent_message", text: "last" } }),
+    ].join("\n");
+    expect(parseCodexOutput(stdout).summary).toBe("last");
+  });
+
+  it("uses the last turn.completed usage when there are several turns", () => {
+    const stdout = [
+      codexLine({
+        type: "turn.completed",
+        usage: { input_tokens: 10, cached_input_tokens: 0, output_tokens: 1 },
+      }),
+      codexLine({
+        type: "turn.completed",
+        usage: { input_tokens: 100, cached_input_tokens: 40, output_tokens: 7 },
+      }),
+    ].join("\n");
+    expect(parseCodexOutput(stdout).usage).toEqual({
+      inputTokens: 60,
+      outputTokens: 7,
+      cacheReadTokens: 40,
+      cacheCreationTokens: 0,
+    });
+  });
+
+  it("skips unparseable lines and still finds events", () => {
+    const stdout = [
+      "garbage not json",
+      codexLine({ type: "item.completed", item: { id: "1", type: "agent_message", text: "ok" } }),
+      "...[output truncated]...",
+    ].join("\n");
+    const { summary } = parseCodexOutput(stdout);
+    expect(summary).toBe("ok");
+  });
+
+  it("falls back to raw stdout when no agent message is present", () => {
+    const stdout = "plain codex chatter";
+    const { summary, usage } = parseCodexOutput(stdout);
+    expect(summary).toBe("plain codex chatter");
+    expect(usage).toBeNull();
+  });
+
+  it("handles empty stdout without throwing", () => {
+    const { summary, usage } = parseCodexOutput("");
+    expect(usage).toBeNull();
+    expect(summary).toContain("no output");
   });
 });
