@@ -37,6 +37,10 @@ const PhaseDefinitionSchema = z
     resetReviewIterationsOnPass: z.boolean().optional(),
     producesSpec: z.boolean().optional(),
     requiresSpec: z.boolean().optional(),
+    skipRetryOnFailure: z.boolean().optional(),
+    agent: z.enum(["claude-code", "codex"]).optional(),
+    model: z.string().min(1).optional(),
+    effort: z.enum(["minimal", "low", "medium", "high", "xhigh", "max"]).optional(),
   })
   .strict();
 
@@ -130,8 +134,14 @@ const ConfigSchema = z
         branchPrefixes: z.record(z.string(), z.string()).default(DEFAULT_BRANCH_PREFIXES),
         webhooks: WebhooksSchema,
         cost: CostSchema,
+        // Which AI CLI runs workers by default; phases may override per-step.
+        agent: z.enum(["claude-code", "codex"]).default("claude-code"),
         claudeBin: z.string().optional(),
-        model: z.string().default("opus"),
+        codexBin: z.string().optional(),
+        // No zod default: "opus" is applied at resolution time only when the
+        // resolved agent is claude-code. A schema-level default would leak an
+        // Anthropic model name into codex runs.
+        model: z.string().optional(),
         effort: z.string().default("high"),
         stallThresholdMs: z.number().default(300000),
         reconcileInterval: z.number().default(300),
@@ -151,7 +161,7 @@ const ConfigSchema = z
           },
         },
         cost: { enabled: false, pricing: {} },
-        model: "opus",
+        agent: "claude-code",
         effort: "high",
         stallThresholdMs: 300000,
         reconcileInterval: 300,
@@ -390,6 +400,16 @@ export function validatePhaseGraph(phases: PhaseDefinition[]): ValidationResult 
     if (phase.escalateTo !== undefined && phase.maxIterations === undefined) {
       warnings.push(
         `Phase "${phase.name}": escalateTo is set but maxIterations is not — escalation will never trigger`,
+      );
+    }
+
+    // Worker overrides only matter on phases that dispatch a worker
+    if (
+      phase.type === "human-gate" &&
+      (phase.agent !== undefined || phase.model !== undefined || phase.effort !== undefined)
+    ) {
+      warnings.push(
+        `Phase "${phase.name}": agent/model/effort have no effect on a human-gate phase`,
       );
     }
   }

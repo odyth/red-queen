@@ -62,8 +62,19 @@ export { RedQueen } from "./core/orchestrator.js";
 export type { RedQueenDeps, WorkerRunner } from "./core/orchestrator.js";
 
 // Worker
-export { runWorker, resolveClaudeBin } from "./core/worker.js";
-export type { WorkerOptions, WorkerResult, HeartbeatInfo } from "./core/worker.js";
+export {
+  runWorker,
+  resolveClaudeBin,
+  resolveAgentBin,
+  resolveAgentSettings,
+  buildWorkerArgs,
+} from "./core/worker.js";
+export type {
+  WorkerOptions,
+  WorkerResult,
+  HeartbeatInfo,
+  ResolvedAgentSettings,
+} from "./core/worker.js";
 
 // Skill context
 export {

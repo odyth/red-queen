@@ -9,7 +9,9 @@ import { PhaseUsageStore } from "../phase-usage.js";
 import { DualWriteAuditLogger } from "../audit.js";
 import type { AuditLogger, AuditEntry } from "../audit.js";
 import { buildPhaseGraph } from "../config.js";
+import type { RedQueenConfig } from "../config.js";
 import { DEFAULT_PHASES } from "../defaults.js";
+import type { PhaseDefinition } from "../types.js";
 import { RedQueen } from "../orchestrator.js";
 import type { RedQueenDeps } from "../orchestrator.js";
 import { RuntimeState } from "../runtime-state.js";
@@ -39,6 +41,8 @@ interface Harness {
 interface HarnessOptions {
   extra?: Partial<RedQueenDeps>;
   skipSpecReviewIfReady?: boolean;
+  phases?: PhaseDefinition[];
+  pipeline?: Partial<RedQueenConfig["pipeline"]>;
 }
 
 function setupHarness(
@@ -53,7 +57,7 @@ function setupHarness(
   const audit = new DualWriteAuditLogger(db.db, auditPath);
   const issueTracker = new MockIssueTracker();
   const sourceControl = new MockSourceControl();
-  const phaseGraph = buildPhaseGraph(DEFAULT_PHASES);
+  const phaseGraph = buildPhaseGraph(options.phases ?? DEFAULT_PHASES);
   const config = makeTestConfig({
     project: {
       buildCommand: "npm run build",
@@ -70,12 +74,14 @@ function setupHarness(
       branchPrefixes: { default: "feature/" },
       webhooks: { enabled: false },
       cost: { enabled: false, pricing: {} },
+      agent: "claude-code",
       model: "opus",
       effort: "high",
       stallThresholdMs: 60_000,
       reconcileInterval: 0,
       claudeBin: "/bin/sh",
       skipSpecReviewIfReady: options.skipSpecReviewIfReady ?? false,
+      ...(options.pipeline ?? {}),
     },
   });
   const runtime = new RuntimeState(phaseGraph, config);
@@ -657,6 +663,81 @@ describe("RedQueen orchestrator", () => {
     const stored = h.queue.getTask(task.id);
     expect(stored?.status).toBe("failed");
     expect(stored?.result).toContain("Skill not found");
+  });
+
+  it("threads per-phase agent/model/effort overrides into the worker", async () => {
+    const phases = DEFAULT_PHASES.map((p) =>
+      p.name === "coding" ? { ...p, agent: "codex" as const, effort: "xhigh" as const } : p,
+    );
+    const h = setupHarness(
+      () =>
+        Promise.resolve({
+          success: false,
+          exitCode: 1,
+          elapsed: 0,
+          summary: "",
+          error: "stop cascade",
+        }),
+      { phases, pipeline: { codexBin: "/bin/sh" } },
+    );
+    h.pipelineState.create("PROJ-1", "coding");
+    h.issueTracker.phases.set("PROJ-1", "coding");
+    h.issueTracker.specs.set("PROJ-1", "Implementation spec body.");
+    h.queue.enqueue({ type: "coding", issueId: "PROJ-1" });
+
+    await runUntilAfterRuns(h, 1);
+
+    const run = h.runs[0];
+    expect(run?.agent).toBe("codex");
+    // The master model ("opus") must not leak across the agent override.
+    expect(run?.model).toBeNull();
+    expect(run?.effort).toBe("xhigh");
+    expect(run?.bin).toBe("/bin/sh");
+  });
+
+  it("uses the master agent settings for phases without overrides", async () => {
+    const h = setupHarness(() =>
+      Promise.resolve({
+        success: false,
+        exitCode: 1,
+        elapsed: 0,
+        summary: "",
+        error: "stop cascade",
+      }),
+    );
+    h.pipelineState.create("PROJ-1", "coding");
+    h.issueTracker.phases.set("PROJ-1", "coding");
+    h.issueTracker.specs.set("PROJ-1", "Implementation spec body.");
+    h.queue.enqueue({ type: "coding", issueId: "PROJ-1" });
+
+    await runUntilAfterRuns(h, 1);
+
+    const run = h.runs[0];
+    expect(run?.agent).toBe("claude-code");
+    expect(run?.model).toBe("opus");
+    expect(run?.effort).toBe("high");
+  });
+
+  it("fails the task when the phase's agent binary cannot be resolved", async () => {
+    const phases = DEFAULT_PHASES.map((p) =>
+      p.name === "coding" ? { ...p, agent: "codex" as const } : p,
+    );
+    const h = setupHarness(
+      () => {
+        throw new Error("worker should not run — codex bin missing");
+      },
+      { phases, pipeline: { codexBin: join(tempDir, "missing-codex") } },
+    );
+    h.pipelineState.create("PROJ-1", "coding");
+    h.issueTracker.phases.set("PROJ-1", "coding");
+    h.issueTracker.specs.set("PROJ-1", "Implementation spec body.");
+    const task = h.queue.enqueue({ type: "coding", issueId: "PROJ-1" });
+
+    await runUntil(h, () => h.queue.getTask(task.id)?.status === "failed");
+
+    const stored = h.queue.getTask(task.id);
+    expect(stored?.status).toBe("failed");
+    expect(stored?.result).toContain("codex binary not found");
   });
 
   it("updates priorContext from worker summary", async () => {

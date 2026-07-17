@@ -23,7 +23,7 @@ import {
 import type { ModuleResolver } from "./skill-context.js";
 import type { PhaseDefinition, Task } from "./types.js";
 import type { OrchestratorState } from "./types.js";
-import { resolveClaudeBin, runWorker as defaultRunWorker } from "./worker.js";
+import { resolveAgentBin, resolveAgentSettings, runWorker as defaultRunWorker } from "./worker.js";
 import type { WorkerOptions, WorkerResult } from "./worker.js";
 import type { IssueTracker } from "../integrations/issue-tracker.js";
 import type { SourceControl } from "../integrations/source-control.js";
@@ -84,7 +84,6 @@ export class RedQueen {
   private dashboard: DashboardServer | null = null;
   private webhook: WebhookServer | null = null;
   private poller: Poller | null = null;
-  private claudeBin: string | null = null;
   private shuttingDown = false;
   private shutdownCount = 0;
   private currentWorkerPid: number | null = null;
@@ -118,7 +117,6 @@ export class RedQueen {
   }
 
   async start(): Promise<void> {
-    this.claudeBin = resolveClaudeBin(this.deps.runtime.config.pipeline.claudeBin);
     // Live under the project's .redqueen/ instead of the OS tmp dir: systemd-tmpfiles
     // reaps /tmp entries after ~10 days, deleting it under a long-running daemon. The
     // per-write mkdirSync in dispatchWorkerForTask self-heals it if it vanishes anyway.
@@ -718,9 +716,13 @@ export class RedQueen {
     if (issueId === null) {
       return;
     }
-    if (this.claudeBin === null) {
+    // Per-dispatch resolution (not cached at start): phases hot-reload live, so a
+    // reloaded config can introduce a codex phase between dispatches.
+    const settings = resolveAgentSettings(this.deps.runtime.config.pipeline, phase);
+    const bin = resolveAgentBin(settings.agent, this.deps.runtime.config.pipeline);
+    if (bin === null) {
       this.deps.queue.markWorking(task.id);
-      this.deps.queue.markFailed(task.id, "Claude binary not found");
+      this.deps.queue.markFailed(task.id, `${settings.agent} binary not found`);
       this.deps.orchestratorState.incrementErrors();
       return;
     }
@@ -843,13 +845,14 @@ export class RedQueen {
     let result: WorkerResult;
     try {
       result = await this.runWorker({
-        claudeBin: this.claudeBin,
+        bin,
+        agent: settings.agent,
         prompt,
         cwd: this.deps.runtime.config.project.directory,
         timeoutMs: this.deps.runtime.config.pipeline.workerTimeout * 1000,
         stallThresholdMs: this.deps.runtime.config.pipeline.stallThresholdMs,
-        model: this.deps.runtime.config.pipeline.model,
-        effort: this.deps.runtime.config.pipeline.effort,
+        model: settings.model,
+        effort: settings.effort,
         signal: abort.signal,
         onStart: (pid) => {
           this.currentWorkerPid = pid;
@@ -1286,7 +1289,11 @@ export class RedQueen {
     if (result.usage === null) {
       return;
     }
-    const model = this.deps.runtime.config.pipeline.model;
+    // Cost keys must track the run that produced the tokens, so resolve the
+    // same agent/model the dispatch used. A codex run without an explicit
+    // model is keyed by agent name ("codex") — priceable via cost.pricing.
+    const settings = resolveAgentSettings(this.deps.runtime.config.pipeline, phase);
+    const model = settings.model ?? settings.agent;
     // Prefer Claude Code's own total_cost_usd (accurate across model mixes and
     // billing modes). Fall back to token×pricing only when the CLI reports no
     // cost — e.g. some Bedrock setups, where pipeline.cost.pricing carries the
@@ -1555,6 +1562,9 @@ export class RedQueen {
             reload: (newConfig: RedQueenConfig) => this.reload(newConfig),
           }
         : undefined;
+    // Cosmetic label only — a mixed-agent pipeline shows the master agent's model.
+    const masterSettings = resolveAgentSettings(pipeline, {});
+    const masterModel = masterSettings.model ?? masterSettings.agent;
     this.dashboard = new DashboardServer(
       {
         queue: this.deps.queue,
@@ -1565,13 +1575,15 @@ export class RedQueen {
         cost: {
           phaseUsage: this.deps.phaseUsage,
           enabled: pipeline.cost.enabled,
-          model: pipeline.model,
-          buildBreakdown: (issueId: string) =>
-            this.deps.phaseUsage.buildBreakdown(
+          model: masterModel,
+          buildBreakdown: (issueId: string) => {
+            const live = resolveAgentSettings(this.deps.runtime.config.pipeline, {});
+            return this.deps.phaseUsage.buildBreakdown(
               issueId,
               this.deps.runtime.phaseGraph,
-              this.deps.runtime.config.pipeline.model,
-            ),
+              live.model ?? live.agent,
+            );
+          },
         },
       },
       {

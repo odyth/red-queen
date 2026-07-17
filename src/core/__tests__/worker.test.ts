@@ -2,7 +2,14 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { resolveClaudeBin, runWorker } from "../worker.js";
+import {
+  buildWorkerArgs,
+  resolveAgentBin,
+  resolveAgentSettings,
+  resolveClaudeBin,
+  runWorker,
+} from "../worker.js";
+import type { WorkerOptions } from "../worker.js";
 
 let tempDir: string;
 
@@ -44,6 +51,157 @@ describe("resolveClaudeBin", () => {
   });
 });
 
+describe("resolveAgentBin", () => {
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "rq-agent-bin-test-"));
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("resolves codexBin override for codex", () => {
+    const bin = writeScript("codex", "#!/bin/sh\nexit 0\n");
+    expect(resolveAgentBin("codex", { codexBin: bin })).toBe(bin);
+  });
+
+  it("resolves claudeBin override for claude-code", () => {
+    const bin = writeScript("claude", "#!/bin/sh\nexit 0\n");
+    expect(resolveAgentBin("claude-code", { claudeBin: bin })).toBe(bin);
+  });
+
+  it("walks PATH for the codex binary", () => {
+    const fakeBin = writeScript("codex", "#!/bin/sh\nexit 0\n");
+    const origPath = process.env.PATH;
+    process.env.PATH = tempDir;
+    try {
+      expect(resolveAgentBin("codex", {})).toBe(fakeBin);
+    } finally {
+      process.env.PATH = origPath;
+    }
+  });
+
+  it("returns null when codex is not installed", () => {
+    const origPath = process.env.PATH;
+    process.env.PATH = tempDir;
+    try {
+      expect(resolveAgentBin("codex", {})).toBeNull();
+    } finally {
+      process.env.PATH = origPath;
+    }
+  });
+});
+
+describe("resolveAgentSettings", () => {
+  it("defaults to claude-code / opus / pipeline effort", () => {
+    const settings = resolveAgentSettings({ agent: "claude-code", effort: "high" }, {});
+    expect(settings).toEqual({ agent: "claude-code", model: "opus", effort: "high" });
+  });
+
+  it("phase overrides win over pipeline", () => {
+    const settings = resolveAgentSettings(
+      { agent: "claude-code", model: "sonnet", effort: "high" },
+      { agent: "codex", model: "gpt-5.3-codex", effort: "xhigh" },
+    );
+    expect(settings).toEqual({ agent: "codex", model: "gpt-5.3-codex", effort: "xhigh" });
+  });
+
+  it("does not leak the pipeline model across an agent override", () => {
+    const settings = resolveAgentSettings(
+      { agent: "claude-code", model: "opus", effort: "high" },
+      { agent: "codex" },
+    );
+    expect(settings.model).toBeNull();
+  });
+
+  it("inherits the pipeline model when the agent matches", () => {
+    const settings = resolveAgentSettings(
+      { agent: "codex", model: "gpt-5.3-codex", effort: "medium" },
+      { effort: "high" },
+    );
+    expect(settings).toEqual({ agent: "codex", model: "gpt-5.3-codex", effort: "high" });
+  });
+
+  it("falls back to opus when a phase switches back to claude-code", () => {
+    const settings = resolveAgentSettings(
+      { agent: "codex", model: "gpt-5.3-codex", effort: "high" },
+      { agent: "claude-code" },
+    );
+    expect(settings).toEqual({ agent: "claude-code", model: "opus", effort: "high" });
+  });
+
+  it("codex master without a model resolves to null", () => {
+    const settings = resolveAgentSettings({ agent: "codex", effort: "high" }, {});
+    expect(settings.model).toBeNull();
+  });
+});
+
+describe("buildWorkerArgs", () => {
+  const base: WorkerOptions = {
+    bin: "/usr/bin/true",
+    prompt: "Read and follow /tmp/x.md exactly.",
+    cwd: "/tmp",
+    timeoutMs: 1000,
+    stallThresholdMs: 1000,
+    model: "opus",
+    effort: "high",
+  };
+
+  it("builds the claude-code argv exactly as before", () => {
+    expect(buildWorkerArgs(base)).toEqual([
+      "-p",
+      "Read and follow /tmp/x.md exactly.",
+      "--permission-mode",
+      "bypassPermissions",
+      "--output-format",
+      "json",
+      "--no-session-persistence",
+      "--model",
+      "opus",
+      "--effort",
+      "high",
+    ]);
+  });
+
+  it("builds the codex argv with a model", () => {
+    expect(buildWorkerArgs({ ...base, agent: "codex", model: "gpt-5.3-codex" })).toEqual([
+      "exec",
+      "--json",
+      "--ephemeral",
+      "--sandbox",
+      "danger-full-access",
+      "-c",
+      "model_reasoning_effort=high",
+      "-m",
+      "gpt-5.3-codex",
+      "Read and follow /tmp/x.md exactly.",
+    ]);
+  });
+
+  it("omits the model flag when model is null", () => {
+    const codexArgs = buildWorkerArgs({ ...base, agent: "codex", model: null });
+    expect(codexArgs).not.toContain("-m");
+    const claudeArgs = buildWorkerArgs({ ...base, model: null });
+    expect(claudeArgs).not.toContain("--model");
+  });
+
+  it("clamps max to xhigh for codex", () => {
+    const args = buildWorkerArgs({ ...base, agent: "codex", effort: "max" });
+    expect(args).toContain("model_reasoning_effort=xhigh");
+  });
+
+  it("clamps minimal to low for claude-code", () => {
+    const args = buildWorkerArgs({ ...base, effort: "minimal" });
+    expect(args).toContain("--effort");
+    expect(args[args.indexOf("--effort") + 1]).toBe("low");
+  });
+
+  it("passes minimal through for codex", () => {
+    const args = buildWorkerArgs({ ...base, agent: "codex", effort: "minimal" });
+    expect(args).toContain("model_reasoning_effort=minimal");
+  });
+});
+
 describe("runWorker", () => {
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), "rq-worker-run-"));
@@ -63,7 +221,7 @@ exit 0
 `,
     );
     const result = await runWorker({
-      claudeBin: script,
+      bin: script,
       prompt: "",
       cwd: tempDir,
       timeoutMs: 5000,
@@ -87,7 +245,7 @@ exit 2
 `,
     );
     const result = await runWorker({
-      claudeBin: script,
+      bin: script,
       prompt: "",
       cwd: tempDir,
       timeoutMs: 5000,
@@ -110,7 +268,7 @@ exec sleep 30
 `,
     );
     const result = await runWorker({
-      claudeBin: script,
+      bin: script,
       prompt: "",
       cwd: tempDir,
       timeoutMs: 500,
@@ -133,7 +291,7 @@ exec sleep 60
 `,
     );
     const result = await runWorker({
-      claudeBin: script,
+      bin: script,
       prompt: "",
       cwd: tempDir,
       timeoutMs: 30000,
@@ -159,7 +317,7 @@ echo '{"result":"ok"}'
     let startedPid: number | null = null;
     let heartbeatCount = 0;
     const result = await runWorker({
-      claudeBin: script,
+      bin: script,
       prompt: "",
       cwd: tempDir,
       timeoutMs: 5000,
@@ -189,7 +347,7 @@ exec sleep 30
     );
     const controller = new AbortController();
     const resultPromise = runWorker({
-      claudeBin: script,
+      bin: script,
       prompt: "",
       cwd: tempDir,
       timeoutMs: 30000,
@@ -219,7 +377,7 @@ exec sleep 30
     const controller = new AbortController();
     controller.abort();
     const result = await runWorker({
-      claudeBin: script,
+      bin: script,
       prompt: "",
       cwd: tempDir,
       timeoutMs: 30000,
@@ -244,7 +402,7 @@ exit 0
 `,
     );
     const result = await runWorker({
-      claudeBin: script,
+      bin: script,
       prompt: "",
       cwd: tempDir,
       timeoutMs: 5000,
@@ -256,5 +414,38 @@ exit 0
     });
     expect(result.success).toBe(true);
     expect(result.summary).toBe("plain text output");
+  });
+
+  it("parses codex JSONL output end-to-end", async () => {
+    const script = writeScript(
+      "codex.sh",
+      `#!/bin/sh
+printf '%s\\n' '{"type":"item.completed","item":{"id":"item_1","type":"reasoning","text":"thinking"}}'
+printf '%s\\n' '{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"Implemented the fix"}}'
+printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":1200,"cached_input_tokens":200,"output_tokens":345}}'
+exit 0
+`,
+    );
+    const result = await runWorker({
+      bin: script,
+      agent: "codex",
+      prompt: "",
+      cwd: tempDir,
+      timeoutMs: 5000,
+      stallThresholdMs: 60000,
+      model: null,
+      effort: "high",
+      heartbeatIntervalMs: 1000,
+      stallGracePeriodMs: 60000,
+    });
+    expect(result.success).toBe(true);
+    expect(result.summary).toBe("Implemented the fix");
+    expect(result.usage).toEqual({
+      inputTokens: 1000,
+      outputTokens: 345,
+      cacheReadTokens: 200,
+      cacheCreationTokens: 0,
+    });
+    expect(result.reportedCostUsd).toBeNull();
   });
 });

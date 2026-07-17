@@ -77,6 +77,76 @@ dashboard:
     expect(() => parseConfig("sourceControl:\n  type: github")).toThrow();
   });
 
+  it("defaults to the claude-code agent with no model", () => {
+    const config = parseConfig(minimalYaml);
+    expect(config.pipeline.agent).toBe("claude-code");
+    expect(config.pipeline.model).toBeUndefined();
+    expect(config.pipeline.effort).toBe("high");
+    expect(config.pipeline.codexBin).toBeUndefined();
+  });
+
+  it("parses a codex master agent", () => {
+    const yaml = `${minimalYaml}pipeline:
+  agent: codex
+  codexBin: /usr/local/bin/codex
+`;
+    const config = parseConfig(yaml);
+    expect(config.pipeline.agent).toBe("codex");
+    expect(config.pipeline.codexBin).toBe("/usr/local/bin/codex");
+  });
+
+  it("rejects an unknown agent", () => {
+    const yaml = `${minimalYaml}pipeline:
+  agent: gemini
+`;
+    expect(() => parseConfig(yaml)).toThrow();
+  });
+
+  it("parses per-phase agent/model/effort overrides under the strict phase schema", () => {
+    const yaml = `${minimalYaml}phases:
+  - name: coding
+    label: Coding
+    type: automated
+    skill: coder
+    next: done
+    assignTo: ai
+    agent: codex
+    model: gpt-5.3-codex
+    effort: xhigh
+`;
+    const config = parseConfig(yaml);
+    expect(config.phases[0]?.agent).toBe("codex");
+    expect(config.phases[0]?.model).toBe("gpt-5.3-codex");
+    expect(config.phases[0]?.effort).toBe("xhigh");
+  });
+
+  it("rejects an invalid per-phase effort", () => {
+    const yaml = `${minimalYaml}phases:
+  - name: coding
+    label: Coding
+    type: automated
+    skill: coder
+    next: done
+    assignTo: ai
+    effort: turbo
+`;
+    expect(() => parseConfig(yaml)).toThrow();
+  });
+
+  it("accepts skipRetryOnFailure on a YAML-defined phase", () => {
+    const yaml = `${minimalYaml}phases:
+  - name: code-review
+    label: Code Review
+    type: automated
+    skill: reviewer
+    next: done
+    assignTo: ai
+    skipRetryOnFailure: true
+`;
+    const config = parseConfig(yaml);
+    expect(config.phases[0]?.skipRetryOnFailure).toBe(true);
+  });
+
   it("rejects invalid issueTracker type", () => {
     const yaml = `
 issueTracker:
@@ -559,6 +629,24 @@ describe("validatePhaseGraph", () => {
     ];
     const result = validatePhaseGraph(phases);
     expect(result.errors).toContain('Phase "coding": automated phases must have a skill');
+  });
+
+  it("warns when a human-gate phase carries worker overrides", () => {
+    const phases: PhaseDefinition[] = [
+      {
+        name: "human-review",
+        label: "Human Review",
+        type: "human-gate",
+        next: "done",
+        assignTo: "human",
+        agent: "codex",
+      },
+    ];
+    const result = validatePhaseGraph(phases);
+    expect(result.errors).toHaveLength(0);
+    expect(result.warnings).toContain(
+      'Phase "human-review": agent/model/effort have no effect on a human-gate phase',
+    );
   });
 
   it("catches human-gate phases with assignTo: ai", () => {

@@ -35,7 +35,7 @@ npm install -g redqueen
 **Requirements:**
 
 - Node.js >= 24
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code/overview) installed and authenticated (`claude --version` must work in your shell)
+- An AI CLI installed and authenticated — [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) (`claude --version` must work in your shell; the default) and/or [OpenAI Codex](https://developers.openai.com/codex/) (`codex --version`, if you set `agent: codex`)
 - An issue tracker: Jira Cloud or GitHub Issues
 - A git repo with a remote on GitHub
 
@@ -168,6 +168,34 @@ Jira.
 and `${GITHUB_PAT}` for secrets — never paste literal values, the
 dashboard validator will reject them.
 
+### Choosing the worker agent
+
+Workers run on Claude Code by default. `pipeline.agent` switches the
+default CLI, and any phase can override `agent` / `model` / `effort`
+individually — e.g. Claude for planning and review, Codex for coding:
+
+```yaml
+pipeline:
+  agent: claude-code # or codex; default claude-code
+  model: opus        # optional; names are agent-specific — omit under codex
+                     # to let ~/.codex/config.toml decide
+  effort: high       # minimal|low|medium|high|xhigh|max — clamped to what the
+                     # CLI supports (codex max→xhigh, claude minimal→low)
+
+phases:
+  - name: coding
+    # ...routing fields...
+    agent: codex     # per-phase override; wins over pipeline.agent
+    model: gpt-5.3-codex
+    effort: xhigh
+```
+
+Resolution is phase-over-pipeline per field, with one guard: the
+pipeline `model` never carries across an agent switch (model names are
+agent-specific). A phase that overrides only `agent` runs that CLI's
+default model. Codex runs report token usage but no dollar cost — add a
+`pipeline.cost.pricing` entry keyed by the model name to price them.
+
 ## Verification checklist
 
 After `redqueen service start`:
@@ -187,6 +215,7 @@ After `redqueen service start`:
 |---|---|---|
 | `command not found: redqueen` | Global install failed or not on PATH | Re-run `npm install -g redqueen`, verify `which redqueen` |
 | Service starts but workers fail with `claude: command not found` | `claude` not on the service's runtime PATH | Re-run `redqueen service install` to re-detect, or set `pipeline.claudeBin` explicitly |
+| Workers fail with `codex binary not found` | `codex` not on the (service's) runtime PATH | Set `pipeline.codexBin` to the absolute path (`which codex`) — service install only auto-detects `claude` |
 | Clicking Dashboard **Stop** leaves no way to restart from the UI | Expected — the dashboard is served by the service it just killed | Run `redqueen service start` from a terminal |
 | Jira issues aren't being picked up | Webhook not delivering or `customFields` wrong | Check `.redqueen/audit.log`, run `redqueen jira discover --dry-run`, confirm the Jira webhook is reaching your `publicBaseUrl` |
 | `401 Unauthorized` from GitHub | PAT missing a scope | Regenerate fine-grained PAT with Contents / Issues / PRs / Workflows / Metadata |
