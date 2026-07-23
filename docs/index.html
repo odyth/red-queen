@@ -4,8 +4,8 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>Red Queen — The Jenkins for Your AI Coding Workflow</title>
-<meta name="description" content="Red Queen is to Claude Code what Jenkins is to bash. A deterministic, zero-token state machine that shuttles tickets through spec → plan review → code → review → test with configurable human gates. Open source. Self-hosted. Node.js." />
-<meta name="keywords" content="AI orchestrator, AI agent orchestrator, autonomous coding, SDLC automation, deterministic orchestrator, human-in-the-loop AI, Claude Code, agentic workflow, multi-agent coding, LLM orchestrator, AI coding agent, state machine" />
+<meta name="description" content="Red Queen is to your coding agent what Jenkins is to bash. A deterministic, zero-token state machine that shuttles tickets through spec → plan review → code → review → test with configurable human gates. Runs Claude Code or Codex workers, selectable per phase. Open source. Self-hosted. Node.js." />
+<meta name="keywords" content="AI orchestrator, AI agent orchestrator, autonomous coding, SDLC automation, deterministic orchestrator, human-in-the-loop AI, Claude Code, OpenAI Codex, stacked pull requests, issue dependencies, agentic workflow, multi-agent coding, LLM orchestrator, AI coding agent, state machine" />
 <meta name="author" content="Odyth" />
 <meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large" />
 <meta name="theme-color" content="#0f1115" />
@@ -17,7 +17,7 @@
 <meta property="og:type" content="website" />
 <meta property="og:site_name" content="Red Queen" />
 <meta property="og:title" content="Red Queen — The Jenkins for Your AI Coding Workflow" />
-<meta property="og:description" content="Red Queen is to Claude Code what Jenkins is to bash. A deterministic state machine shuttles tickets through spec → plan review → code → review → test with configurable human gates. Named for the AI that ran The Hive. Yours runs your SDLC." />
+<meta property="og:description" content="Red Queen is to your coding agent what Jenkins is to bash. A deterministic state machine shuttles tickets through spec → plan review → code → review → test with configurable human gates. Named for the AI that ran The Hive. Yours runs your SDLC." />
 <meta property="og:url" content="https://redqueen.sh/" />
 <meta property="og:image" content="https://redqueen.sh/assets/brand/og-card.png" />
 <meta property="og:image:width" content="1200" />
@@ -44,8 +44,8 @@
   "applicationCategory": "DeveloperApplication",
   "applicationSubCategory": "AI Orchestrator",
   "operatingSystem": "macOS, Linux, Windows (Node.js 24+)",
-  "description": "Red Queen is to Claude Code what Jenkins is to bash. A deterministic, zero-token state machine shuttles tickets through a configurable AI coding pipeline — spec writing, automated plan review, human spec review, coding, code review, testing, and human review — and drops a merged PR out the end. Phases, skills, and gates are declared in redqueen.yaml.",
-  "softwareVersion": "0.1.2",
+  "description": "Red Queen is to your coding agent what Jenkins is to bash. A deterministic, zero-token state machine shuttles tickets through a configurable AI coding pipeline — spec writing, automated plan review, human spec review, coding, code review, testing, and human review — and drops a merged PR out the end. Workers run on Claude Code or Codex, selectable per phase; issues linked as blockers become stacked PRs. Phases, skills, and gates are declared in redqueen.yaml.",
+  "softwareVersion": "0.8.0",
   "url": "https://redqueen.sh/",
   "downloadUrl": "https://www.npmjs.com/package/redqueen",
   "codeRepository": "https://github.com/odyth/red-queen",
@@ -84,7 +84,7 @@
       "name": "How is Red Queen different from Devin, Cline, or Aider?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "Red Queen is to Claude Code what Jenkins is to bash. It sits above the coding agent and shuttles tickets through phases on a deterministic state machine — no LLM in the routing layer. Devin, Cline, and Aider are coding agents you interact with directly; Red Queen is the pipeline that dispatches them in the background, with configurable human gates between phases."
+        "text": "Red Queen is to your coding agent what Jenkins is to bash. It sits above the coding agent and shuttles tickets through phases on a deterministic state machine — no LLM in the routing layer. Devin, Cline, and Aider are coding agents you interact with directly; Red Queen is the pipeline that dispatches them in the background, with configurable human gates between phases."
       }
     },
     {
@@ -92,7 +92,15 @@
       "name": "Does Red Queen require Claude Code?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "Today yes — Red Queen dispatches Claude Code workers. The adapter pattern makes adding support for other coding CLIs straightforward, and that is on the roadmap."
+        "text": "No. Workers run on Claude Code or Codex, selectable per phase in redqueen.yaml. Claude Code is the default; support for more coding CLIs is on the roadmap."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can Red Queen handle dependent issues or stacked pull requests?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. Issues linked as blockers — Jira blocks links or GitHub issue dependencies — build on their blockers' branches as stacked PRs. Each PR targets the nearest still-in-review ancestor so nothing merges past a human gate, and when a blocker merges, dependent PRs are retargeted and refreshed automatically."
       }
     },
     {
@@ -539,7 +547,7 @@
     <img class="logo" src="./assets/brand/logo.png" alt="Red Queen logo" />
     <h1>The Jenkins for your AI coding workflow.</h1>
     <p class="pullquote">
-      &ldquo;Red Queen is to Claude Code what Jenkins is to bash.&rdquo;
+      &ldquo;Red Queen is to your coding agent what Jenkins is to bash.&rdquo;
     </p>
     <p class="subline">
       A deterministic state machine shuttles tickets through
@@ -547,6 +555,7 @@
       You configure the phases, skills, and gates in YAML. The orchestrator
       itself spends zero AI tokens — it just shuttles work between workers
       and stops at the gates you set. Deterministic, like a build server.
+      Workers run on <strong>Claude Code or Codex</strong> — your pick, per phase.
     </p>
     <div class="ctas">
       <a class="btn primary" href="#quickstart">Get Started</a>
@@ -602,6 +611,18 @@
         <h3>Works while you sleep</h3>
         <p>Background orchestrator keeps tickets moving through automated phases and parks work at human gates for when you're back at the keyboard.</p>
       </article>
+      <article class="card">
+        <h3>Bring your own agent</h3>
+        <p>Workers are plain CLI subprocesses — the pipeline doesn't care whose model writes the code. Claude Code and Codex ship today; adding another coding CLI is a small adapter, not a rewrite.</p>
+      </article>
+      <article class="card">
+        <h3>Per-phase agent, model, effort</h3>
+        <p>Set <code>agent: codex</code> on one phase and run Claude Code on the next — spec with the model that plans best, code with the one that ships. Model and reasoning effort are per-phase knobs too.</p>
+      </article>
+      <article class="card">
+        <h3>Stacked PRs from blocker links</h3>
+        <p>Link issues as blockers — Jira &ldquo;blocks&rdquo; links or GitHub issue dependencies — and dependents build on their blockers' branches. Each PR targets the nearest still-in-review ancestor, so nothing merges past a human gate; when a blocker merges, dependent PRs retarget automatically.</p>
+      </article>
     </div>
   </div>
 </section>
@@ -610,11 +631,11 @@
   <div class="container">
     <h2 id="how-h">How it works</h2>
     <p class="lede">
-      You file a ticket. Claude writes a spec. An automated plan review scores
-      it for blockers and ambiguity. You approve at the human gate. Claude
-      writes the code and opens a PR. Another Claude reviews it. Another tests
-      it. You review the final PR and merge. Jump in at any gate, or rip the
-      gates out entirely.
+      You file a ticket. An AI worker writes a spec. An automated plan review
+      scores it for blockers and ambiguity. You approve at the human gate. A
+      coder writes the code and opens a PR. Another worker reviews it. Another
+      tests it. You review the final PR and merge. Jump in at any gate, or rip
+      the gates out entirely.
     </p>
 
     <div class="flow" role="img" aria-label="Red Queen pipeline flow: spec-writing, plan-review, spec-review, coding, code-review, testing, human-review, merged">
@@ -662,7 +683,7 @@
     <div class="not-grid">
       <article class="not-card">
         <h3>Not an agent host <span class="vs">vs. opencode</span></h3>
-        <p>Red Queen spawns <code>claude</code> CLI subprocesses and drives them through phases. It's the dispatcher, not the agent runtime.</p>
+        <p>Red Queen spawns <code>claude</code> or <code>codex</code> CLI subprocesses and drives them through phases. It's the dispatcher, not the agent runtime.</p>
       </article>
       <article class="not-card">
         <h3>Not a skill manager <span class="vs">vs. agentskills.io</span></h3>
@@ -685,7 +706,7 @@
     <h2 id="quickstart-h">Quickstart</h2>
     <p class="lede">From zero to your first AI-driven ticket in about 15 minutes.</p>
     <ol class="steps">
-      <li><strong>Install Claude Code</strong> and run <code>claude --version</code>. Red Queen dispatches Claude Code workers, so the CLI must be logged in.</li>
+      <li><strong>Install Claude Code</strong> and run <code>claude --version</code>. Red Queen dispatches Claude Code workers by default, so the CLI must be logged in. (Prefer Codex? Set <code>agent: codex</code> on any phase.)</li>
       <li><strong>Install Red Queen:</strong>
 <pre><code>npm install -g redqueen</code></pre></li>
       <li><strong>Generate a GitHub PAT</strong> at <a href="https://github.com/settings/personal-access-tokens/new" rel="noopener">github.com/settings/personal-access-tokens/new</a> with Contents, Issues, Pull requests, Workflows, Metadata permissions on your target repo.</li>
@@ -710,7 +731,7 @@
     <h2 id="compare-h">How Red Queen compares</h2>
     <p class="lede">
       Red Queen isn't a replacement for the tools below — it's the manager that delegates to them.
-      It dispatches Claude Code today; the adapter pattern means swapping in other coding CLIs is a config change, not a rewrite.
+      It dispatches Claude Code or Codex workers, selectable per phase; the worker layer is a thin shim, so adding other coding CLIs is a small adapter, not a rewrite.
     </p>
     <div class="compare-wrap">
       <table class="compare">
@@ -796,7 +817,7 @@
     <details class="faq">
       <summary>How is it different from Devin, Cline, or Aider?</summary>
       <p>
-        Red Queen is to Claude Code what Jenkins is to bash — it sits above the coding agent and shuttles tickets
+        Red Queen is to your coding agent what Jenkins is to bash — it sits above the coding agent and shuttles tickets
         through phases on a deterministic state machine. Devin, Cline, and Aider are coding agents you interact with
         directly. Red Queen is the pipeline that dispatches them in the background, with configurable human gates
         between phases. No LLM in the routing layer, so routing costs zero tokens and is fully debuggable.
@@ -806,7 +827,7 @@
     <details class="faq">
       <summary>Is this an agent host or skill manager like opencode / agentskills.io?</summary>
       <p>
-        No. Red Queen spawns <code>claude</code> CLI subprocesses and drives them through a phase graph — it's a
+        No. Red Queen spawns <code>claude</code> or <code>codex</code> CLI subprocesses and drives them through a phase graph — it's a
         dispatcher, not an agent runtime or a generic skill registry. Our &ldquo;skills&rdquo; are phase prompt
         templates for the pipeline; they follow the <a href="https://agentskills.io/" rel="noopener">agentskills.io</a>
         frontmatter format so they're portable to any compatible client, but Red Queen itself does not load or
@@ -826,16 +847,26 @@
     <details class="faq">
       <summary>Do I need Claude Code?</summary>
       <p>
-        Today, yes. Red Queen dispatches Claude Code workers. The adapter pattern makes adding support for
-        other coding CLIs straightforward, and that's on the roadmap.
+        No — workers run on Claude Code or Codex, selectable per phase in <code>redqueen.yaml</code>
+        (<code>agent: codex</code>). Claude Code is the default. Support for more coding CLIs is on the roadmap.
+      </p>
+    </details>
+
+    <details class="faq">
+      <summary>Can it handle dependent issues — stacked PRs?</summary>
+      <p>
+        Yes. Link issues as blockers — Jira &ldquo;blocks&rdquo; links or GitHub issue dependencies — and dependents
+        build on their blockers' branches as stacked PRs. Each PR targets the nearest still-in-review ancestor, so
+        nothing merges past a human gate. When a blocker merges, dependent PRs are retargeted and refreshed
+        automatically; work whose blockers aren't ready parks as deferred and wakes when they are.
       </p>
     </details>
 
     <details class="faq">
       <summary>How much does it cost to run?</summary>
       <p>
-        The orchestration itself is free — zero tokens spent on routing. Tokens are what your Claude subscription
-        or API already charges for the actual code work.
+        The orchestration itself is free — zero tokens spent on routing. Tokens are what your Claude or OpenAI
+        subscription or API already charges for the actual code work.
       </p>
     </details>
 
@@ -887,7 +918,7 @@
     <details class="faq">
       <summary>Is this production-ready?</summary>
       <p>
-        It's a v0.1 preview. Use it, file bugs, expect rough edges — the API surface is stable enough to build on.
+        It's a pre-1.0 preview (0.8.x). Use it, file bugs, expect rough edges — the API surface is stable enough to build on.
       </p>
     </details>
 

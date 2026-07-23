@@ -91,12 +91,14 @@ export function parseGitHubWebhookEvent(
         if (issueId === null) {
           return null;
         }
+        // The merged PR's own base — where stacked dependents retarget to.
+        const baseRef = extractNested(payload, ["pull_request", "base", "ref"]);
         return {
           source: "webhook",
           type: "pr-merged",
           issueId,
           timestamp: nowIso,
-          payload: { branch },
+          payload: { branch, ...(typeof baseRef === "string" ? { base: baseRef } : {}) },
         };
       }
       return null;

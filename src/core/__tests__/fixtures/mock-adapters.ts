@@ -6,7 +6,12 @@ import type {
   ReviewThread,
   ValidationResult,
 } from "../../types.js";
-import type { Attachment, Issue, IssueTracker } from "../../../integrations/issue-tracker.js";
+import type {
+  Attachment,
+  BlockerRef,
+  Issue,
+  IssueTracker,
+} from "../../../integrations/issue-tracker.js";
 import type {
   CheckStatus,
   CreatePROptions,
@@ -94,6 +99,17 @@ export class MockIssueTracker implements IssueTracker {
 
   getComments(issueId: string): Promise<Comment[]> {
     return Promise.resolve(this.commentsById.get(issueId) ?? []);
+  }
+
+  blockedBy = new Map<string, BlockerRef[]>();
+  getBlockedByThrowsFor = new Set<string>();
+
+  getBlockedBy(issueId: string): Promise<BlockerRef[]> {
+    this.calls.push(`getBlockedBy:${issueId}`);
+    if (this.getBlockedByThrowsFor.has(issueId)) {
+      return Promise.reject(new Error(`mock getBlockedBy failure for ${issueId}`));
+    }
+    return Promise.resolve(this.blockedBy.get(issueId) ?? []);
   }
 
   costBreakdowns = new Map<string, CostBreakdown>();
@@ -185,7 +201,12 @@ export class MockSourceControl implements SourceControl {
     return Promise.resolve(pr);
   }
 
+  getPullRequestThrowsFor = new Set<number>();
+
   getPullRequest(prNumber: number): Promise<PullRequest | null> {
+    if (this.getPullRequestThrowsFor.has(prNumber)) {
+      return Promise.reject(new Error(`mock getPullRequest failure for ${String(prNumber)}`));
+    }
     return Promise.resolve(this.prs.get(prNumber) ?? null);
   }
 
@@ -197,6 +218,15 @@ export class MockSourceControl implements SourceControl {
     const pr = this.prs.get(prNumber);
     if (pr !== undefined) {
       pr.state = "merged";
+    }
+    return Promise.resolve();
+  }
+
+  updatePullRequestBase(prNumber: number, base: string): Promise<void> {
+    this.calls.push(`updatePullRequestBase:${String(prNumber)}:${base}`);
+    const pr = this.prs.get(prNumber);
+    if (pr !== undefined) {
+      pr.baseBranch = base;
     }
     return Promise.resolve();
   }

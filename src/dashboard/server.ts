@@ -634,13 +634,15 @@ export class DashboardServer {
       startedAt: state.startedAt,
       readyCount: ready.length,
       workingCount: working.length,
+      deferredCount: this.deps.queue.listByStatus("deferred").length,
       currentTask: currentTask ? summarizeTask(currentTask) : null,
     };
   }
 
   private buildQueuePayload(): TaskSummary[] {
     const ready = this.deps.queue.listByStatus("ready");
-    return ready.map(summarizeTask);
+    const deferred = this.deps.queue.listByStatus("deferred");
+    return [...ready, ...deferred].map(summarizeTask);
   }
 
   private sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -707,5 +709,6 @@ function summarizeTask(task: Task): TaskSummary {
     description: task.description,
     createdAt: task.createdAt,
     startedAt: task.startedAt,
+    blockedOn: task.blockedOn,
   };
 }

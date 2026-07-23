@@ -45,6 +45,10 @@ Read the YAML context block at the top of this prompt. Fields you rely on:
   `origin/main` → `main`.
 - `specContent` — `null` on fresh write, populated on revision.
 - `codebaseMapPath` — path to the codebase map when present.
+- `stackBlockedBy` — **present only on stacked issues**: ids of the issues
+  this one is blocked by. When present, create the exploration worktree via
+  `redqueen stack setup --spec` (Step 4) so ancestor branches are included,
+  and write the spec against that combined state.
 
 ## Shared setup (both flows)
 
@@ -125,6 +129,24 @@ guessing.
 ### Step 4: Create a fresh worktree
 
 Work against the latest `baseBranch`, not the main working tree.
+
+**Stacked issue (`stackBlockedBy` present in the context):** the issue
+builds on unmerged ancestor branches, so the exploration worktree must
+include them. Create it with:
+
+```
+redqueen stack setup "${issueId}" --spec
+```
+
+This builds a detached throwaway worktree at
+`.redqueen/worktrees/spec-${issueId}` with all ancestor branches merged.
+Exit 2 means an ancestor merge conflicts — the conflicting merge is
+aborted, leaving base plus the ancestors that merged cleanly. Note the
+conflict in the spec's Risks section and explore the worktree the command
+left behind.
+Skip the raw git commands below.
+
+**Non-stacked issue:**
 
 ```
 bare_base=$(echo "${baseBranch}" | sed 's|^origin/||')
@@ -243,7 +265,8 @@ For each point, classify it:
 
 ### Rev Step 3: Refresh the worktree
 
-Create or refresh the worktree the same way as Fresh Write Flow Step 4.
+Create or refresh the worktree the same way as Fresh Write Flow Step 4
+(including the stacked-issue `redqueen stack setup --spec` conditional).
 
 ### Rev Step 4: Re-verify everything against the current code
 

@@ -17,6 +17,7 @@ interface StatusPayload {
   startedAt: string | null;
   readyCount: number;
   workingCount: number;
+  deferredCount: number;
   currentTask: unknown;
   note: string | null;
 }
@@ -100,6 +101,7 @@ async function tryHttp(
       startedAt: (body.startedAt as string | null) ?? null,
       readyCount: Number(body.readyCount ?? 0),
       workingCount: Number(body.workingCount ?? 0),
+      deferredCount: Number(body.deferredCount ?? 0),
       currentTask: body.currentTask ?? null,
     };
   } catch {
@@ -132,6 +134,7 @@ function readFromDatabase(
       startedAt: map.get("started_at") ?? null,
       readyCount: countByStatus("ready"),
       workingCount: countByStatus("working"),
+      deferredCount: countByStatus("deferred"),
       currentTask: null,
     };
   } finally {
@@ -152,6 +155,7 @@ function emptyPayload(note: string): StatusPayload {
     startedAt: null,
     readyCount: 0,
     workingCount: 0,
+    deferredCount: 0,
     currentTask: null,
     note,
   };
@@ -171,7 +175,7 @@ function printHuman(p: StatusPayload): void {
     process.stdout.write(`  current:     ${p.currentTaskId}\n`);
   }
   process.stdout.write(
-    `  queue:       ${String(p.readyCount)} ready, ${String(p.workingCount)} working\n`,
+    `  queue:       ${String(p.readyCount)} ready, ${String(p.workingCount)} working, ${String(p.deferredCount)} deferred\n`,
   );
   process.stdout.write(`  completed:   ${String(p.completedCount)}\n`);
   process.stdout.write(`  errors:      ${String(p.errorCount)}\n`);

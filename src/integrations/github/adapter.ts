@@ -177,6 +177,19 @@ export class GitHubSourceControlAdapter implements SourceControl {
     );
   }
 
+  async updatePullRequestBase(prNumber: number, base: string): Promise<void> {
+    await this.client.call(
+      `PATCH /repos/${this.owner}/${this.repo}/pulls/${String(prNumber)}`,
+      () =>
+        this.client.rest.pulls.update({
+          owner: this.owner,
+          repo: this.repo,
+          pull_number: prNumber,
+          base,
+        }),
+    );
+  }
+
   async postReview(
     prNumber: number,
     body: string,

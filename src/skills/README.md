@@ -27,27 +27,35 @@ prompt. The fields below are stable across minor version bumps — new fields
 may be added, but existing fields will not be renamed or have their types
 changed without a major version bump.
 
-| Field             | Type                                                           | Notes                                                                  |
-| ----------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| `issueId`         | string                                                         | External ref (e.g. `PROJ-123`, `#456`). Opaque to adapters.            |
-| `phaseName`       | string                                                         | e.g. `spec-writing`, `spec-feedback`, `coding`. Skills branch on this. |
-| `phaseLabel`      | string                                                         | Human-readable label.                                                  |
-| `skillName`       | string                                                         | Resolved skill name.                                                   |
-| `buildCommands`   | string                                                         | From `project.buildCommand`.                                           |
-| `testCommands`    | string                                                         | From `project.testCommand`.                                            |
-| `repoOwner`       | string                                                         | May be `""` if the adapter does not use the concept.                   |
-| `repoName`        | string                                                         | Same.                                                                  |
-| `baseBranch`      | string                                                         | `origin/<name>` form (e.g. `origin/main`).                             |
-| `branchPrefix`    | string                                                         | e.g. `feature/`, `bugfix/`. Pre-resolved from issue type.              |
-| `module`          | `{buildCommand, testCommandTargeted, testCommandFull} \| null` | Per-module commands when configured, else `null`.                      |
-| `branchName`      | string \| null                                                 | `null` before coding creates a branch.                                 |
-| `prNumber`        | number \| null                                                 | `null` before coding creates a PR.                                     |
-| `specContent`     | string \| null                                                 | `null` during spec-writing; populated thereafter.                      |
-| `priorContext`    | string \| null                                                 | Handoff summary from the previous phase.                               |
-| `iterationCount`  | number                                                         | Feedback / review iterations for the relevant phase, else `0`.         |
-| `maxIterations`   | number                                                         | Defaults to 3.                                                         |
-| `codebaseMapPath` | string \| null                                                 | Path to `.redqueen/codebase-map.md` when it exists.                    |
-| `projectDir`      | string                                                         | Absolute path to the project root.                                     |
+| Field             | Type                                                           | Notes                                                                                                                           |
+| ----------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `issueId`         | string                                                         | External ref (e.g. `PROJ-123`, `#456`). Opaque to adapters.                                                                     |
+| `phaseName`       | string                                                         | e.g. `spec-writing`, `spec-feedback`, `coding`. Skills branch on this.                                                          |
+| `phaseLabel`      | string                                                         | Human-readable label.                                                                                                           |
+| `skillName`       | string                                                         | Resolved skill name.                                                                                                            |
+| `buildCommands`   | string                                                         | From `project.buildCommand`.                                                                                                    |
+| `testCommands`    | string                                                         | From `project.testCommand`.                                                                                                     |
+| `repoOwner`       | string                                                         | May be `""` if the adapter does not use the concept.                                                                            |
+| `repoName`        | string                                                         | Same.                                                                                                                           |
+| `baseBranch`      | string                                                         | `origin/<name>` form (e.g. `origin/main`).                                                                                      |
+| `branchPrefix`    | string                                                         | e.g. `feature/`, `bugfix/`. Pre-resolved from issue type.                                                                       |
+| `module`          | `{buildCommand, testCommandTargeted, testCommandFull} \| null` | Per-module commands when configured, else `null`.                                                                               |
+| `branchName`      | string \| null                                                 | `null` before coding creates a branch.                                                                                          |
+| `prNumber`        | number \| null                                                 | `null` before coding creates a PR.                                                                                              |
+| `specContent`     | string \| null                                                 | `null` during spec-writing; populated thereafter.                                                                               |
+| `priorContext`    | string \| null                                                 | Handoff summary from the previous phase.                                                                                        |
+| `iterationCount`  | number                                                         | Feedback / review iterations for the relevant phase, else `0`.                                                                  |
+| `maxIterations`   | number                                                         | Defaults to 3.                                                                                                                  |
+| `codebaseMapPath` | string \| null                                                 | Path to `.redqueen/codebase-map.md` when it exists.                                                                             |
+| `projectDir`      | string                                                         | Absolute path to the project root.                                                                                              |
+| `stackBlockedBy`  | string[] _(omitted when absent)_                               | Stacked issues only: direct blocker issue ids. Absent otherwise — non-stacked prompts are byte-identical to pre-stack versions. |
+| `stackPrBase`     | string _(omitted when absent)_                                 | Present only with `stackBlockedBy`: the branch the PR must target.                                                              |
+
+**Stacked issues:** when `stackBlockedBy` is present, worktree setup goes
+through `redqueen stack setup <issueId>` (or `--spec` for the prompt-writer's
+throwaway exploration worktree) instead of raw git — it branches from base and
+merges unmerged ancestor branches in topo order. Never rebase a stacked
+worktree.
 
 ## What skills can read
 
@@ -62,6 +70,7 @@ changed without a major version bump.
 - Files under `projectDir` (including git worktrees they create)
 - `redqueen spec set`, `redqueen issue comment`, `redqueen pr create`, `redqueen pr review`, `redqueen pr reply`
 - `redqueen pipeline update` (branch / PR / worktree metadata)
+- `redqueen stack setup` (stacked-issue worktree assembly)
 - Git commits and pushes on branches they own
 
 ## Tracker neutrality

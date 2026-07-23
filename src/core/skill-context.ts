@@ -4,6 +4,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { stringify as stringifyYaml } from "yaml";
 import type { ProjectModule } from "./config.js";
 import type { RuntimeState } from "./runtime-state.js";
+import type { StackResolution } from "./stack.js";
 import type {
   PhaseDefinition,
   PipelineRecord,
@@ -26,6 +27,7 @@ export interface SkillContextDeps {
   issueType?: string | null;
   codebaseMapPath?: string | null;
   resolveModule?: ModuleResolver;
+  stack?: StackResolution | null;
 }
 
 export function buildSkillContext(deps: SkillContextDeps): SkillContext {
@@ -74,10 +76,21 @@ export function buildSkillContext(deps: SkillContextDeps): SkillContext {
     maxIterations,
     codebaseMapPath: deps.codebaseMapPath ?? null,
     projectDir: resolve(config.project.directory),
+    // Conditional spread: renderSkillPrompt YAML-dumps the whole object, so
+    // omitting the keys keeps non-stacked prompts byte-identical.
+    ...(deps.stack != null
+      ? {
+          stackBlockedBy: deps.stack.directBlockers.map((b) => b.id),
+          stackPrBase: deps.stack.prBase,
+        }
+      : {}),
   };
 }
 
-function resolveBranchPrefix(prefixes: Record<string, string>, issueType: string | null): string {
+export function resolveBranchPrefix(
+  prefixes: Record<string, string>,
+  issueType: string | null,
+): string {
   if (issueType !== null) {
     const direct = prefixes[issueType];
     if (direct !== undefined && direct !== "") {

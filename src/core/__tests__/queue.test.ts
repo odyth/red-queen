@@ -286,4 +286,74 @@ describe("SqliteTaskQueue", () => {
       expect(queue.getTask("nonexistent")).toBeNull();
     });
   });
+
+  describe("deferred", () => {
+    it("markDeferred parks a ready task with its blockers", () => {
+      const task = queue.enqueue({ type: "coding", issueId: "PROJ-2" });
+      expect(queue.markDeferred(task.id, ["PROJ-1"])).toBe(true);
+
+      const updated = queue.getTask(task.id);
+      expect(updated?.status).toBe("deferred");
+      expect(updated?.blockedOn).toEqual(["PROJ-1"]);
+    });
+
+    it("markDeferred fails on non-ready tasks", () => {
+      const task = queue.enqueue({ type: "coding", issueId: "PROJ-2" });
+      queue.markWorking(task.id);
+      expect(queue.markDeferred(task.id, ["PROJ-1"])).toBe(false);
+    });
+
+    it("dequeue skips deferred tasks", () => {
+      const parked = queue.enqueue({ type: "coding", issueId: "PROJ-2" });
+      queue.markDeferred(parked.id, ["PROJ-1"]);
+      queue.enqueue({ type: "coding", issueId: "PROJ-3" });
+
+      expect(queue.dequeue()?.issueId).toBe("PROJ-3");
+    });
+
+    it("releaseDeferred flips all deferred to ready and keeps blockedOn", () => {
+      const a = queue.enqueue({ type: "coding", issueId: "PROJ-2" });
+      const b = queue.enqueue({ type: "coding", issueId: "PROJ-3" });
+      queue.markDeferred(a.id, ["PROJ-1"]);
+      queue.markDeferred(b.id, ["PROJ-1", "PROJ-2"]);
+
+      expect(queue.releaseDeferred()).toBe(2);
+      expect(queue.getTask(a.id)?.status).toBe("ready");
+      expect(queue.getTask(a.id)?.blockedOn).toEqual(["PROJ-1"]);
+      expect(queue.getTask(b.id)?.blockedOn).toEqual(["PROJ-1", "PROJ-2"]);
+    });
+
+    it("releaseDeferred returns 0 when nothing is parked", () => {
+      queue.enqueue({ type: "coding", issueId: "PROJ-1" });
+      expect(queue.releaseDeferred()).toBe(0);
+    });
+
+    it("hasOpenTask sees deferred tasks", () => {
+      const task = queue.enqueue({ type: "coding", issueId: "PROJ-2" });
+      queue.markDeferred(task.id, ["PROJ-1"]);
+      expect(queue.hasOpenTask("PROJ-2", "coding")).toBe(true);
+    });
+
+    it("getOpenCount counts deferred alongside ready and working", () => {
+      const parked = queue.enqueue({ type: "coding", issueId: "PROJ-2" });
+      queue.markDeferred(parked.id, ["PROJ-1"]);
+      queue.enqueue({ type: "coding", issueId: "PROJ-3" });
+      expect(queue.getOpenCount()).toEqual({ ready: 1, working: 0, deferred: 1 });
+    });
+
+    it("requeueAllWorking ignores deferred tasks", () => {
+      const task = queue.enqueue({ type: "coding", issueId: "PROJ-2" });
+      queue.markDeferred(task.id, ["PROJ-1"]);
+
+      expect(queue.requeueAllWorking()).toEqual([]);
+      expect(queue.getTask(task.id)?.status).toBe("deferred");
+    });
+
+    it("purgeOld ignores deferred tasks", () => {
+      const task = queue.enqueue({ type: "coding", issueId: "PROJ-2" });
+      queue.markDeferred(task.id, ["PROJ-1"]);
+      expect(queue.purgeOld(0)).toBe(0);
+      expect(queue.getTask(task.id)).not.toBeNull();
+    });
+  });
 });

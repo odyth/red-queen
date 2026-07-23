@@ -6,7 +6,12 @@ import type {
   ReviewThread,
   ValidationResult,
 } from "../../core/types.js";
-import type { Attachment, Issue, IssueTracker } from "../../integrations/issue-tracker.js";
+import type {
+  Attachment,
+  BlockerRef,
+  Issue,
+  IssueTracker,
+} from "../../integrations/issue-tracker.js";
 import type {
   CheckStatus,
   CreatePROptions,
@@ -113,6 +118,12 @@ export class InMemoryIssueTracker implements IssueTracker {
 
   getComments(issueId: string): Promise<Comment[]> {
     return Promise.resolve(this.commentsById.get(issueId) ?? []);
+  }
+
+  readonly blockedBy = new Map<string, BlockerRef[]>();
+
+  getBlockedBy(issueId: string): Promise<BlockerRef[]> {
+    return Promise.resolve(this.blockedBy.get(issueId) ?? []);
   }
 
   readonly costBreakdowns = new Map<string, CostBreakdown>();
@@ -227,6 +238,15 @@ export class InMemorySourceControl implements SourceControl {
     const pr = this.prs.get(prNumber);
     if (pr !== undefined) {
       this.prs.set(prNumber, { ...pr, state: "merged" });
+    }
+    return Promise.resolve();
+  }
+
+  updatePullRequestBase(prNumber: number, base: string): Promise<void> {
+    this.calls.push(`updatePullRequestBase:${String(prNumber)}:${base}`);
+    const pr = this.prs.get(prNumber);
+    if (pr !== undefined) {
+      this.prs.set(prNumber, { ...pr, baseBranch: base });
     }
     return Promise.resolve();
   }

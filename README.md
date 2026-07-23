@@ -196,6 +196,21 @@ agent-specific). A phase that overrides only `agent` runs that CLI's
 default model. Codex runs report token usage but no dollar cost — add a
 `pipeline.cost.pricing` entry keyed by the model name to price them.
 
+### Stacked branches
+
+Issues linked as blockers (Jira "blocks" links, GitHub issue
+dependencies) build on their blockers' branches: the dependent's
+worktree merges ancestor branches in topo order, and its PR targets the
+nearest still-gated ancestor branch so nothing merges past human
+review. When a blocker's PR merges, dependent PRs are retargeted onto
+the merged base and the merged code is folded into their branches.
+
+Retargeting runs from the PR-merged webhook. If you run poll-only
+(`pipeline.webhooks.enabled: false`), turn on GitHub's "Automatically
+delete head branches" so GitHub retargets dependent PRs itself when the
+merged branch is deleted — with neither, a dependent PR keeps targeting
+the stale merged branch (PR bases are only computed at creation).
+
 ## Verification checklist
 
 After `redqueen service start`:

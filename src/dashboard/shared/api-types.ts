@@ -13,7 +13,7 @@ export type { PhaseDefinition };
 
 // --- Task / status ---
 
-export type TaskStatusWire = "ready" | "working" | "complete" | "failed";
+export type TaskStatusWire = "ready" | "working" | "complete" | "failed" | "deferred";
 
 export interface TaskSummary {
   id: string;
@@ -23,6 +23,7 @@ export interface TaskSummary {
   description: string | null;
   createdAt: string;
   startedAt: string | null;
+  blockedOn: string[] | null;
 }
 
 export type OrchestratorStatus = "idle" | "working" | "stopped" | "crashed";
@@ -36,6 +37,7 @@ export interface StatusPayload {
   startedAt: string | null;
   readyCount: number;
   workingCount: number;
+  deferredCount: number;
   currentTask: TaskSummary | null;
 }
 
@@ -136,6 +138,7 @@ export interface WorkflowPutFail {
 export interface WorkflowPutConflict {
   readyCount: number;
   workingCount: number;
+  deferredCount: number;
   message: string;
 }
 

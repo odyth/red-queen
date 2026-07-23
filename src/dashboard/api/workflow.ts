@@ -142,11 +142,16 @@ export async function handleWorkflowPut(
   }
 
   const open = deps.queue.getOpenCount();
-  if (open.ready + open.working > 0) {
+  const totalOpen = open.ready + open.working + open.deferred;
+  if (totalOpen > 0) {
+    // Deferred counts as open: a task parked on dependencies survives the
+    // rewrite and would dispatch into a graph its phase may no longer exist in.
+    const parked = open.deferred > 0 ? ` (${String(open.deferred)} parked on dependencies)` : "";
     sendJson(res, 409, {
       readyCount: open.ready,
       workingCount: open.working,
-      message: `${String(open.ready + open.working)} open tasks; stop orchestrator and drain the queue.`,
+      deferredCount: open.deferred,
+      message: `${String(totalOpen)} open tasks${parked}; stop orchestrator and drain the queue.`,
     });
     return;
   }

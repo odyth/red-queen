@@ -83,6 +83,10 @@ export async function reconcile(deps: ReconcilerDeps): Promise<ReconcileResult> 
     }
   }
 
+  // Every sweep re-evaluates parked tasks: releaseDeferred is the liveness
+  // backstop for state changes no webhook reported (link edits, manual moves).
+  queue.releaseDeferred();
+
   audit.log({
     component: "reconciler",
     issueId: null,

@@ -216,6 +216,41 @@ describe("buildSkillContext", () => {
       }),
     ).toThrow(/not found/);
   });
+
+  it("adds stack fields when a stack resolution is passed", () => {
+    const runtime = makeRuntime();
+    const context = buildSkillContext({
+      runtime,
+      task: makeTask(),
+      pipelineRecord: makeRecord(),
+      phaseName: "coding",
+      stack: {
+        ok: true,
+        directBlockers: [{ id: "PROJ-9", closed: false }],
+        mergeBranches: ["feature/PROJ-9"],
+        prBase: "feature/PROJ-9",
+        unsatisfied: [],
+        cycle: null,
+        problems: [],
+      },
+    });
+    expect(context.stackBlockedBy).toEqual(["PROJ-9"]);
+    expect(context.stackPrBase).toBe("feature/PROJ-9");
+  });
+
+  it("omits stack keys entirely for non-stacked issues — prompt stays byte-identical", () => {
+    const runtime = makeRuntime();
+    const context = buildSkillContext({
+      runtime,
+      task: makeTask(),
+      pipelineRecord: makeRecord(),
+      phaseName: "coding",
+    });
+    expect("stackBlockedBy" in context).toBe(false);
+    expect("stackPrBase" in context).toBe(false);
+    const rendered = renderSkillPrompt(context, "# Skill");
+    expect(rendered).not.toContain("stack");
+  });
 });
 
 describe("renderSkillPrompt", () => {

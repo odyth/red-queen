@@ -15,7 +15,8 @@ export const SCHEMA_SQL = `
     completed_at TEXT,
     result TEXT,
     retry_count INTEGER NOT NULL DEFAULT 0,
-    metadata TEXT
+    metadata TEXT,
+    blocked_on TEXT
   );
 
   CREATE INDEX IF NOT EXISTS idx_tasks_status_created_at
@@ -175,6 +176,16 @@ export class RedQueenDatabase {
       }
     }
 
+    // Stacked branches: blocked_on holds the JSON blocker list a deferred
+    // task is parked on.
+    try {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN blocked_on TEXT");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("duplicate column") === false) {
+        throw err;
+      }
+    }
     // open_question_count carries the spec-writing skill's count for the
     // skip-gate fast-path. Null on fresh records / pre-migration rows; the
     // orchestrator only consumes the value when it's a real zero.
