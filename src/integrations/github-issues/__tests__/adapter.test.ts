@@ -10,6 +10,7 @@ function stringArg(value: unknown): string {
 interface Call {
   label: string;
   args: Record<string, unknown>;
+  via?: "paginate" | "request";
 }
 
 function buildFakeOctokit(): {
@@ -53,9 +54,38 @@ function buildFakeOctokit(): {
       checks: new Proxy({}, routeProxyHandler),
     },
     paginate: (method: unknown, args: Record<string, unknown>): Promise<unknown[]> => {
+      // Real octokit.paginate accepts a raw route string too — route those
+      // through the same routes map so responders and 404s behave uniformly.
+      if (typeof method === "string") {
+        calls.push({ label: method, args, via: "paginate" });
+        const responder = routes.get(method);
+        if (responder === undefined) {
+          return Promise.reject(Object.assign(new Error(`not found: ${method}`), { status: 404 }));
+        }
+        const value = responder(args);
+        if (value instanceof Error) {
+          return Promise.reject(value);
+        }
+        return Promise.resolve(value as unknown[]);
+      }
       const fn = method as { name?: string };
       const path = fn.name ?? "";
       return Promise.resolve(paginate(path, args));
+    },
+    // Raw octokit.request(route, params) — routes register under the route
+    // string itself. Unregistered routes 404, matching GitHub's behavior for
+    // unavailable APIs.
+    request: (route: string, args: Record<string, unknown>): Promise<unknown> => {
+      calls.push({ label: route, args, via: "request" });
+      const responder = routes.get(route);
+      if (responder === undefined) {
+        return Promise.reject(Object.assign(new Error(`not found: ${route}`), { status: 404 }));
+      }
+      const value = responder(args);
+      if (value instanceof Error) {
+        return Promise.reject(value);
+      }
+      return Promise.resolve({ data: value });
     },
   };
 
@@ -306,5 +336,54 @@ describe("GitHubIssuesAdapter", () => {
       }),
     );
     expect(result?.type).toBe("phase-change");
+  });
+
+  describe("getBlockedBy", () => {
+    const DEPS_ROUTE = "GET /repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocked_by";
+
+    it("maps same-repo blockers to #N and cross-repo to owner/repo#N", async () => {
+      fake.add(DEPS_ROUTE, (args) => {
+        expect(args.per_page).toBe(100);
+        expect(args.issue_number).toBe(5);
+        expect((args.headers as Record<string, string>)["X-GitHub-Api-Version"]).toBe("2026-03-10");
+        return [
+          { number: 1, state: "closed", repository: { full_name: "me/r" } },
+          { number: 2, state: "open", repository_url: "https://api.github.com/repos/me/r" },
+          { number: 7, state: "open", repository: { full_name: "other/repo" } },
+        ];
+      });
+
+      const result = await adapter.getBlockedBy("#5");
+      expect(result).toEqual([
+        { id: "#1", closed: true },
+        { id: "#2", closed: false },
+        { id: "other/repo#7", closed: false },
+      ]);
+    });
+
+    it("treats items without repo info as same-repo", async () => {
+      fake.add(DEPS_ROUTE, () => [{ number: 3, state: "open" }]);
+      expect(await adapter.getBlockedBy("#5")).toEqual([{ id: "#3", closed: false }]);
+    });
+
+    it("returns [] when the dependencies API 404s", async () => {
+      expect(await adapter.getBlockedBy("#5")).toEqual([]);
+    });
+
+    it("fetches dependencies through the paginating client — >100 blockers must all count", async () => {
+      fake.add(DEPS_ROUTE, () => [{ number: 1, state: "open" }]);
+      await adapter.getBlockedBy("#5");
+      expect(fake.calls[0]?.via).toBe("paginate");
+    });
+
+    it("returns [] for a cross-repo id without calling the API", async () => {
+      expect(await adapter.getBlockedBy("other/repo#7")).toEqual([]);
+      expect(fake.calls).toEqual([]);
+    });
+  });
+
+  it("getPhase returns null for a cross-repo id without calling the API", async () => {
+    expect(await adapter.getPhase("other/repo#7")).toBeNull();
+    expect(fake.calls).toEqual([]);
   });
 });

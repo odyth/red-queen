@@ -31,6 +31,9 @@ Helper commands (called by skills):
   pr reply <number> <id>      Reply to a review comment (--body or stdin)
   pipeline update <issueId>   Update pipeline state (--branch --pr --worktree --clear-pr)
   pipeline cleanup <issueId>  Remove worktree and clear worktree path (--keep-branch)
+  stack setup <issueId>       Assemble a stacked worktree: branch from base, merge unmerged
+                              ancestor branches in topo order (--spec for a detached
+                              exploration worktree). Exit 2 = merge conflict, 3 = blocked.
   sub-iter start <id> <label> Open a new in-skill sub-iteration entry
   sub-iter complete <id>      Close the most recent open sub-iteration (--summary "...")
 

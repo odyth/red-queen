@@ -12,10 +12,12 @@ export interface TaskQueue {
   markFailed(taskId: string, error: string): boolean;
   requeue(taskId: string): boolean;
   requeueAllWorking(): Task[];
+  markDeferred(taskId: string, blockedOn: string[]): boolean;
+  releaseDeferred(): number;
   hasOpenTask(issueId: string, taskType: string): boolean;
   listByStatus(status: TaskStatus): Task[];
   getTask(taskId: string): Task | null;
-  getOpenCount(): { ready: number; working: number };
+  getOpenCount(): { ready: number; working: number; deferred: number };
   purgeOld(olderThanDays: number): number;
 }
 
@@ -33,6 +35,7 @@ interface TaskRow {
   result: string | null;
   retry_count: number;
   metadata: string | null;
+  blocked_on: string | null;
 }
 
 // Ordering: tasks sort by the host issue's pipeline_state.created_at when a
@@ -144,10 +147,29 @@ export class SqliteTaskQueue implements TaskQueue {
     })();
   }
 
+  markDeferred(taskId: string, blockedOn: string[]): boolean {
+    const result = this.db
+      .prepare(
+        "UPDATE tasks SET status = 'deferred', blocked_on = ? WHERE id = ? AND status = 'ready'",
+      )
+      .run(JSON.stringify(blockedOn), taskId);
+    return result.changes > 0;
+  }
+
+  // Flips every parked task back to ready; the dequeue-time stack gate is the
+  // sole authority on whether it may actually run. blocked_on is kept as dedup
+  // memory/display and only rewritten by the next markDeferred.
+  releaseDeferred(): number {
+    const result = this.db
+      .prepare("UPDATE tasks SET status = 'ready' WHERE status = 'deferred'")
+      .run();
+    return result.changes;
+  }
+
   hasOpenTask(issueId: string, taskType: string): boolean {
     const row = this.db
       .prepare(
-        "SELECT 1 FROM tasks WHERE issue_id = ? AND type = ? AND status IN ('ready', 'working') LIMIT 1",
+        "SELECT 1 FROM tasks WHERE issue_id = ? AND type = ? AND status IN ('ready', 'working', 'deferred') LIMIT 1",
       )
       .get(issueId, taskType) as Record<string, unknown> | undefined;
     return row !== undefined;
@@ -175,13 +197,13 @@ export class SqliteTaskQueue implements TaskQueue {
     return toTask(row);
   }
 
-  getOpenCount(): { ready: number; working: number } {
+  getOpenCount(): { ready: number; working: number; deferred: number } {
     const row = this.db
       .prepare(
-        "SELECT SUM(CASE WHEN status = 'ready' THEN 1 ELSE 0 END) as ready, SUM(CASE WHEN status = 'working' THEN 1 ELSE 0 END) as working FROM tasks WHERE status IN ('ready', 'working')",
+        "SELECT SUM(CASE WHEN status = 'ready' THEN 1 ELSE 0 END) as ready, SUM(CASE WHEN status = 'working' THEN 1 ELSE 0 END) as working, SUM(CASE WHEN status = 'deferred' THEN 1 ELSE 0 END) as deferred FROM tasks WHERE status IN ('ready', 'working', 'deferred')",
       )
-      .get() as { ready: number | null; working: number | null };
-    return { ready: row.ready ?? 0, working: row.working ?? 0 };
+      .get() as { ready: number | null; working: number | null; deferred: number | null };
+    return { ready: row.ready ?? 0, working: row.working ?? 0, deferred: row.deferred ?? 0 };
   }
 
   purgeOld(olderThanDays: number): number {
@@ -212,5 +234,6 @@ function toTask(row: TaskRow): Task {
     result: row.result,
     retryCount: row.retry_count,
     metadata: row.metadata ? (JSON.parse(row.metadata) as Record<string, unknown>) : {},
+    blockedOn: row.blocked_on ? (JSON.parse(row.blocked_on) as string[]) : null,
   };
 }

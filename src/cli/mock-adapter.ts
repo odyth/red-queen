@@ -1,4 +1,4 @@
-import type { Attachment, Issue, IssueTracker } from "../integrations/issue-tracker.js";
+import type { Attachment, BlockerRef, Issue, IssueTracker } from "../integrations/issue-tracker.js";
 import type {
   CheckStatus,
   CreatePROptions,
@@ -57,6 +57,9 @@ export class MockIssueTrackerAdapter implements IssueTracker {
     return Promise.resolve();
   }
   getComments(): Promise<Comment[]> {
+    return Promise.resolve([]);
+  }
+  getBlockedBy(): Promise<BlockerRef[]> {
     return Promise.resolve([]);
   }
   setCostBreakdown(issueId: string, breakdown: CostBreakdown): Promise<void> {
@@ -122,6 +125,13 @@ export class MockSourceControlAdapter implements SourceControl {
     return Promise.resolve("");
   }
   mergePullRequest(): Promise<void> {
+    return Promise.resolve();
+  }
+  updatePullRequestBase(prNumber: number, base: string): Promise<void> {
+    const pr = this.prs.get(prNumber);
+    if (pr !== undefined) {
+      pr.baseBranch = base;
+    }
     return Promise.resolve();
   }
   postReview(): Promise<void> {

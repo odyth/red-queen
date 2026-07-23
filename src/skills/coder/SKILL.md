@@ -53,6 +53,12 @@ Read the YAML context block. Fields you rely on:
   `buildCommands`, and `module.testCommandTargeted ?? testCommands`
   instead of `testCommands`.
 - `codebaseMapPath` — read it first for orientation.
+- `stackBlockedBy` — **present only on stacked issues**: the issue ids this
+  issue is blocked by. When present, this issue builds on top of unmerged
+  ancestor branches — worktree setup goes through `redqueen stack setup`
+  (Step 3) and the PR base comes from `stackPrBase` (Step 8).
+- `stackPrBase` — present only with `stackBlockedBy`: the branch the PR must
+  target (the nearest unmerged blocker's branch, or the base branch).
 
 ## Setup
 
@@ -114,6 +120,33 @@ Compute:
 - `worktree_path = "${projectDir}/.redqueen/worktrees/${issueId}"`.
 
 ### Step 3: Create or reuse the worktree
+
+**Stacked issue (`stackBlockedBy` present in the context):** do not run raw
+git here. Assemble the worktree deterministically:
+
+```
+redqueen stack setup "${issueId}"
+```
+
+- Exit 0 — the worktree (`.redqueen/worktrees/${issueId}`) is ready with all
+  ancestor branches merged; pipeline state is already updated. Skip the raw
+  git commands below and continue to Step 4.
+- Exit 2 — merge conflict. The conflict is left in place in the worktree:
+  resolve the conflicted files there, `git add` them,
+  `git -C "${worktree_path}" merge --continue`, then re-run
+  `redqueen stack setup "${issueId}"` until it exits 0.
+- Exit 3 — blockers are unsatisfied (should not normally happen; the
+  orchestrator gates dispatch). Exit non-zero with the JSON output in your
+  summary so the orchestrator re-queues.
+- Exit 1 — unexpected failure (git or network error); the JSON output is
+  `{"status": "error", "message": ...}`. Do not treat it as a conflict —
+  exit non-zero with the message in your summary so the orchestrator
+  re-queues.
+
+**Never rebase a stacked worktree** — ancestors merge in, history is never
+rewritten.
+
+**Non-stacked issue (no `stackBlockedBy`):**
 
 ```
 git fetch origin "${bare_base}"
@@ -193,11 +226,14 @@ git -C "${worktree_path}" push -u origin "${branch_name}"
 
 ### Step 8: Create the PR
 
+Compute `pr_base` first: the context's `stackPrBase` when present (stacked
+issue), otherwise `bare_base`.
+
 ```
 cat <<'EOF' | redqueen pr create \
   --issue "${issueId}" \
   --head "${branch_name}" \
-  --base "${bare_base}" \
+  --base "${pr_base}" \
   --title "<type>(<issueId>): <summary>"
 ## Summary
 <from spec>
@@ -233,7 +269,10 @@ computed exactly as in Step 2.
 
 A reviewer requested changes. Address them.
 
-1. Refresh the worktree:
+1. Refresh the worktree. Stacked issue (`stackBlockedBy` present): run
+   `redqueen stack setup "${issueId}"` instead of the commands below —
+   merge-based, absorbs ancestor updates, never rebases; on exit 2 resolve
+   the conflict as in Step 3. Non-stacked:
 
    ```
    git -C "${worktree_path}" fetch origin "${bare_base}"
@@ -276,7 +315,8 @@ A reviewer requested changes. Address them.
 Tests failed in the tester phase. Reproduce locally — your local run is
 authoritative — then fix.
 
-1. Refresh the worktree (same commands as Review-rework step 1).
+1. Refresh the worktree (same as Review-rework step 1, including the
+   stacked-issue conditional).
 2. Re-run the build and targeted tests locally:
    - Build: `module.buildCommand` if module is non-null, else `buildCommands`.
    - Test: `module.testCommandTargeted ?? testCommands`.

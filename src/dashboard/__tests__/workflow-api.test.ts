@@ -148,6 +148,27 @@ describe("Dashboard workflow API", () => {
     expect(reloadCalls.length).toBe(0);
   });
 
+  it("PUT /api/workflow with one deferred task returns 409 with deferredCount: 1", async () => {
+    const task = queue.enqueue({ type: "coding", issueId: "PROJ-1" });
+    queue.markDeferred(task.id, ["PROJ-0"]);
+    const res = await fetch(`http://127.0.0.1:${String(port)}/api/workflow`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phases: NEW_PHASES }),
+    });
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as {
+      readyCount: number;
+      workingCount: number;
+      deferredCount: number;
+      message: string;
+    };
+    expect(body.deferredCount).toBe(1);
+    expect(body.readyCount).toBe(0);
+    expect(body.message).toContain("parked on dependencies");
+    expect(reloadCalls.length).toBe(0);
+  });
+
   it("PUT /api/workflow with one working task returns 409 with workingCount: 1", async () => {
     const task = queue.enqueue({ type: "coding", issueId: "PROJ-1" });
     queue.markWorking(task.id);

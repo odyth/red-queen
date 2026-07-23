@@ -90,6 +90,7 @@ function mkHarness(): {
     },
     statusTransitions: {},
     reconcileScope: "active-sprint-or-all",
+    blocksLinkName: "Blocks",
     botAccountId: "bot-1",
   };
 
@@ -404,6 +405,48 @@ describe("JiraIssueTrackerAdapter", () => {
     const result = h.adapter.validatePhaseMapping(["coding", "missing"]);
     expect(result.warnings).toEqual([]);
     expect(result.errors.some((e) => e.includes("missing"))).toBe(true);
+  });
+
+  it("getBlockedBy keeps inward Blocks links with inline closed state", async () => {
+    h.setResponse((c) => c.url.includes("/issue/RQ-3?fields=issuelinks") && c.method === "GET", {
+      id: "3",
+      key: "RQ-3",
+      fields: {
+        issuelinks: [
+          {
+            type: { name: "Blocks" },
+            inwardIssue: {
+              key: "RQ-1",
+              fields: { status: { statusCategory: { key: "done" } } },
+            },
+          },
+          {
+            type: { name: "Blocks" },
+            inwardIssue: {
+              key: "RQ-2",
+              fields: { status: { statusCategory: { key: "indeterminate" } } },
+            },
+          },
+          { type: { name: "Blocks" }, outwardIssue: { key: "RQ-9" } },
+          { type: { name: "Relates" }, inwardIssue: { key: "RQ-8" } },
+        ],
+      },
+    });
+
+    const result = await h.adapter.getBlockedBy("RQ-3");
+    expect(result).toEqual([
+      { id: "RQ-1", closed: true },
+      { id: "RQ-2", closed: false },
+    ]);
+  });
+
+  it("getBlockedBy returns [] when the issue has no links", async () => {
+    h.setResponse((c) => c.url.includes("/issue/RQ-4?fields=issuelinks") && c.method === "GET", {
+      id: "4",
+      key: "RQ-4",
+      fields: {},
+    });
+    expect(await h.adapter.getBlockedBy("RQ-4")).toEqual([]);
   });
 
   it("parseWebhookEvent returns phase-change", () => {

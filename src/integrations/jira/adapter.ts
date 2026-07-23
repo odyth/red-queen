@@ -5,7 +5,7 @@ import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { z } from "zod";
 import type { Comment, CostBreakdown, PipelineEvent, ValidationResult } from "../../core/types.js";
-import type { Attachment, Issue, IssueTracker } from "../issue-tracker.js";
+import type { Attachment, BlockerRef, Issue, IssueTracker } from "../issue-tracker.js";
 import { fromAdf, toAdf } from "./adf.js";
 import type { AdfNode } from "./adf.js";
 import { renderBreakdownAdf } from "./cost-adf.js";
@@ -37,6 +37,7 @@ export const JiraConfigSchema = z.object({
     })
     .default({}),
   reconcileScope: z.enum(["active-sprint-or-all", "all-non-done"]).default("active-sprint-or-all"),
+  blocksLinkName: z.string().min(1).default("Blocks"),
   botAccountId: z.string().optional(),
   webhookSecret: z.string().optional(),
 });
@@ -78,6 +79,14 @@ interface JiraAttachmentRaw {
   mimeType: string;
   size: number;
   content: string;
+}
+
+interface JiraIssueLinkRaw {
+  type?: { name?: string };
+  inwardIssue?: {
+    key?: string;
+    fields?: { status?: { statusCategory?: { key?: string } } };
+  };
 }
 
 interface JiraCommentRaw {
@@ -375,6 +384,31 @@ export class JiraIssueTrackerAdapter implements IssueTracker {
       done = comments.length === 0 || startAt >= (page.total ?? all.length);
     }
     return all;
+  }
+
+  async getBlockedBy(issueId: string): Promise<BlockerRef[]> {
+    const raw = await this.client.request<JiraIssueRaw>(
+      "GET",
+      `/rest/api/3/issue/${encodeURIComponent(issueId)}?fields=issuelinks`,
+    );
+    const links = (raw.fields.issuelinks ?? []) as JiraIssueLinkRaw[];
+    const result: BlockerRef[] = [];
+    for (const link of links) {
+      // inwardIssue present = this issue is on the receiving end of the link
+      // ("is blocked by"); outward links are the mirror direction.
+      if (link.type?.name !== this.config.blocksLinkName || link.inwardIssue === undefined) {
+        continue;
+      }
+      const key = link.inwardIssue.key;
+      if (key === undefined) {
+        continue;
+      }
+      result.push({
+        id: key,
+        closed: link.inwardIssue.fields?.status?.statusCategory?.key === "done",
+      });
+    }
+    return result;
   }
 
   async getComments(issueId: string): Promise<Comment[]> {

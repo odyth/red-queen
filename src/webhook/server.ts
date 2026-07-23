@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -42,6 +43,11 @@ const MAX_BODY_BYTES = 2 * 1024 * 1024;
 export class WebhookServer {
   private readonly deps: WebhookServerDeps;
   private readonly gitRunner: GitRunner;
+  // Serializes retarget+refresh scans across concurrent webhook deliveries:
+  // cascading stack merges or duplicate deliveries would otherwise race on
+  // the same refresh worktree and double-push dependents.
+  // ponytail: global chain — per-issue locks if merge volume ever matters.
+  private refreshChain: Promise<void> = Promise.resolve();
 
   constructor(deps: WebhookServerDeps) {
     this.deps = deps;
@@ -162,6 +168,9 @@ export class WebhookServer {
             message: `phase-change to human gate ${phaseName} — no task created`,
             metadata: { phase: phaseName },
           });
+          // Gate arrival may satisfy a stack blocker — blind-wake parked tasks;
+          // the orchestrator's dequeue gate re-parks anything still blocked.
+          queue.releaseDeferred();
           break;
         }
         const phase = runtime.phaseGraph.getPhase(phaseName);
@@ -330,6 +339,20 @@ export class WebhookServer {
             hadBranch: record.branchName !== null,
           },
         });
+
+        // Stacked dependents: retarget their PRs off the merged branch and
+        // deterministically fold the merged base into their branches.
+        const mergedBranch = extractString(event.payload, "branch") ?? record.branchName;
+        const mergedBase = extractString(event.payload, "base");
+        if (mergedBranch !== null && mergedBase !== null) {
+          const run = this.refreshChain.then(() =>
+            this.retargetAndRefreshDependents(event.issueId, mergedBranch, mergedBase, component),
+          );
+          this.refreshChain = run.catch(() => undefined);
+          await run;
+        }
+
+        queue.releaseDeferred();
         break;
       }
       case "assignment-change": {
@@ -447,6 +470,177 @@ export class WebhookServer {
 
     if (this.deps.onEvent) {
       this.deps.onEvent(event);
+    }
+  }
+
+  // A blocker's PR just merged into mergedBase. Every open dependent PR that
+  // targeted the merged branch gets retargeted to mergedBase, and its branch
+  // gets a deterministic refresh (clean merge + push, zero AI) so the PR diff
+  // is immediately clean — no squash-merge duplication in the
+  // review-at-the-end flow. Conflicts degrade to a PR comment; the next
+  // rework resolves them.
+  private async retargetAndRefreshDependents(
+    mergedIssueId: string,
+    mergedBranch: string,
+    mergedBase: string,
+    component: string,
+  ): Promise<void> {
+    const { pipelineState, sourceControl, queue, audit } = this.deps;
+    for (const rec of pipelineState.listAll()) {
+      // Done records can keep a stale prNumber (non-webhook completion paths
+      // never null it) — skip them so the scan doesn't grow one API call per
+      // completed issue forever.
+      if (rec.issueId === mergedIssueId || rec.prNumber === null || rec.currentPhase === "done") {
+        continue;
+      }
+      let pr;
+      try {
+        pr = await sourceControl.getPullRequest(rec.prNumber);
+      } catch (err) {
+        audit.log({
+          component,
+          issueId: rec.issueId,
+          message: `stack retarget: getPullRequest #${String(rec.prNumber)} failed: ${errorMessage(err)}`,
+          metadata: { prNumber: rec.prNumber },
+        });
+        continue;
+      }
+      if (pr?.state !== "open" || pr.baseBranch !== mergedBranch) {
+        // Includes the auto-retarget race: with head-branch auto-delete,
+        // GitHub can retarget the dependent to mergedBase before this scan
+        // fetches it, skipping the refresh below too. Tolerated — refreshing
+        // every base-targeting PR would push to unrelated branches; the
+        // dependent's next stack setup folds base in (reuse && prBase ===
+        // bareBase) and cleans the diff.
+        continue;
+      }
+
+      try {
+        // Idempotent — harmless if GitHub already auto-retargeted on branch delete.
+        await sourceControl.updatePullRequestBase(pr.number, mergedBase);
+        audit.log({
+          component,
+          issueId: rec.issueId,
+          message: `stack retarget: PR #${String(pr.number)} base ${mergedBranch} → ${mergedBase}`,
+          metadata: { prNumber: pr.number, mergedBase },
+        });
+      } catch (err) {
+        audit.log({
+          component,
+          issueId: rec.issueId,
+          message: `stack retarget: updatePullRequestBase failed: ${errorMessage(err)}`,
+          metadata: { prNumber: pr.number },
+        });
+      }
+
+      if (rec.branchName === null) {
+        continue;
+      }
+      // Race guard: single worker, one scan — a dependent mid-run owns its
+      // branch, so leave the refresh to its own next stack setup. The check is
+      // a snapshot, not a lock: a worker starting mid-refresh can race the
+      // push below. Worst case is a rejected non-fast-forward push that
+      // degrades to the could-not-fold PR comment — tolerated.
+      const working = queue.listByStatus("working").some((t) => t.issueId === rec.issueId);
+      if (working) {
+        audit.log({
+          component,
+          issueId: rec.issueId,
+          message: "stack refresh: skipped — issue has a working task",
+          metadata: { branch: rec.branchName },
+        });
+        continue;
+      }
+      await this.refreshDependentBranch(
+        rec.issueId,
+        rec.branchName,
+        rec.prNumber,
+        mergedBase,
+        component,
+      );
+    }
+  }
+
+  private async refreshDependentBranch(
+    issueId: string,
+    depBranch: string,
+    prNumber: number,
+    mergedBase: string,
+    component: string,
+  ): Promise<void> {
+    const { sourceControl, audit } = this.deps;
+    const projectDir = this.deps.runtime.config.project.directory;
+    const tempWorktree = join(projectDir, ".redqueen", "worktrees", `refresh-${issueId}`);
+    // Self-heal: a crash mid-refresh leaves the temp worktree registered, and
+    // every later add for this issue would fail before reaching the comment.
+    try {
+      await this.gitRunner(["worktree", "remove", "--force", "--", tempWorktree], projectDir);
+    } catch {
+      // nothing stale to remove — the normal case
+    }
+    let created = false;
+    try {
+      // refs/heads/ prefix: ref names may legally start with "-"; never let a
+      // webhook-derived name parse as a git option. Explicit destinations so
+      // origin/<X> materializes even on --single-branch clones, forced so
+      // force-pushed branches don't fail the fetch.
+      await this.gitRunner(
+        [
+          "fetch",
+          "origin",
+          `+refs/heads/${mergedBase}:refs/remotes/origin/${mergedBase}`,
+          `+refs/heads/${depBranch}:refs/remotes/origin/${depBranch}`,
+        ],
+        projectDir,
+      );
+      await this.gitRunner(
+        ["worktree", "add", "--detach", tempWorktree, `origin/${depBranch}`],
+        projectDir,
+      );
+      created = true;
+      await this.gitRunner(["merge", "--no-edit", `origin/${mergedBase}`], tempWorktree);
+      await this.gitRunner(["push", "origin", `HEAD:${depBranch}`], tempWorktree);
+      audit.log({
+        component,
+        issueId,
+        message: `stack refresh: merged ${mergedBase} into ${depBranch} and pushed`,
+        metadata: { branch: depBranch, mergedBase },
+      });
+    } catch (err) {
+      audit.log({
+        component,
+        issueId,
+        message: `stack refresh: could not cleanly fold ${mergedBase} into ${depBranch}: ${errorMessage(err)}`,
+        metadata: { branch: depBranch, mergedBase },
+      });
+      if (created) {
+        try {
+          await sourceControl.postPrComment(
+            prNumber,
+            `stack refresh: could not cleanly fold \`${mergedBase}\` into \`${depBranch}\` (merge conflict or concurrent push) — will be resolved at next rework.`,
+          );
+        } catch (commentErr) {
+          audit.log({
+            component,
+            issueId,
+            message: `stack refresh: conflict comment failed: ${errorMessage(commentErr)}`,
+            metadata: { prNumber },
+          });
+        }
+      }
+    } finally {
+      if (created) {
+        try {
+          await this.gitRunner(["worktree", "remove", "--force", "--", tempWorktree], projectDir);
+        } catch (err) {
+          audit.log({
+            component,
+            issueId,
+            message: `stack refresh: temp worktree removal failed: ${errorMessage(err)}`,
+            metadata: { tempWorktree },
+          });
+        }
+      }
     }
   }
 }

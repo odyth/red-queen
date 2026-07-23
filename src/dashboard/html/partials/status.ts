@@ -17,11 +17,12 @@ export function renderStatusPartial(): string {
       <dt>Errors</dt><dd id="stat-errors">0</dd>
       <dt>Ready</dt><dd id="stat-ready">0</dd>
       <dt>Working</dt><dd id="stat-working">0</dd>
+      <dt>Deferred</dt><dd id="stat-deferred">0</dd>
       <dt>Started</dt><dd id="stat-started" class="muted">—</dd>
     </dl>
   </section>
   <section class="span2">
-    <h2>Queue (ready)</h2>
+    <h2>Queue (ready + deferred)</h2>
     <ul id="queue"><li class="empty">(empty)</li></ul>
   </section>
   <section class="span2">

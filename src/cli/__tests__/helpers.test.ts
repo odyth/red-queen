@@ -7,6 +7,7 @@ import { cmdIssue } from "../issue.js";
 import { cmdPipeline } from "../pipeline.js";
 import { cmdPr } from "../pr.js";
 import { cmdSpec } from "../spec.js";
+import { cmdStack } from "../stack.js";
 import { cmdSubIter } from "../sub-iter.js";
 
 let tmp: string;
@@ -76,6 +77,16 @@ describe("cmdPipeline update + cleanup", () => {
     const out = stdoutCapture.join("");
     const parsed = JSON.parse(out) as { ok: boolean };
     expect(parsed.ok).toBe(true);
+  });
+});
+
+describe("cmdStack setup", () => {
+  it("wraps unexpected git failures in a JSON error with exit code 1", async () => {
+    // tmp has no origin remote, so the ls-remote inside setup fails.
+    await expect(cmdStack(["setup", "ISSUE-1"])).rejects.toMatchObject({ exitCode: 1 });
+    const parsed = JSON.parse(stdoutCapture.join("")) as { status: string; message: string };
+    expect(parsed.status).toBe("error");
+    expect(parsed.message).toContain("ls-remote");
   });
 });
 

@@ -1,4 +1,6 @@
 import { parseArgs } from "node:util";
+import { buildPhaseGraph } from "../core/config.js";
+import { bareBaseBranch, resolveStack, terminalGateNames } from "../core/stack.js";
 import type { Review } from "../integrations/source-control.js";
 import { loadCliContext } from "./context.js";
 import { CliError } from "./errors.js";
@@ -65,11 +67,39 @@ async function cmdPrCreate(args: string[]): Promise<void> {
 
   const ctx = loadCliContext();
   try {
+    // Stacked issues target the nearest unmerged blocker's branch, and the
+    // stack may have shifted since dispatch (a blocker merged mid-run) — so
+    // recompute the base fresh; the coder's --base is the fallback.
+    let resolvedBase = base;
+    try {
+      const resolution = await resolveStack(
+        issueId,
+        bareBaseBranch(ctx.config.pipeline.baseBranch),
+        {
+          getBlockedBy: (id) => ctx.issueTracker.getBlockedBy(id),
+          getPipelineRecord: (id) => ctx.pipelineState.get(id),
+          getTrackerPhase: (id) => ctx.issueTracker.getPhase(id),
+          terminalGates: terminalGateNames(buildPhaseGraph(ctx.config.phases)),
+        },
+      );
+      // Only stacked issues get overridden — a non-stacked --base (possibly a
+      // deliberate custom target) passes through untouched.
+      if (resolution.ok && resolution.directBlockers.length > 0) {
+        resolvedBase = resolution.prBase;
+      }
+    } catch (err) {
+      ctx.audit.log({
+        component: "helper:pr",
+        issueId,
+        message: `pr create: stack base recompute failed — keeping --base ${base}: ${err instanceof Error ? err.message : String(err)}`,
+        metadata: { base },
+      });
+    }
     const pr = await ctx.sourceControl.createPullRequest({
       title,
       body,
       head,
-      base,
+      base: resolvedBase,
       draft: values.draft === true,
     });
     const existing = ctx.pipelineState.get(issueId);
@@ -83,8 +113,8 @@ async function cmdPrCreate(args: string[]): Promise<void> {
     ctx.audit.log({
       component: "helper:pr",
       issueId,
-      message: `Created PR #${String(pr.number)} from ${head} → ${base}`,
-      metadata: { prNumber: pr.number, head, base, url: pr.url },
+      message: `Created PR #${String(pr.number)} from ${head} → ${resolvedBase}`,
+      metadata: { prNumber: pr.number, head, base: resolvedBase, url: pr.url },
     });
     writeJson(pr, values.pretty === true);
   } finally {

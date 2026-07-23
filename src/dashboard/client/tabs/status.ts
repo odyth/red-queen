@@ -72,6 +72,7 @@ function setStats(s: StatusPayload): void {
     ["#stat-errors", s.errorCount],
     ["#stat-ready", s.readyCount],
     ["#stat-working", s.workingCount],
+    ["#stat-deferred", s.deferredCount],
     ["#stat-started", s.startedAt ?? "—"],
   ];
   for (const [sel, value] of fields) {
@@ -97,7 +98,11 @@ function setQueue(items: TaskSummary[] | null): void {
         t.description !== null && t.description !== ""
           ? ` <span class="muted">— ${escapeHtml(t.description)}</span>`
           : "";
-      return `<li><strong>${escapeHtml(t.issueId ?? "—")}</strong> · ${escapeHtml(t.type)}${descr}</li>`;
+      const parked =
+        t.status === "deferred"
+          ? ` <span class="muted">(deferred${t.blockedOn !== null && t.blockedOn.length > 0 ? `: blocked on ${escapeHtml(t.blockedOn.join(", "))}` : ""})</span>`
+          : "";
+      return `<li><strong>${escapeHtml(t.issueId ?? "—")}</strong> · ${escapeHtml(t.type)}${descr}${parked}</li>`;
     })
     .join("");
 }

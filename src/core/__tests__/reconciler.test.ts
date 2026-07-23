@@ -124,4 +124,15 @@ describe("reconcile", () => {
     expect(result.tasksCreated).toBe(1);
     expect(queue.hasOpenTask("PROJ-3", "spec-writing")).toBe(true);
   });
+
+  it("releases deferred tasks on every sweep", async () => {
+    const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
+    const issueTracker = new MockIssueTracker();
+    const task = queue.enqueue({ type: "coding", issueId: "PROJ-9" });
+    queue.markDeferred(task.id, ["PROJ-8"]);
+
+    await reconcile({ issueTracker, queue, runtime, pipelineState, audit });
+
+    expect(queue.getTask(task.id)?.status).toBe("ready");
+  });
 });

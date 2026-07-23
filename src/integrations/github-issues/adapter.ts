@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { Comment, CostBreakdown, PipelineEvent, ValidationResult } from "../../core/types.js";
 import { renderBreakdownMarkdown } from "../../core/cost-markdown.js";
-import type { Attachment, Issue, IssueTracker } from "../issue-tracker.js";
+import type { Attachment, BlockerRef, Issue, IssueTracker } from "../issue-tracker.js";
 import { parseGitHubWebhookEvent, validateGitHubWebhook } from "../github/webhook.js";
 import type { GitHubAuthStrategy, GitHubIdentity } from "../github/auth.js";
 import { GitHubAuthConfigSchema } from "../github/auth/config.js";
@@ -80,6 +80,10 @@ export class GitHubIssuesAdapter implements IssueTracker {
   }
 
   async getPhase(issueId: string): Promise<string | null> {
+    // Cross-repo blockers have no phase visibility from this instance.
+    if (isCrossRepoId(issueId)) {
+      return null;
+    }
     const issue = await this.getIssue(issueId);
     return issue.phase;
   }
@@ -254,6 +258,61 @@ export class GitHubIssuesAdapter implements IssueTracker {
     );
   }
 
+  async getBlockedBy(issueId: string): Promise<BlockerRef[]> {
+    // Own cross-repo format from blockerIdFor — this instance can't see
+    // foreign repos' dependency graphs; the closed-fallback rule governs
+    // those blockers via the `closed` flag captured at emit time.
+    if (isCrossRepoId(issueId)) {
+      return [];
+    }
+    const number = parseIssueId(issueId);
+    try {
+      // paginate, not a single request: a truncated blocker list silently
+      // treats blocker #101 as satisfied.
+      const items: BlockedByItemRaw[] = await this.client.call(
+        `GET /repos/${this.owner}/${this.repo}/issues/${String(number)}/dependencies/blocked_by`,
+        () =>
+          this.client.paginate(
+            "GET /repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocked_by",
+            {
+              owner: this.owner,
+              repo: this.repo,
+              issue_number: number,
+              per_page: 100,
+              headers: { "X-GitHub-Api-Version": "2026-03-10" },
+            },
+          ),
+      );
+      return items.map((item) => ({
+        id: this.blockerIdFor(item),
+        closed: item.state === "closed",
+      }));
+    } catch (err) {
+      // ponytail: 404 = dependencies API unavailable on this plan/repo — treat
+      // as "no dependencies" rather than blocking the pipeline.
+      if (isNotFound(err)) {
+        this.audit(`getBlockedBy: dependencies API unavailable (404) for ${issueId}`, {});
+        return [];
+      }
+      throw err;
+    }
+  }
+
+  // Same-repo blockers use the adapter's own `#N` id format so pipeline
+  // records match; cross-repo blockers get `owner/repo#N` — collision-proof,
+  // and never resolvable to a pipeline record, so the closed-fallback rule
+  // governs them.
+  private blockerIdFor(item: BlockedByItemRaw): string {
+    const fullName = item.repository?.full_name ?? repoFullNameFromUrl(item.repository_url);
+    if (
+      fullName === null ||
+      fullName.toLowerCase() === `${this.owner}/${this.repo}`.toLowerCase()
+    ) {
+      return `#${String(item.number)}`;
+    }
+    return `${fullName}#${String(item.number)}`;
+  }
+
   async getComments(issueId: string): Promise<Comment[]> {
     const number = parseIssueId(issueId);
     const comments = (await this.client.paginate(this.client.rest.issues.listComments, {
@@ -415,6 +474,30 @@ export class GitHubIssuesAdapter implements IssueTracker {
   }
 }
 
+interface BlockedByItemRaw {
+  number: number;
+  state?: string;
+  repository?: { full_name?: string };
+  repository_url?: string;
+}
+
+function repoFullNameFromUrl(url: string | undefined): string | null {
+  if (url === undefined) {
+    return null;
+  }
+  const marker = "/repos/";
+  const idx = url.indexOf(marker);
+  if (idx === -1) {
+    return null;
+  }
+  const rest = url.slice(idx + marker.length);
+  const [ownerPart, repoPart] = rest.split("/");
+  if (ownerPart === undefined || repoPart === undefined || repoPart === "") {
+    return null;
+  }
+  return `${ownerPart}/${repoPart}`;
+}
+
 interface IssueRaw {
   number: number;
   title: string;
@@ -451,6 +534,12 @@ function toIssue(raw: IssueRaw): Issue {
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,
   };
+}
+
+// The adapter's own cross-repo blocker format ("owner/repo#N", see
+// blockerIdFor). Same-repo ids ("#N") never contain a slash.
+function isCrossRepoId(issueId: string): boolean {
+  return issueId.includes("/");
 }
 
 function parseIssueId(issueId: string): number {

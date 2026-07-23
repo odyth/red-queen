@@ -14,6 +14,14 @@ export interface Issue {
   updatedAt: string;
 }
 
+// A direct blocker of an issue ("is blocked by" edge). `closed` reflects the
+// tracker's own done/closed state so satisfaction can fall back on it for
+// blockers Red Queen never processed.
+export interface BlockerRef {
+  id: string;
+  closed: boolean;
+}
+
 export interface Attachment {
   id: string;
   filename: string;
@@ -43,6 +51,10 @@ export interface IssueTracker {
   // Comments
   addComment(issueId: string, body: string): Promise<void>;
   getComments(issueId: string): Promise<Comment[]>;
+
+  // Dependencies — direct "is blocked by" edges (Jira Blocks links, GitHub
+  // native issue dependencies). Read fresh on every evaluation; never cached.
+  getBlockedBy(issueId: string): Promise<BlockerRef[]>;
 
   // Cost reporting — publishes the per-phase breakdown and total.
   // Adapters choose native storage (Jira custom fields, GitHub marker comment).

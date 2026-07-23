@@ -721,3 +721,226 @@ describe("WebhookServer custom paths", () => {
     expect(res.status).toBe(404);
   });
 });
+
+describe("WebhookServer pr-merged stack retarget + refresh", () => {
+  let db4: BetterSqlite3.Database;
+  let tempDir4: string;
+  let queue4: SqliteTaskQueue;
+  let pipelineState4: PipelineStateStore;
+  let dashboard4: DashboardServer;
+  let port4: number;
+  let sourceControl4: MockSourceControl;
+  let gitCalls4: { args: string[]; cwd: string }[];
+  let failOnMerge: boolean;
+
+  beforeEach(async () => {
+    tempDir4 = mkdtempSync(join(tmpdir(), "rq-webhook-stack-"));
+    db4 = new Database(":memory:");
+    db4.exec(SCHEMA_SQL);
+    queue4 = new SqliteTaskQueue(db4);
+    pipelineState4 = new PipelineStateStore(db4);
+    const orchestratorState4 = new OrchestratorStateStore(db4);
+    const audit4 = new DualWriteAuditLogger(db4, join(tempDir4, "audit.log"));
+    const issueTracker4 = new MockIssueTracker();
+    sourceControl4 = new MockSourceControl();
+    gitCalls4 = [];
+    failOnMerge = false;
+    port4 = await getFreePort();
+    dashboard4 = new DashboardServer(
+      { queue: queue4, orchestratorState: orchestratorState4, audit: audit4 },
+      {
+        host: "127.0.0.1",
+        port: port4,
+        enableDashboardUi: true,
+        allowNonLoopback: false,
+        allowedHosts: [],
+      },
+    );
+    await dashboard4.start();
+    const config = makeTestConfig({
+      project: {
+        buildCommand: "npm run build",
+        testCommand: "npm test",
+        directory: tempDir4,
+      },
+    });
+    const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), config);
+    const webhook = new WebhookServer({
+      issueTracker: issueTracker4,
+      sourceControl: sourceControl4,
+      queue: queue4,
+      pipelineState: pipelineState4,
+      runtime,
+      audit: audit4,
+      gitRunner: (args, cwd) => {
+        gitCalls4.push({ args, cwd });
+        if (failOnMerge && args[0] === "merge") {
+          return Promise.reject(new Error("merge conflict"));
+        }
+        return Promise.resolve();
+      },
+    });
+    webhook.register(dashboard4);
+
+    // Merged blocker PROJ-200 (feature/PROJ-200 → main).
+    pipelineState4.create("PROJ-200", "human-review");
+    pipelineState4.updateBranchInfo("PROJ-200", {
+      branchName: "feature/PROJ-200",
+      prNumber: 42,
+    });
+    sourceControl4.parseResult = {
+      source: "webhook",
+      type: "pr-merged",
+      issueId: "PROJ-200",
+      timestamp: new Date().toISOString(),
+      payload: { branch: "feature/PROJ-200", base: "main" },
+    };
+  });
+
+  afterEach(async () => {
+    await dashboard4.stop();
+    db4.close();
+    rmSync(tempDir4, { recursive: true, force: true });
+  });
+
+  function seedDependent(issueId: string, prNumber: number, base: string, state = "open"): void {
+    pipelineState4.create(issueId, "human-review");
+    pipelineState4.updateBranchInfo(issueId, {
+      branchName: `feature/${issueId}`,
+      prNumber,
+    });
+    sourceControl4.prs.set(prNumber, {
+      number: prNumber,
+      title: issueId,
+      state,
+      headBranch: `feature/${issueId}`,
+      baseBranch: base,
+      url: `https://example.com/pr/${String(prNumber)}`,
+      reviewDecision: null,
+    });
+  }
+
+  async function fireMerge(): Promise<void> {
+    await fetch(`http://127.0.0.1:${String(port4)}/webhook/source-control`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    await new Promise((r) => setTimeout(r, 50));
+  }
+
+  it("retargets the matching open PR and pushes a clean refresh", async () => {
+    seedDependent("PROJ-201", 43, "feature/PROJ-200");
+    seedDependent("PROJ-202", 44, "main");
+    seedDependent("PROJ-203", 45, "feature/PROJ-200", "closed");
+
+    await fireMerge();
+
+    expect(sourceControl4.calls).toContain("updatePullRequestBase:43:main");
+    expect(sourceControl4.calls).not.toContain("updatePullRequestBase:44:main");
+    expect(sourceControl4.calls).not.toContain("updatePullRequestBase:45:main");
+    expect(sourceControl4.prs.get(43)?.baseBranch).toBe("main");
+    expect(sourceControl4.prs.get(44)?.baseBranch).toBe("main");
+
+    const flat = gitCalls4.map((c) => c.args.join(" "));
+    expect(flat).toContain(
+      "fetch origin +refs/heads/main:refs/remotes/origin/main +refs/heads/feature/PROJ-201:refs/remotes/origin/feature/PROJ-201",
+    );
+    expect(flat.some((c) => c.startsWith("worktree add --detach"))).toBe(true);
+    expect(flat).toContain("merge --no-edit origin/main");
+    expect(flat).toContain("push origin HEAD:feature/PROJ-201");
+    // Pre-emptive remove (self-heal for stale temp worktrees) plus the finally
+    // cleanup — and the pre-emptive one lands before the add.
+    expect(flat.filter((c) => c.startsWith("worktree remove"))).toHaveLength(2);
+    expect(flat.findIndex((c) => c.startsWith("worktree remove"))).toBeLessThan(
+      flat.findIndex((c) => c.startsWith("worktree add")),
+    );
+    expect(flat.some((c) => c.includes("feature/PROJ-202"))).toBe(false);
+    expect(flat.some((c) => c.includes("feature/PROJ-203"))).toBe(false);
+  });
+
+  it("still retargets but skips the refresh when the dependent has a working task", async () => {
+    seedDependent("PROJ-201", 43, "feature/PROJ-200");
+    const task = queue4.enqueue({ type: "coding", issueId: "PROJ-201" });
+    queue4.markWorking(task.id);
+
+    await fireMerge();
+
+    expect(sourceControl4.calls).toContain("updatePullRequestBase:43:main");
+    const flat = gitCalls4.map((c) => c.args.join(" "));
+    expect(flat.some((c) => c.startsWith("push"))).toBe(false);
+    expect(flat.some((c) => c.includes("refresh-PROJ-201"))).toBe(false);
+  });
+
+  it("comments on the PR instead of pushing when the refresh merge conflicts", async () => {
+    failOnMerge = true;
+    seedDependent("PROJ-201", 43, "feature/PROJ-200");
+
+    await fireMerge();
+
+    const flat = gitCalls4.map((c) => c.args.join(" "));
+    expect(flat.some((c) => c.startsWith("push"))).toBe(false);
+    expect(flat.some((c) => c.startsWith("worktree remove"))).toBe(true);
+    expect(sourceControl4.prComments).toHaveLength(1);
+    expect(sourceControl4.prComments[0]?.prNumber).toBe(43);
+    expect(sourceControl4.prComments[0]?.body).toContain("stack refresh");
+  });
+
+  it("skips done records with stale prNumbers — no lookup, no retarget", async () => {
+    seedDependent("PROJ-205", 47, "feature/PROJ-200");
+    pipelineState4.updatePhase("PROJ-205", "done");
+
+    await fireMerge();
+
+    expect(sourceControl4.calls).not.toContain("updatePullRequestBase:47:main");
+  });
+
+  it("tolerates a getPullRequest failure and keeps scanning", async () => {
+    seedDependent("PROJ-201", 43, "feature/PROJ-200");
+    seedDependent("PROJ-204", 46, "feature/PROJ-200");
+    sourceControl4.getPullRequestThrowsFor.add(43);
+
+    await fireMerge();
+
+    expect(sourceControl4.calls).not.toContain("updatePullRequestBase:43:main");
+    expect(sourceControl4.calls).toContain("updatePullRequestBase:46:main");
+  });
+
+  it("releases deferred tasks after the merge", async () => {
+    const parked = queue4.enqueue({ type: "coding", issueId: "PROJ-300" });
+    queue4.markDeferred(parked.id, ["PROJ-200"]);
+
+    await fireMerge();
+
+    expect(queue4.getTask(parked.id)?.status).toBe("ready");
+  });
+
+  it("serializes concurrent pr-merged scans — duplicate delivery refreshes once", async () => {
+    seedDependent("PROJ-201", 43, "feature/PROJ-200");
+    // Slow the PR lookup and snapshot its result so an unserialized second
+    // scan captures the pre-retarget base and passes the base-match check —
+    // the cascading-merge / duplicate-delivery race window.
+    const orig = sourceControl4.getPullRequest.bind(sourceControl4);
+    sourceControl4.getPullRequest = async (prNumber: number) => {
+      const pr = await orig(prNumber);
+      const snapshot = pr === null ? null : { ...pr };
+      await new Promise((r) => setTimeout(r, 25));
+      return snapshot;
+    };
+
+    const post = (): Promise<Response> =>
+      fetch(`http://127.0.0.1:${String(port4)}/webhook/source-control`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+    await Promise.all([post(), post()]);
+    await new Promise((r) => setTimeout(r, 200));
+
+    const flat = gitCalls4.map((c) => c.args.join(" "));
+    expect(flat.filter((c) => c.startsWith("push"))).toHaveLength(1);
+    expect(sourceControl4.calls.filter((c) => c === "updatePullRequestBase:43:main")).toHaveLength(
+      1,
+    );
+  });
+});

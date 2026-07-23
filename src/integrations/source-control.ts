@@ -52,6 +52,9 @@ export interface SourceControl {
   getPullRequest(prNumber: number): Promise<PullRequest | null>;
   getPullRequestDiff(prNumber: number): Promise<string>;
   mergePullRequest(prNumber: number): Promise<void>;
+  // Retarget an open PR onto a new base branch (stacked dependents after
+  // their blocker merges). Idempotent.
+  updatePullRequestBase(prNumber: number, base: string): Promise<void>;
 
   // Review operations
   postReview(prNumber: number, body: string, verdict: "approve" | "request-changes"): Promise<void>;

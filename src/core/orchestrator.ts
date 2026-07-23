@@ -13,6 +13,8 @@ import { reconcile } from "./reconciler.js";
 import { autoTransitionRework } from "./rework-transition.js";
 import { createModuleResolver } from "./module-resolver.js";
 import type { RuntimeState } from "./runtime-state.js";
+import { bareBaseBranch, resolveStack, terminalGateNames } from "./stack.js";
+import type { StackResolution } from "./stack.js";
 import type { ServiceInstallContext, ServiceManager } from "./service/index.js";
 import {
   buildSkillContext,
@@ -92,6 +94,7 @@ export class RedQueen {
   private sigHandler: ((sig: NodeJS.Signals) => void) | null = null;
   private tempDir: string | null = null;
   private lastAuditPruneMs = 0;
+  private lastDeferredReleaseMs = 0;
 
   constructor(deps: RedQueenDeps) {
     this.deps = deps;
@@ -263,6 +266,7 @@ export class RedQueen {
     while (this.shuttingDown === false) {
       this.deps.orchestratorState.setLastPoll(new Date(this.now()).toISOString());
       this.maybePruneAudit();
+      this.maybeReleaseDeferred();
       let task: Task | null;
       try {
         task = this.deps.queue.dequeue();
@@ -376,6 +380,13 @@ export class RedQueen {
       return;
     }
 
+    // Staleness wins over deferral: a task for a phase the ticket already
+    // left should die as stale, not park as deferred.
+    const stackGate = await this.guardStackBlockers(task, phase);
+    if (stackGate.action === "deferred") {
+      return;
+    }
+
     if (
       phase.requiresSpec === true &&
       (await this.guardRequiresSpec(task, phase)) === "kicked-back"
@@ -383,7 +394,128 @@ export class RedQueen {
       return;
     }
 
-    await this.dispatchWorkerForTask(task, phase);
+    await this.dispatchWorkerForTask(task, phase, stackGate.stack);
+  }
+
+  // Dequeue-time stack gate: a task whose issue has unsatisfied blockers parks
+  // as 'deferred' without launching a worker. Re-evaluated fresh on every
+  // dispatch attempt — link edits, merges, and gate arrivals are all picked up
+  // the next time the task is released back to ready.
+  private async guardStackBlockers(
+    task: Task,
+    phase: PhaseDefinition,
+  ): Promise<{ action: "proceed"; stack: StackResolution | null } | { action: "deferred" }> {
+    const issueId = task.issueId;
+    if (issueId === null) {
+      return { action: "proceed", stack: null };
+    }
+
+    let resolution: StackResolution;
+    try {
+      resolution = await resolveStack(
+        issueId,
+        bareBaseBranch(this.deps.runtime.config.pipeline.baseBranch),
+        {
+          getBlockedBy: (id) => this.deps.issueTracker.getBlockedBy(id),
+          getPipelineRecord: (id) => this.deps.pipelineState.get(id),
+          getTrackerPhase: (id) => this.deps.issueTracker.getPhase(id),
+          terminalGates: terminalGateNames(this.deps.runtime.phaseGraph),
+        },
+      );
+    } catch (err) {
+      // Fail-closed on purpose: fail-open would start genuinely blocked work.
+      // The deferred-release sweep retries in ≤5 min.
+      const blockedOn = ["<resolve-error>"];
+      const changed = JSON.stringify(task.blockedOn) !== JSON.stringify(blockedOn);
+      this.deps.queue.markDeferred(task.id, blockedOn);
+      this.deps.audit.log({
+        component: "orchestrator",
+        issueId,
+        message: `Stack resolution failed — deferring ${phase.name}: ${errorMessage(err)}`,
+        metadata: { taskId: task.id, phase: phase.name },
+      });
+      // Permanent failures (deleted issue, revoked access) retry forever and
+      // are otherwise invisible on the tracker — surface the park once,
+      // deduped via the stored blocked_on like the cycle comment below.
+      if (changed) {
+        try {
+          await this.deps.issueTracker.addComment(
+            issueId,
+            `Red Queen: this issue is parked — dependency resolution failed: ${errorMessage(err)}. It will retry automatically; fix the dependency links or tracker access to unpark it.`,
+          );
+        } catch (commentErr) {
+          this.deps.audit.log({
+            component: "orchestrator",
+            issueId,
+            message: `Failed to post resolve-error comment: ${errorMessage(commentErr)}`,
+            metadata: { taskId: task.id },
+          });
+        }
+      }
+      this.emitQueueChanged();
+      return { action: "deferred" };
+    }
+
+    if (resolution.directBlockers.length === 0) {
+      return { action: "proceed", stack: null };
+    }
+    if (resolution.ok) {
+      // All blockers merged/closed with nothing to assemble → behave exactly
+      // like a non-stacked issue (branch from base, no stack context).
+      if (resolution.mergeBranches.length === 0) {
+        return { action: "proceed", stack: null };
+      }
+      this.deps.audit.log({
+        component: "orchestrator",
+        issueId,
+        message: `Stack resolved: merging [${resolution.mergeBranches.join(", ")}], PR base ${resolution.prBase}`,
+        metadata: { taskId: task.id, phase: phase.name },
+      });
+      return { action: "proceed", stack: resolution };
+    }
+
+    const blockedOn = [
+      ...resolution.unsatisfied,
+      ...resolution.problems.map((p) => p.issueId),
+      ...(resolution.cycle === null ? [] : ["<cycle>"]),
+    ];
+    const changed = JSON.stringify(task.blockedOn) !== JSON.stringify(blockedOn);
+    this.deps.queue.markDeferred(task.id, blockedOn);
+    this.deps.audit.log({
+      component: "orchestrator",
+      issueId,
+      message: `Deferred ${phase.name} — blocked on [${blockedOn.join(", ")}]`,
+      metadata: { taskId: task.id, phase: phase.name, blockedOn },
+    });
+
+    // One tracker comment per park-state change, deduped via the stored
+    // blocked_on column — plain waits included: pre-dispatch already moved
+    // the ticket into the phase and assigned the AI, so a silent park reads
+    // as "in progress" on the tracker for however long the blockers sit.
+    if (changed) {
+      const lines: string[] = ["Red Queen: this issue is parked by its dependencies."];
+      if (resolution.cycle !== null) {
+        lines.push(`- Dependency cycle: ${resolution.cycle.join(" → ")}`);
+      }
+      for (const problem of resolution.problems) {
+        lines.push(`- ${problem.issueId}: ${problem.detail} (${problem.kind})`);
+      }
+      if (resolution.unsatisfied.length > 0) {
+        lines.push(`- Waiting on: ${resolution.unsatisfied.join(", ")}`);
+      }
+      try {
+        await this.deps.issueTracker.addComment(issueId, lines.join("\n"));
+      } catch (err) {
+        this.deps.audit.log({
+          component: "orchestrator",
+          issueId,
+          message: `Failed to post stack-blocked comment: ${errorMessage(err)}`,
+          metadata: { taskId: task.id },
+        });
+      }
+    }
+    this.emitQueueChanged();
+    return { action: "deferred" };
   }
 
   private async processNewTicketTask(task: Task): Promise<void> {
@@ -711,7 +843,11 @@ export class RedQueen {
     );
   }
 
-  private async dispatchWorkerForTask(task: Task, phase: PhaseDefinition): Promise<void> {
+  private async dispatchWorkerForTask(
+    task: Task,
+    phase: PhaseDefinition,
+    stack: StackResolution | null,
+  ): Promise<void> {
     const issueId = task.issueId;
     if (issueId === null) {
       return;
@@ -793,6 +929,7 @@ export class RedQueen {
       phaseName: phase.name,
       issueType,
       resolveModule: this.moduleResolver,
+      stack,
     });
     const promptBody = renderSkillPrompt(context, skillMarkdown);
 
@@ -1160,6 +1297,7 @@ export class RedQueen {
             metadata: { taskId: task.id, newPhase },
           });
         });
+      this.deps.queue.releaseDeferred();
       return;
     }
     if (this.deps.queue.hasOpenTask(issueId, newPhase) === false) {
@@ -1181,6 +1319,7 @@ export class RedQueen {
         message: `Pipeline complete`,
         metadata: { taskId: task.id },
       });
+      this.deps.queue.releaseDeferred();
       return;
     }
 
@@ -1227,6 +1366,7 @@ export class RedQueen {
             message: `Pipeline complete`,
             metadata: { taskId: task.id },
           });
+          this.deps.queue.releaseDeferred();
           return;
         }
         const resolved = this.deps.runtime.phaseGraph.getPhase(skipTarget);
@@ -1271,6 +1411,10 @@ export class RedQueen {
           description: `Auto-created after ${phase.name} completed`,
         });
       }
+    } else {
+      // Arrived at a human gate — a blocker may just have become satisfied.
+      // Blind wake: the dequeue-time stack gate re-parks anything still blocked.
+      this.deps.queue.releaseDeferred();
     }
   }
 
@@ -1685,6 +1829,30 @@ export class RedQueen {
         message: `Pruned ${String(removed)} audit entries older than ${String(retentionDays)} days`,
         metadata: { removed, retentionDays },
       });
+    }
+  }
+
+  // Liveness floor for parked tasks: even with webhooks off and the poller
+  // disabled, deferred tasks get re-evaluated on a throttled sweep. Blind
+  // release is safe — the dequeue-time stack gate is the sole authority, and
+  // wrongly-woken tasks just re-park.
+  private maybeReleaseDeferred(): void {
+    const reconcileInterval = this.deps.runtime.config.pipeline.reconcileInterval;
+    const intervalMs = reconcileInterval > 0 ? reconcileInterval * 1000 : 300_000;
+    const now = this.now();
+    if (now - this.lastDeferredReleaseMs < intervalMs) {
+      return;
+    }
+    this.lastDeferredReleaseMs = now;
+    const released = this.deps.queue.releaseDeferred();
+    if (released > 0) {
+      this.deps.audit.log({
+        component: "orchestrator",
+        issueId: null,
+        message: `Deferred sweep released ${String(released)} parked task(s) for re-evaluation`,
+        metadata: { released },
+      });
+      this.emitQueueChanged();
     }
   }
 

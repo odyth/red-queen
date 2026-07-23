@@ -144,7 +144,7 @@ export class PhaseGraph {
 
 // --- Task types ---
 
-export type TaskStatus = "ready" | "working" | "complete" | "failed";
+export type TaskStatus = "ready" | "working" | "complete" | "failed" | "deferred";
 
 export interface Task {
   id: string;
@@ -158,6 +158,9 @@ export interface Task {
   result: string | null;
   retryCount: number;
   metadata: Record<string, unknown>;
+  // Issue ids this task is parked on (stack blockers), or a marker like
+  // "<cycle>"/"<resolve-error>". Kept after release as dedup memory/display.
+  blockedOn: string[] | null;
 }
 
 export interface NewTask {
@@ -231,6 +234,12 @@ export interface SkillContext {
   maxIterations: number;
   codebaseMapPath: string | null;
   projectDir: string;
+  // Stacked issues only — omitted entirely for non-stacked issues so their
+  // rendered prompts stay byte-identical. Direct blocker ids and the branch
+  // the PR should target. Merge branches are recomputed by `stack setup` at
+  // run time, so they're deliberately not carried here.
+  stackBlockedBy?: string[];
+  stackPrBase?: string;
 }
 
 // --- Events ---
