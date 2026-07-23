@@ -1,13 +1,14 @@
 # Red Queen
 
-> Deterministic orchestrator for AI coding agents. Red Queen is to Claude
-> Code what Jenkins is to bash — a zero-token state machine shuttles
+> Deterministic orchestrator for AI coding agents. Red Queen is to your
+> coding agent what Jenkins is to bash — a zero-token state machine shuttles
 > isolated AI workers through a configurable SDLC pipeline: spec writing,
 > automated plan review, human spec review, coding, code review, testing,
 > and human review. Phases, skills, and gates are declared in
 > `redqueen.yaml`. Open source, MIT-licensed, self-hosted on Node.js 24+.
-> Ships integrations for GitHub Issues, Jira, and GitHub source control;
-> dispatches Claude Code workers today.
+> Ships integrations for GitHub Issues, Jira, and GitHub source control.
+> Workers run on Claude Code or Codex, selectable per phase; issues linked
+> as blockers become stacked PRs targeting the nearest unreviewed ancestor.
 
 ## Site
 
