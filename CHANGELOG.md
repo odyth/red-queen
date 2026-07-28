@@ -20,6 +20,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Stacked dependents are no longer skipped when GitHub wins the retarget
+  race. `retargetAndRefreshDependents` identified a dependent purely by its
+  PR still pointing at the merged branch, but with head-branch auto-delete
+  GitHub moves the dependent onto the merged PR's base within seconds of the
+  merge — usually before the scan fetches it — so the deterministic refresh
+  never ran and the dependent PR was left conflicting. Red Queen now persists
+  the base selected when each PR is created, so a PR already sitting on the
+  merged base is refreshed only when that prior-base record proves GitHub
+  retargeted it. This avoids touching scheduling-only dependencies and removes
+  the per-PR issue-tracker lookup fan-out.
+- A `pr-merged` event that never arrives (event not subscribed on the repo
+  webhook, failed delivery, crash between the 200 and dispatch) used to
+  strand the issue mid-pipeline forever: nothing else in Red Queen read PR
+  merge state, so the worktree stayed live, the branch was never cleaned up
+  and stacked dependents were never refreshed. Startup and every poll tick
+  now replay merged-but-unprocessed PRs from GitHub, and log which PR
+  triggered the replay so a broken webhook is visible instead of silent.
+  This runs with webhooks disabled too — a poll-only deployment previously
+  had no merge handling at all. The scan is bounded and drained during
+  shutdown; cleanup waits for an active worker, cancels pending tasks after a
+  merge, and ignores PRs retained from an earlier completed pipeline run.
 - `skipRetryOnFailure` was silently unusable from YAML: the strict phase
   schema rejected it even though the default `code-review` phase relies on
   it. Copying the default phases into `redqueen.yaml` no longer errors.

@@ -133,7 +133,12 @@ describe("parseGitHubWebhookEvent", () => {
     const payload = JSON.stringify({
       action: "closed",
       sender: { login: "human", id: 2 },
-      pull_request: { merged: true, head: { ref: "feature/123" } },
+      pull_request: {
+        number: 77,
+        merged: true,
+        head: { ref: "feature/123" },
+        base: { ref: "main" },
+      },
     });
     const result = parseGitHubWebhookEvent(
       { identity },
@@ -142,6 +147,11 @@ describe("parseGitHubWebhookEvent", () => {
     );
     expect(result?.type).toBe("pr-merged");
     expect(result?.issueId).toBe("#123");
+    expect(result?.payload).toEqual({
+      branch: "feature/123",
+      base: "main",
+      prNumber: 77,
+    });
   });
 
   it("returns phase-change on label add", () => {

@@ -31,6 +31,8 @@ describe("PipelineStateStore", () => {
     expect(record.currentPhase).toBeNull();
     expect(record.branchName).toBeNull();
     expect(record.prNumber).toBeNull();
+    expect(record.prBaseBranch).toBeNull();
+    expect(record.terminalPrNumber).toBeNull();
     expect(record.reviewIterations).toBe(0);
     expect(record.feedbackIterations).toBe(0);
   });
@@ -94,6 +96,77 @@ describe("PipelineStateStore", () => {
     record = store.get("PROJ-1");
     expect(record?.currentPhase).toBe("coding");
     expect(record?.priorPhase).toBe("code-review");
+  });
+
+  it("markDone records the terminal PR identity for safe re-entry", () => {
+    store.create("PROJ-1", "human-review");
+    store.updateBranchInfo("PROJ-1", {
+      prNumber: 42,
+      prBaseBranch: "main",
+    });
+
+    expect(store.markDone("PROJ-1")).toBe(true);
+    let record = store.get("PROJ-1");
+    expect(record?.currentPhase).toBe("done");
+    expect(record?.priorPhase).toBe("human-review");
+    expect(record?.prNumber).toBe(42);
+    expect(record?.terminalPrNumber).toBe(42);
+
+    store.updatePhase("PROJ-1", "coding");
+    record = store.get("PROJ-1");
+    expect(record?.terminalPrNumber).toBe(42);
+
+    store.updateBranchInfo("PROJ-1", { prNumber: 43 });
+    record = store.get("PROJ-1");
+    expect(record?.prNumber).toBe(43);
+    expect(record?.terminalPrNumber).toBe(42);
+  });
+
+  it("markDone is idempotent and preserves the real prior phase", () => {
+    store.create("PROJ-1", "coding");
+
+    expect(store.markDone("PROJ-1")).toBe(true);
+    expect(store.markDone("PROJ-1")).toBe(true);
+
+    const record = store.get("PROJ-1");
+    expect(record?.currentPhase).toBe("done");
+    expect(record?.priorPhase).toBe("coding");
+  });
+
+  it("markPrMerged records an event PR that was never persisted locally", () => {
+    store.create("PROJ-1", "coding");
+    store.updateBranchInfo("PROJ-1", {
+      branchName: "feature/PROJ-1",
+      prBaseBranch: "main",
+      worktreePath: "/tmp/worktree",
+    });
+
+    expect(store.markPrMerged("PROJ-1", 77)).toBe("processed");
+
+    const record = store.get("PROJ-1");
+    expect(record?.currentPhase).toBe("done");
+    expect(record?.priorPhase).toBe("coding");
+    expect(record?.terminalPrNumber).toBe(77);
+    expect(record?.prNumber).toBeNull();
+    expect(record?.prBaseBranch).toBeNull();
+    expect(record?.branchName).toBe("feature/PROJ-1");
+    expect(record?.worktreePath).toBe("/tmp/worktree");
+  });
+
+  it("markPrMerged rejects stale PRs and recognizes duplicate processing", () => {
+    store.create("PROJ-1", "coding");
+    store.updateBranchInfo("PROJ-1", { prNumber: 77, prBaseBranch: "main" });
+
+    expect(store.markPrMerged("PROJ-1", 76)).toBe("stale");
+    expect(store.get("PROJ-1")?.currentPhase).toBe("coding");
+
+    expect(store.markPrMerged("PROJ-1", 77)).toBe("processed");
+    expect(store.markPrMerged("PROJ-1", 77)).toBe("already-processed");
+    expect(store.get("PROJ-1")?.priorPhase).toBe("coding");
+  });
+
+  it("markPrMerged reports missing records", () => {
+    expect(store.markPrMerged("PROJ-404", 77)).toBe("missing");
   });
 
   it("resetIterations leaves prior_phase intact", () => {
@@ -220,9 +293,11 @@ describe("PipelineStateStore", () => {
     const updated = store.updateBranchInfo("PROJ-1", {
       branchName: "feature/PROJ-1",
       prNumber: 42,
+      prBaseBranch: "main",
     });
     expect(updated.branchName).toBe("feature/PROJ-1");
     expect(updated.prNumber).toBe(42);
+    expect(updated.prBaseBranch).toBe("main");
     expect(updated.worktreePath).toBeNull();
 
     const withWorktree = store.updateBranchInfo("PROJ-1", {
@@ -235,9 +310,18 @@ describe("PipelineStateStore", () => {
 
   it("updateBranchInfo clears fields when null is explicitly set", () => {
     store.create("PROJ-1");
-    store.updateBranchInfo("PROJ-1", { prNumber: 1, worktreePath: "/tmp/w" });
-    const cleared = store.updateBranchInfo("PROJ-1", { prNumber: null, worktreePath: null });
+    store.updateBranchInfo("PROJ-1", {
+      prNumber: 1,
+      prBaseBranch: "main",
+      worktreePath: "/tmp/w",
+    });
+    const cleared = store.updateBranchInfo("PROJ-1", {
+      prNumber: null,
+      prBaseBranch: null,
+      worktreePath: null,
+    });
     expect(cleared.prNumber).toBeNull();
+    expect(cleared.prBaseBranch).toBeNull();
     expect(cleared.worktreePath).toBeNull();
   });
 

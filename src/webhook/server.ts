@@ -5,14 +5,18 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { safeAudit } from "../core/audit.js";
 import type { AuditLogger } from "../core/audit.js";
+import { withTimeout } from "../core/async.js";
+import { errorMessage } from "../core/errors.js";
 import type { TaskQueue } from "../core/queue.js";
+import { classifyMergeTransition } from "../core/pipeline-state.js";
 import type { PipelineStateStore } from "../core/pipeline-state.js";
 import { autoTransitionRework } from "../core/rework-transition.js";
 import type { RuntimeState } from "../core/runtime-state.js";
-import type { PipelineEvent } from "../core/types.js";
+import type { PipelineEvent, PipelineRecord } from "../core/types.js";
 import type { IssueTracker } from "../integrations/issue-tracker.js";
-import type { SourceControl } from "../integrations/source-control.js";
+import type { PullRequest, SourceControl } from "../integrations/source-control.js";
 import type { DashboardServer, RouteHandler } from "../dashboard/server.js";
 
 export type GitRunner = (args: string[], cwd: string) => Promise<void>;
@@ -39,6 +43,20 @@ const DEFAULT_ROUTE_PATHS: WebhookRoutePaths = {
 };
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
+const REMOTE_LOOKUP_TIMEOUT_MS = 30_000;
+const REMOTE_MUTATION_TIMEOUT_MS = 60_000;
+const GIT_OPERATION_TIMEOUT_MS = 120_000;
+const MERGE_LOOKUP_CONCURRENCY = 5;
+
+interface MergedPrCandidate {
+  record: PipelineRecord;
+  pr: PullRequest;
+}
+
+interface PendingMergeCleanup {
+  event: PipelineEvent;
+  expectedPrNumber: number | null;
+}
 
 export class WebhookServer {
   private readonly deps: WebhookServerDeps;
@@ -48,6 +66,8 @@ export class WebhookServer {
   // the same refresh worktree and double-push dependents.
   // ponytail: global chain — per-issue locks if merge volume ever matters.
   private refreshChain: Promise<void> = Promise.resolve();
+  private mergeScanPromise: Promise<void> | null = null;
+  private readonly pendingMergeCleanup = new Map<string, PendingMergeCleanup>();
 
   constructor(deps: WebhookServerDeps) {
     this.deps = deps;
@@ -286,7 +306,11 @@ export class WebhookServer {
       }
       case "pr-merged": {
         const record = pipelineState.get(event.issueId);
+        const mergedPrNumber = extractNumber(event.payload, "prNumber");
+        const mergedBranch = extractString(event.payload, "branch") ?? record?.branchName ?? null;
+        const mergedBase = extractString(event.payload, "base") ?? record?.prBaseBranch ?? null;
         if (record === null) {
+          this.pendingMergeCleanup.delete(event.issueId);
           audit.log({
             component,
             issueId: event.issueId,
@@ -295,41 +319,80 @@ export class WebhookServer {
           });
           break;
         }
-        pipelineState.updatePhase(event.issueId, "done");
+        const disposition = classifyMergedPrEvent(record, mergedPrNumber, mergedBranch);
+        if (disposition !== "process") {
+          this.pendingMergeCleanup.delete(event.issueId);
+          audit.log({
+            component,
+            issueId: event.issueId,
+            message:
+              disposition === "already-processed"
+                ? `PR #${String(mergedPrNumber)} merge cleanup was already processed — ignoring duplicate delivery`
+                : `PR #${String(mergedPrNumber)} merged, but it belongs to an earlier pipeline run — ignoring stale cleanup`,
+            metadata: {
+              mergedPrNumber,
+              currentPrNumber: record.prNumber,
+              terminalPrNumber: record.terminalPrNumber,
+              mergedBranch,
+              currentBranch: record.branchName,
+            },
+          });
+          break;
+        }
+        const working = queue
+          .listByStatus("working")
+          .some((task) => task.issueId === event.issueId);
+        if (working) {
+          const expectedPrNumber = mergedPrNumber ?? record.prNumber;
+          this.pendingMergeCleanup.set(event.issueId, {
+            expectedPrNumber,
+            event: {
+              ...event,
+              payload: {
+                ...event.payload,
+                ...(expectedPrNumber === null ? {} : { prNumber: expectedPrNumber }),
+                ...(mergedBranch === null ? {} : { branch: mergedBranch }),
+                ...(mergedBase === null ? {} : { base: mergedBase }),
+              },
+            },
+          });
+          audit.log({
+            component,
+            issueId: event.issueId,
+            message: "PR merged — cleanup deferred because the issue has a working task",
+            metadata: {
+              prNumber: record.prNumber,
+              worktreePath: record.worktreePath,
+              branchName: record.branchName,
+            },
+          });
+          break;
+        }
 
-        const projectDir = this.deps.runtime.config.project.directory;
-        if (record.worktreePath !== null && existsSync(record.worktreePath)) {
-          try {
-            await this.gitRunner(
-              ["worktree", "remove", "--force", "--", record.worktreePath],
-              projectDir,
-            );
-          } catch (err) {
-            audit.log({
-              component,
-              issueId: event.issueId,
-              message: `pr-merged cleanup: git worktree remove failed: ${errorMessage(err)}`,
-              metadata: { worktreePath: record.worktreePath },
-            });
-          }
+        const transition = pipelineState.markPrMerged(event.issueId, mergedPrNumber);
+        if (transition !== "processed") {
+          this.pendingMergeCleanup.delete(event.issueId);
+          audit.log({
+            component,
+            issueId: event.issueId,
+            message: `PR merge cleanup skipped after state recheck: ${transition}`,
+            metadata: { mergedPrNumber },
+          });
+          break;
         }
-        if (record.branchName !== null) {
-          try {
-            await this.gitRunner(["branch", "-D", "--", record.branchName], projectDir);
-          } catch (err) {
-            audit.log({
-              component,
-              issueId: event.issueId,
-              message: `pr-merged cleanup: git branch -D failed: ${errorMessage(err)}`,
-              metadata: { branchName: record.branchName },
-            });
-          }
-        }
-        pipelineState.updateBranchInfo(event.issueId, {
-          branchName: null,
-          prNumber: null,
-          worktreePath: null,
-        });
+        this.pendingMergeCleanup.delete(event.issueId);
+        const cancelledTasks = queue.cancelPendingForIssue(
+          event.issueId,
+          "Cancelled — pull request merged",
+        );
+
+        await this.cleanupLocalBranchArtifacts(
+          event.issueId,
+          record.worktreePath,
+          record.branchName,
+          component,
+          "pr-merged cleanup",
+        );
         audit.log({
           component,
           issueId: event.issueId,
@@ -337,13 +400,12 @@ export class WebhookServer {
           metadata: {
             hadWorktree: record.worktreePath !== null,
             hadBranch: record.branchName !== null,
+            cancelledTasks,
           },
         });
 
         // Stacked dependents: retarget their PRs off the merged branch and
         // deterministically fold the merged base into their branches.
-        const mergedBranch = extractString(event.payload, "branch") ?? record.branchName;
-        const mergedBase = extractString(event.payload, "base");
         if (mergedBranch !== null && mergedBase !== null) {
           const run = this.refreshChain.then(() =>
             this.retargetAndRefreshDependents(event.issueId, mergedBranch, mergedBase, component),
@@ -473,6 +535,216 @@ export class WebhookServer {
     }
   }
 
+  // A pr-merged event that never arrives (event not subscribed, delivery
+  // failed, crash between the 200 and dispatch) strands the issue mid-pipeline
+  // with a live worktree and leaves its stacked dependents unrefreshed forever
+  // — nothing else in the system reads PR merge state. Replay it from the
+  // source of truth on startup and every poll tick.
+  async reconcileMergedPrs(): Promise<void> {
+    if (this.mergeScanPromise !== null) {
+      return this.mergeScanPromise;
+    }
+    const tracked = this.runMergedPrScan().finally(() => {
+      if (this.mergeScanPromise === tracked) {
+        this.mergeScanPromise = null;
+      }
+    });
+    this.mergeScanPromise = tracked;
+    return tracked;
+  }
+
+  async retryPendingMergeCleanup(issueId: string): Promise<void> {
+    const pending = this.pendingMergeCleanup.get(issueId);
+    if (pending === undefined) {
+      return;
+    }
+    const record = this.deps.pipelineState.get(issueId);
+    const prChanged =
+      record !== null &&
+      (pending.expectedPrNumber === null
+        ? record.prNumber !== null
+        : record.prNumber !== null && record.prNumber !== pending.expectedPrNumber);
+    if (record === null || prChanged) {
+      this.pendingMergeCleanup.delete(issueId);
+      safeAudit(this.deps.audit, {
+        component: "webhook-reconcile",
+        issueId,
+        message: "Deferred merged-PR cleanup discarded because the pipeline now has a different PR",
+        metadata: {
+          expectedPrNumber: pending.expectedPrNumber,
+          currentPrNumber: record?.prNumber ?? null,
+        },
+      });
+      return;
+    }
+    await this.dispatchEvent(pending.event, "webhook-reconcile");
+  }
+
+  async drain(): Promise<void> {
+    const scan = this.mergeScanPromise;
+    if (scan !== null) {
+      await scan;
+    }
+    await this.refreshChain;
+  }
+
+  private async runMergedPrScan(): Promise<void> {
+    const component = "webhook-reconcile";
+    const { pipelineState, sourceControl } = this.deps;
+    const all = pipelineState.listAll();
+
+    // A crash between markPrMerged's commit and the git cleanup leaves exactly
+    // this signature — done, pr_number nulled, terminal PR recorded, branch
+    // info still set. No other path produces it (markDone keeps pr_number),
+    // and the replay filter below can never see it again, so finish the
+    // cleanup from local state alone.
+    for (const record of all) {
+      const leaked =
+        record.currentPhase === "done" &&
+        record.prNumber === null &&
+        record.terminalPrNumber !== null &&
+        (record.branchName !== null || record.worktreePath !== null);
+      if (leaked === false) {
+        continue;
+      }
+      safeAudit(this.deps.audit, {
+        component,
+        issueId: record.issueId,
+        message: `PR #${String(record.terminalPrNumber)} merge cleanup never finished — sweeping leftover branch artifacts`,
+        metadata: { branchName: record.branchName, worktreePath: record.worktreePath },
+      });
+      try {
+        await this.cleanupLocalBranchArtifacts(
+          record.issueId,
+          record.worktreePath,
+          record.branchName,
+          component,
+          "merge cleanup sweep",
+        );
+      } catch (err) {
+        safeAudit(this.deps.audit, {
+          component,
+          issueId: record.issueId,
+          message: `merge cleanup sweep failed: ${errorMessage(err)}`,
+          metadata: {},
+        });
+      }
+    }
+
+    const records = all.filter(
+      (record) =>
+        record.prNumber !== null &&
+        record.currentPhase !== "done" &&
+        record.terminalPrNumber !== record.prNumber,
+    );
+    const candidates = await mapWithConcurrency(
+      records,
+      MERGE_LOOKUP_CONCURRENCY,
+      async (record): Promise<MergedPrCandidate | null> => {
+        const prNumber = record.prNumber;
+        if (prNumber === null) {
+          return null;
+        }
+        try {
+          const pr = await withTimeout(
+            sourceControl.getPullRequest(prNumber),
+            REMOTE_LOOKUP_TIMEOUT_MS,
+            `getPullRequest #${String(prNumber)}`,
+          );
+          if (pr === null || pr.merged === false) {
+            return null;
+          }
+          return { record, pr };
+        } catch (err) {
+          safeAudit(this.deps.audit, {
+            component,
+            issueId: record.issueId,
+            message: `merged-PR lookup failed for #${String(prNumber)}: ${errorMessage(err)}`,
+            metadata: { prNumber },
+          });
+          return null;
+        }
+      },
+    );
+
+    for (const candidate of candidates) {
+      if (candidate === null) {
+        continue;
+      }
+      const { record, pr } = candidate;
+      try {
+        safeAudit(this.deps.audit, {
+          component,
+          issueId: record.issueId,
+          message: `PR #${String(record.prNumber)} is merged but no pr-merged event was processed — replaying (check the source-control webhook)`,
+          metadata: { prNumber: record.prNumber, phase: record.currentPhase },
+        });
+        await this.dispatchEvent(
+          {
+            source: "poll",
+            type: "pr-merged",
+            issueId: record.issueId,
+            timestamp: new Date().toISOString(),
+            payload: {
+              branch: pr.headBranch,
+              base: pr.baseBranch,
+              prNumber: pr.number,
+            },
+          },
+          component,
+        );
+      } catch (err) {
+        safeAudit(this.deps.audit, {
+          component,
+          issueId: record.issueId,
+          message: `merged-PR reconcile failed for #${String(record.prNumber)}: ${errorMessage(err)}`,
+          metadata: { prNumber: record.prNumber },
+        });
+      }
+    }
+  }
+
+  // Idempotent tail of merge processing: remove the worktree and local branch,
+  // then null the record's branch info. Shared by the pr-merged event path and
+  // the leak sweep in runMergedPrScan.
+  private async cleanupLocalBranchArtifacts(
+    issueId: string,
+    worktreePath: string | null,
+    branchName: string | null,
+    component: string,
+    context: string,
+  ): Promise<void> {
+    const projectDir = this.deps.runtime.config.project.directory;
+    if (worktreePath !== null && existsSync(worktreePath)) {
+      try {
+        await this.gitRunner(["worktree", "remove", "--force", "--", worktreePath], projectDir);
+      } catch (err) {
+        safeAudit(this.deps.audit, {
+          component,
+          issueId,
+          message: `${context}: git worktree remove failed: ${errorMessage(err)}`,
+          metadata: { worktreePath },
+        });
+      }
+    }
+    if (branchName !== null) {
+      try {
+        await this.gitRunner(["branch", "-D", "--", branchName], projectDir);
+      } catch (err) {
+        safeAudit(this.deps.audit, {
+          component,
+          issueId,
+          message: `${context}: git branch -D failed: ${errorMessage(err)}`,
+          metadata: { branchName },
+        });
+      }
+    }
+    this.deps.pipelineState.updateBranchInfo(issueId, {
+      branchName: null,
+      worktreePath: null,
+    });
+  }
+
   // A blocker's PR just merged into mergedBase. Every open dependent PR that
   // targeted the merged branch gets retargeted to mergedBase, and its branch
   // gets a deterministic refresh (clean merge + push, zero AI) so the PR diff
@@ -486,6 +758,12 @@ export class WebhookServer {
     component: string,
   ): Promise<void> {
     const { pipelineState, sourceControl, queue, audit } = this.deps;
+    const workingIssueIds = new Set(
+      queue
+        .listByStatus("working")
+        .map((task) => task.issueId)
+        .filter((issueId): issueId is string => issueId !== null),
+    );
     for (const rec of pipelineState.listAll()) {
       // Done records can keep a stale prNumber (non-webhook completion paths
       // never null it) — skip them so the scan doesn't grow one API call per
@@ -495,7 +773,11 @@ export class WebhookServer {
       }
       let pr;
       try {
-        pr = await sourceControl.getPullRequest(rec.prNumber);
+        pr = await withTimeout(
+          sourceControl.getPullRequest(rec.prNumber),
+          REMOTE_LOOKUP_TIMEOUT_MS,
+          `getPullRequest #${String(rec.prNumber)}`,
+        );
       } catch (err) {
         audit.log({
           component,
@@ -505,32 +787,54 @@ export class WebhookServer {
         });
         continue;
       }
-      if (pr?.state !== "open" || pr.baseBranch !== mergedBranch) {
-        // Includes the auto-retarget race: with head-branch auto-delete,
-        // GitHub can retarget the dependent to mergedBase before this scan
-        // fetches it, skipping the refresh below too. Tolerated — refreshing
-        // every base-targeting PR would push to unrelated branches; the
-        // dependent's next stack setup folds base in (reuse && prBase ===
-        // bareBase) and cleans the diff.
+      if (pr?.state !== "open") {
         continue;
       }
-
-      try {
-        // Idempotent — harmless if GitHub already auto-retargeted on branch delete.
-        await sourceControl.updatePullRequestBase(pr.number, mergedBase);
+      if (pr.baseBranch === mergedBranch) {
+        try {
+          await withTimeout(
+            sourceControl.updatePullRequestBase(pr.number, mergedBase),
+            REMOTE_MUTATION_TIMEOUT_MS,
+            `updatePullRequestBase #${String(pr.number)}`,
+          );
+          pipelineState.updateBranchInfo(rec.issueId, { prBaseBranch: mergedBase });
+          audit.log({
+            component,
+            issueId: rec.issueId,
+            message: `stack retarget: PR #${String(pr.number)} base ${mergedBranch} → ${mergedBase}`,
+            metadata: { prNumber: pr.number, mergedBase },
+          });
+        } catch (err) {
+          audit.log({
+            component,
+            issueId: rec.issueId,
+            message: `stack retarget: updatePullRequestBase failed: ${errorMessage(err)}`,
+            metadata: { prNumber: pr.number },
+          });
+          continue;
+        }
+      } else if (pr.baseBranch === mergedBase && rec.prBaseBranch === mergedBranch) {
+        // Auto-retarget race: with head-branch auto-delete GitHub moves the
+        // dependent onto mergedBase within seconds. The persisted prior base
+        // proves this PR actually targeted the merged branch; a tracker Blocks
+        // edge alone could be only a scheduling dependency.
+        pipelineState.updateBranchInfo(rec.issueId, { prBaseBranch: mergedBase });
         audit.log({
           component,
           issueId: rec.issueId,
-          message: `stack retarget: PR #${String(pr.number)} base ${mergedBranch} → ${mergedBase}`,
+          message: `stack retarget: PR #${String(pr.number)} already retargeted to ${mergedBase} by GitHub — refreshing anyway`,
           metadata: { prNumber: pr.number, mergedBase },
         });
-      } catch (err) {
+      } else if (pr.baseBranch === mergedBase && rec.prBaseBranch === null) {
         audit.log({
           component,
           issueId: rec.issueId,
-          message: `stack retarget: updatePullRequestBase failed: ${errorMessage(err)}`,
-          metadata: { prNumber: pr.number },
+          message: `stack retarget: PR #${String(pr.number)} already targets ${mergedBase}, but its prior base was not recorded — skipping refresh`,
+          metadata: { prNumber: pr.number, mergedBranch, mergedBase },
         });
+        continue;
+      } else {
+        continue;
       }
 
       if (rec.branchName === null) {
@@ -541,7 +845,7 @@ export class WebhookServer {
       // a snapshot, not a lock: a worker starting mid-refresh can race the
       // push below. Worst case is a rejected non-fast-forward push that
       // degrades to the could-not-fold PR comment — tolerated.
-      const working = queue.listByStatus("working").some((t) => t.issueId === rec.issueId);
+      const working = workingIssueIds.has(rec.issueId);
       if (working) {
         audit.log({
           component,
@@ -681,13 +985,56 @@ function extractString(record: Record<string, unknown>, key: string): string | n
   return typeof value === "string" ? value : null;
 }
 
-function errorMessage(err: unknown): string {
-  if (err instanceof Error) {
-    return err.message;
+function extractNumber(record: Record<string, unknown>, key: string): number | null {
+  const value = record[key];
+  return typeof value === "number" ? value : null;
+}
+
+function classifyMergedPrEvent(
+  record: PipelineRecord,
+  mergedPrNumber: number | null,
+  mergedBranch: string | null,
+): "process" | "already-processed" | "stale" {
+  const disposition = classifyMergeTransition(record, mergedPrNumber);
+  if (disposition !== "process") {
+    return disposition;
   }
-  return String(err);
+  // Webhook-only layer: with no PR number to match on, a branch mismatch is
+  // the remaining signal that the event belongs to an earlier pipeline run.
+  if (
+    record.prNumber === null &&
+    record.branchName !== null &&
+    mergedBranch !== null &&
+    record.branchName !== mergedBranch
+  ) {
+    return "stale";
+  }
+  return "process";
 }
 
 async function defaultGitRunner(args: string[], cwd: string): Promise<void> {
-  await execFileAsync("git", args, { cwd });
+  await execFileAsync("git", args, { cwd, timeout: GIT_OPERATION_TIMEOUT_MS });
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  mapper: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = [];
+  let nextIndex = 0;
+  const workers = Array.from(
+    { length: Math.min(concurrency, items.length) },
+    async (): Promise<void> => {
+      while (nextIndex < items.length) {
+        const index = nextIndex;
+        nextIndex++;
+        // Cast past noUncheckedIndexedAccess: index < length and input is
+        // dense, and skipping would leave a hole for callers to trip on.
+        results[index] = await mapper(items[index] as T);
+      }
+    },
+  );
+  await Promise.all(workers);
+  return results;
 }

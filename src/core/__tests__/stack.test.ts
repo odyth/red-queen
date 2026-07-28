@@ -13,6 +13,8 @@ function record(issueId: string, overrides: Partial<PipelineRecord> = {}): Pipel
     priorPhase: null,
     branchName: null,
     prNumber: null,
+    prBaseBranch: null,
+    terminalPrNumber: null,
     worktreePath: null,
     reviewIterations: 0,
     feedbackIterations: 0,

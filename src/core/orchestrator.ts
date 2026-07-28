@@ -1,11 +1,14 @@
 import { mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { safeAudit } from "./audit.js";
 import type { AuditLogger } from "./audit.js";
+import { withTimeout } from "./async.js";
 import { buildPhaseGraph } from "./config.js";
 import type { RedQueenConfig } from "./config.js";
 import type { OrchestratorStateStore, PipelineStateStore } from "./pipeline-state.js";
 import type { PhaseUsageStore } from "./phase-usage.js";
 import { computeCost } from "./cost.js";
+import { errorMessage } from "./errors.js";
 import { buildFailureNotice } from "./failure-notice.js";
 import { Poller } from "./poller.js";
 import type { TaskQueue } from "./queue.js";
@@ -77,6 +80,7 @@ const PHASE_DRIFT_GRACE_MS = 30_000;
 // configured retention window. Coarse on purpose — pruning is maintenance,
 // not a state transition, so it runs off the main loop rather than any phase.
 const AUDIT_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const STARTUP_MERGE_SCAN_TIMEOUT_MS = 30_000;
 
 export class RedQueen {
   private readonly deps: RedQueenDeps;
@@ -92,6 +96,7 @@ export class RedQueen {
   private mainLoopPromise: Promise<void> | null = null;
   private signalHandlersInstalled = false;
   private sigHandler: ((sig: NodeJS.Signals) => void) | null = null;
+  private stopPromise: Promise<void> | null = null;
   private tempDir: string | null = null;
   private lastAuditPruneMs = 0;
   private lastDeferredReleaseMs = 0;
@@ -127,7 +132,34 @@ export class RedQueen {
     this.performCrashRecovery();
 
     await this.startDashboardIfEnabled();
-    this.startWebhookIfEnabled();
+    this.setupWebhookServer();
+
+    if (this.deps.installSignalHandlers === true) {
+      this.installSignalHandlers();
+    }
+
+    const startupMergeScan = this.webhook?.reconcileMergedPrs();
+    if (startupMergeScan !== undefined) {
+      try {
+        await withTimeout(
+          startupMergeScan,
+          STARTUP_MERGE_SCAN_TIMEOUT_MS,
+          "Startup merged-PR reconciliation",
+        );
+      } catch (err) {
+        safeAudit(this.deps.audit, {
+          component: "orchestrator",
+          issueId: null,
+          message: `Startup merged-PR reconciliation failed: ${errorMessage(err)}`,
+          metadata: {},
+        });
+      }
+    }
+
+    if (this.isShuttingDown()) {
+      await this.stopPromise;
+      return;
+    }
 
     try {
       await reconcile({
@@ -138,7 +170,7 @@ export class RedQueen {
         audit: this.deps.audit,
       });
     } catch (err) {
-      this.deps.audit.log({
+      safeAudit(this.deps.audit, {
         component: "orchestrator",
         issueId: null,
         message: `Startup reconciliation failed: ${errorMessage(err)}`,
@@ -146,11 +178,12 @@ export class RedQueen {
       });
     }
 
-    this.startPollerIfConfigured();
-
-    if (this.deps.installSignalHandlers === true) {
-      this.installSignalHandlers();
+    if (this.isShuttingDown()) {
+      await this.stopPromise;
+      return;
     }
+
+    this.startPollerIfConfigured();
 
     const nowIso = new Date(this.now()).toISOString();
     this.deps.orchestratorState.setStatus("idle");
@@ -159,6 +192,9 @@ export class RedQueen {
 
     this.mainLoopPromise = this.mainLoop();
     await this.mainLoopPromise;
+    if (this.stopPromise !== null) {
+      await this.stopPromise;
+    }
   }
 
   async stop(): Promise<void> {
@@ -169,6 +205,12 @@ export class RedQueen {
       killWorkerPid(this.currentWorkerPid, "SIGTERM");
     }
 
+    this.poller?.stop();
+    this.stopPromise ??= this.performStop();
+    await this.stopPromise;
+  }
+
+  private async performStop(): Promise<void> {
     if (this.mainLoopPromise !== null) {
       try {
         await this.mainLoopPromise;
@@ -177,8 +219,18 @@ export class RedQueen {
       }
     }
 
-    this.poller?.stop();
-    if (this.webhook !== null) {
+    const webhook = this.webhook;
+    if (webhook !== null) {
+      try {
+        await webhook.drain();
+      } catch (err) {
+        safeAudit(this.deps.audit, {
+          component: "orchestrator",
+          issueId: null,
+          message: `Merged-PR reconciliation drain failed during shutdown: ${errorMessage(err)}`,
+          metadata: {},
+        });
+      }
       this.webhook = null;
     }
     if (this.dashboard !== null) {
@@ -394,6 +446,15 @@ export class RedQueen {
       return;
     }
 
+    if (this.deps.queue.markWorking(task.id) === false) {
+      this.deps.audit.log({
+        component: "orchestrator",
+        issueId: task.issueId,
+        message: `Skipping ${phase.name} task because it is no longer ready`,
+        metadata: { taskId: task.id },
+      });
+      return;
+    }
     await this.dispatchWorkerForTask(task, phase, stackGate.stack);
   }
 
@@ -970,7 +1031,6 @@ export class RedQueen {
       });
     }
 
-    this.deps.queue.markWorking(task.id);
     this.deps.orchestratorState.setStatus("working");
     this.deps.orchestratorState.setCurrentTaskId(task.id);
     this.emitDashboardStatus();
@@ -1026,6 +1086,19 @@ export class RedQueen {
       await this.handleSuccess(task, phase, result);
     } else {
       await this.handleFailure(task, phase, result);
+    }
+
+    if (this.webhook !== null) {
+      try {
+        await this.webhook.retryPendingMergeCleanup(issueId);
+      } catch (err) {
+        safeAudit(this.deps.audit, {
+          component: "orchestrator",
+          issueId,
+          message: `Deferred merged-PR cleanup retry failed: ${errorMessage(err)}`,
+          metadata: { taskId: task.id },
+        });
+      }
     }
 
     this.deps.orchestratorState.setStatus("idle");
@@ -1312,7 +1385,7 @@ export class RedQueen {
   private async advanceNormal(issueId: string, phase: PhaseDefinition, task: Task): Promise<void> {
     let nextPhaseName = phase.next;
     if (nextPhaseName === "done") {
-      this.deps.pipelineState.updatePhase(issueId, "done");
+      this.deps.pipelineState.markDone(issueId);
       this.deps.audit.log({
         component: "orchestrator",
         issueId,
@@ -1359,7 +1432,7 @@ export class RedQueen {
         });
         this.deps.pipelineState.setOpenQuestionCount(issueId, null);
         if (skipTarget === "done") {
-          this.deps.pipelineState.updatePhase(issueId, "done");
+          this.deps.pipelineState.markDone(issueId);
           this.deps.audit.log({
             component: "orchestrator",
             issueId,
@@ -1742,13 +1815,10 @@ export class RedQueen {
     await this.dashboard.start();
   }
 
-  private startWebhookIfEnabled(): void {
-    if (this.deps.runtime.config.pipeline.webhooks.enabled === false) {
-      return;
-    }
-    if (this.dashboard === null) {
-      return;
-    }
+  private setupWebhookServer(): void {
+    // Constructed even with webhooks off or no dashboard to host the routes:
+    // reconcileMergedPrs is the only reader of PR merge state, and a poll-only
+    // deployment needs it most.
     this.webhook = new WebhookServer({
       issueTracker: this.deps.issueTracker,
       sourceControl: this.deps.sourceControl,
@@ -1760,7 +1830,9 @@ export class RedQueen {
         this.emitQueueChanged();
       },
     });
-    this.webhook.register(this.dashboard, this.deps.runtime.config.pipeline.webhooks.paths);
+    if (this.deps.runtime.config.pipeline.webhooks.enabled && this.dashboard !== null) {
+      this.webhook.register(this.dashboard, this.deps.runtime.config.pipeline.webhooks.paths);
+    }
   }
 
   private startPollerIfConfigured(): void {
@@ -1777,6 +1849,17 @@ export class RedQueen {
         audit: this.deps.audit,
         onTick: () => {
           this.emitQueueChanged();
+          const scan = this.webhook?.reconcileMergedPrs();
+          if (scan !== undefined) {
+            void scan.catch((err: unknown) => {
+              safeAudit(this.deps.audit, {
+                component: "orchestrator",
+                issueId: null,
+                message: `Merged-PR poll reconciliation failed: ${errorMessage(err)}`,
+                metadata: {},
+              });
+            });
+          }
         },
       },
       intervalMs,
@@ -1790,7 +1873,14 @@ export class RedQueen {
     }
     this.signalHandlersInstalled = true;
     const handler = (): void => {
-      void this.stop();
+      void this.stop().catch((err: unknown) => {
+        safeAudit(this.deps.audit, {
+          component: "orchestrator",
+          issueId: null,
+          message: `Shutdown failed: ${errorMessage(err)}`,
+          metadata: {},
+        });
+      });
     };
     this.sigHandler = handler;
     process.on("SIGTERM", handler);
@@ -1858,6 +1948,10 @@ export class RedQueen {
 
   private now(): number {
     return this.deps.now ? this.deps.now() : Date.now();
+  }
+
+  private isShuttingDown(): boolean {
+    return this.shuttingDown;
   }
 
   private emitDashboardStatus(): void {
@@ -1953,13 +2047,6 @@ function killWorkerPid(pid: number, signal: NodeJS.Signals): void {
       // Worker already exited
     }
   }
-}
-
-function errorMessage(err: unknown): string {
-  if (err instanceof Error) {
-    return err.message;
-  }
-  return String(err);
 }
 
 // Cosmetic header label. The adapter config shape is integration-specific, so

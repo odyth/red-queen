@@ -61,6 +61,33 @@ describe("reconcile", () => {
     expect(result.skipped).toBe(1);
   });
 
+  it("does not recreate the phase that was active when a processed PR merged", async () => {
+    const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
+    const issueTracker = new MockIssueTracker();
+    issueTracker.listByPhaseResults.set("coding", [makeIssue("PROJ-1", "coding")]);
+    pipelineState.create("PROJ-1", "coding");
+    pipelineState.markDone("PROJ-1");
+
+    const result = await reconcile({ issueTracker, queue, runtime, pipelineState, audit });
+
+    expect(result.tasksCreated).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(queue.hasOpenTask("PROJ-1", "coding")).toBe(false);
+  });
+
+  it("allows a completed issue to re-enter through a different automated phase", async () => {
+    const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
+    const issueTracker = new MockIssueTracker();
+    issueTracker.listByPhaseResults.set("code-review", [makeIssue("PROJ-1", "code-review")]);
+    pipelineState.create("PROJ-1", "coding");
+    pipelineState.markDone("PROJ-1");
+
+    const result = await reconcile({ issueTracker, queue, runtime, pipelineState, audit });
+
+    expect(result.tasksCreated).toBe(1);
+    expect(queue.hasOpenTask("PROJ-1", "code-review")).toBe(true);
+  });
+
   it("does not query human-gate phases", async () => {
     const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
     const issueTracker = new MockIssueTracker();

@@ -27,6 +27,18 @@ export interface AuditLogger {
   prune(olderThanDays: number): number;
 }
 
+export function safeAudit(
+  audit: Pick<AuditLogger, "log">,
+  entry: Omit<AuditEntry, "timestamp">,
+): void {
+  try {
+    audit.log(entry);
+  } catch {
+    // Last-resort reporting must not turn an already handled failure into an
+    // unhandled rejection when the audit database or file is unavailable.
+  }
+}
+
 // --- SQLite row shape ---
 
 interface AuditRow {

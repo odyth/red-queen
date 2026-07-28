@@ -13,7 +13,7 @@ export type { PhaseDefinition };
 
 // --- Task / status ---
 
-export type TaskStatusWire = "ready" | "working" | "complete" | "failed" | "deferred";
+export type TaskStatusWire = "ready" | "working" | "complete" | "failed" | "deferred" | "cancelled";
 
 export interface TaskSummary {
   id: string;

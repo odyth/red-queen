@@ -247,7 +247,7 @@ describe("E2E: orchestrator full pipeline loop", () => {
 
       const pr = await sourceControl.getPullRequest(1);
       expect(pr).not.toBeNull();
-      expect(pr?.state).toBe("merged");
+      expect(pr?.state).toBe("closed");
 
       const auditEntries = audit.query({ issueId: "TEST-1", limit: 200 });
       const phaseCompletions = auditEntries

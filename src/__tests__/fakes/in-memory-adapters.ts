@@ -215,6 +215,7 @@ export class InMemorySourceControl implements SourceControl {
       number: this.prCounter,
       title: options.title,
       state: "open",
+      merged: false,
       headBranch: options.head,
       baseBranch: options.base,
       url: `https://example.test/pr/${String(this.prCounter)}`,
@@ -237,7 +238,7 @@ export class InMemorySourceControl implements SourceControl {
     this.calls.push(`mergePullRequest:${String(prNumber)}`);
     const pr = this.prs.get(prNumber);
     if (pr !== undefined) {
-      this.prs.set(prNumber, { ...pr, state: "merged" });
+      this.prs.set(prNumber, { ...pr, state: "closed", merged: true });
     }
     return Promise.resolve();
   }

@@ -246,6 +246,24 @@ describe("SqliteTaskQueue", () => {
     });
   });
 
+  describe("cancelPendingForIssue", () => {
+    it("cancels ready and deferred tasks without touching active or unrelated work", () => {
+      const ready = queue.enqueue({ type: "coding", issueId: "PROJ-1" });
+      const deferred = queue.enqueue({ type: "testing", issueId: "PROJ-1" });
+      queue.markDeferred(deferred.id, ["PROJ-2"]);
+      const working = queue.enqueue({ type: "review", issueId: "PROJ-1" });
+      queue.markWorking(working.id);
+      const unrelated = queue.enqueue({ type: "coding", issueId: "PROJ-2" });
+
+      expect(queue.cancelPendingForIssue("PROJ-1", "PR merged")).toBe(2);
+      expect(queue.getTask(ready.id)?.status).toBe("cancelled");
+      expect(queue.getTask(ready.id)?.result).toBe("PR merged");
+      expect(queue.getTask(deferred.id)?.status).toBe("cancelled");
+      expect(queue.getTask(working.id)?.status).toBe("working");
+      expect(queue.getTask(unrelated.id)?.status).toBe("ready");
+    });
+  });
+
   describe("purgeOld", () => {
     it("purges completed tasks older than threshold", () => {
       const task = queue.enqueue({ type: "coding", issueId: "PROJ-1" });
@@ -269,6 +287,16 @@ describe("SqliteTaskQueue", () => {
       const purged = queue.purgeOld(7);
       expect(purged).toBe(0);
       expect(queue.getTask(task.id)).not.toBeNull();
+    });
+
+    it("purges cancelled tasks older than threshold", () => {
+      const task = queue.enqueue({ type: "coding", issueId: "PROJ-1" });
+      queue.cancelPendingForIssue("PROJ-1", "PR merged");
+      const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
+      db.prepare("UPDATE tasks SET completed_at = ? WHERE id = ?").run(tenDaysAgo, task.id);
+
+      expect(queue.purgeOld(7)).toBe(1);
+      expect(queue.getTask(task.id)).toBeNull();
     });
 
     it("does not purge ready or working tasks", () => {

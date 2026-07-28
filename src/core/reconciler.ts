@@ -1,4 +1,5 @@
 import type { AuditLogger } from "./audit.js";
+import { errorMessage } from "./errors.js";
 import type { PipelineStateStore } from "./pipeline-state.js";
 import type { TaskQueue } from "./queue.js";
 import type { RuntimeState } from "./runtime-state.js";
@@ -54,8 +55,27 @@ export async function reconcile(deps: ReconcilerDeps): Promise<ReconcileResult> 
         continue;
       }
 
+      const record = pipelineState.get(issue.id);
+      // Merge replay runs before tracker reconciliation. If the tracker still
+      // reports the same automated phase that was active when the PR merged,
+      // do not recreate work for the completed run. A deliberate re-entry to a
+      // different phase remains eligible.
+      if (
+        record?.currentPhase === "done" &&
+        record.prNumber === null &&
+        record.priorPhase === phase.name
+      ) {
+        skipped++;
+        audit.log({
+          component: "reconciler",
+          issueId: issue.id,
+          message: `Skipping ${phase.name} reconciliation — its PR merge was already processed`,
+          metadata: { phase: phase.name },
+        });
+        continue;
+      }
+
       if (entryPhaseNames.has(phase.name) === false) {
-        const record = pipelineState.get(issue.id);
         if (record === null) {
           skipped++;
           audit.log({
@@ -95,11 +115,4 @@ export async function reconcile(deps: ReconcilerDeps): Promise<ReconcileResult> 
   });
 
   return { issuesFound, tasksCreated, skipped };
-}
-
-function errorMessage(err: unknown): string {
-  if (err instanceof Error) {
-    return err.message;
-  }
-  return String(err);
 }

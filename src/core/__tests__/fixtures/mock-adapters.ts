@@ -192,6 +192,7 @@ export class MockSourceControl implements SourceControl {
       number: num,
       title: options.title,
       state: "open",
+      merged: false,
       headBranch: options.head,
       baseBranch: options.base,
       url: `https://example.com/pr/${String(num)}`,
@@ -217,7 +218,8 @@ export class MockSourceControl implements SourceControl {
   mergePullRequest(prNumber: number): Promise<void> {
     const pr = this.prs.get(prNumber);
     if (pr !== undefined) {
-      pr.state = "merged";
+      pr.state = "closed";
+      pr.merged = true;
     }
     return Promise.resolve();
   }
