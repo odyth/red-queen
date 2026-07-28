@@ -116,9 +116,11 @@ class StubAuth implements GitHubAuthStrategy {
 describe("GitHubIssuesAdapter", () => {
   let fake: ReturnType<typeof buildFakeOctokit>;
   let adapter: GitHubIssuesAdapter;
+  let auditMessages: string[];
 
   beforeEach(() => {
     fake = buildFakeOctokit();
+    auditMessages = [];
     const client = new GitHubClient({
       auth: new StubAuth(),
       octokit: fake.octokit as GitHubClient["octokit"],
@@ -129,6 +131,9 @@ describe("GitHubIssuesAdapter", () => {
       owner: "me",
       repo: "r",
       webhookSecret: null,
+      audit: (message) => {
+        auditMessages.push(message);
+      },
     });
   });
 
@@ -368,6 +373,7 @@ describe("GitHubIssuesAdapter", () => {
 
     it("returns [] when the dependencies API 404s", async () => {
       expect(await adapter.getBlockedBy("#5")).toEqual([]);
+      expect(auditMessages).toContain("getBlockedBy: dependencies API unavailable (404) for #5");
     });
 
     it("fetches dependencies through the paginating client — >100 blockers must all count", async () => {

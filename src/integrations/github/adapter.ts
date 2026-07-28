@@ -512,7 +512,8 @@ function toPullRequest(raw: PullRequestRaw): PullRequest {
   return {
     number: raw.number,
     title: raw.title,
-    state: raw.state,
+    state: raw.state === "open" ? "open" : "closed",
+    merged: raw.merged === true,
     headBranch: raw.head.ref,
     baseBranch: raw.base.ref,
     url: raw.html_url,

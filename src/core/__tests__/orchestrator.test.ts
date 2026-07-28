@@ -803,6 +803,95 @@ describe("RedQueen orchestrator", () => {
     expect(h.runs.length).toBeGreaterThanOrEqual(1);
   });
 
+  it("replays merged PRs before tracker reconciliation can recreate their work", async () => {
+    const h = setupHarness(() =>
+      Promise.resolve({
+        success: true,
+        exitCode: 0,
+        elapsed: 1,
+        summary: "should not run",
+        error: null,
+      }),
+    );
+    h.pipelineState.create("PROJ-99", "coding");
+    h.pipelineState.updateBranchInfo("PROJ-99", { prNumber: 42, prBaseBranch: "main" });
+    h.sourceControl.prs.set(42, {
+      number: 42,
+      title: "PROJ-99",
+      state: "closed",
+      merged: true,
+      headBranch: "feature/PROJ-99",
+      baseBranch: "main",
+      url: "https://example.com/pr/42",
+      reviewDecision: null,
+    });
+    h.issueTracker.listByPhaseResults.set("coding", [makeIssue("PROJ-99", "coding")]);
+
+    await runUntil(h, () => h.pipelineState.get("PROJ-99")?.currentPhase === "done");
+
+    expect(h.runs).toHaveLength(0);
+    expect(h.queue.hasOpenTask("PROJ-99", "coding")).toBe(false);
+  });
+
+  it("continues startup when the merged-PR scan itself throws", async () => {
+    const h = setupHarness(() =>
+      Promise.resolve({
+        success: true,
+        exitCode: 0,
+        elapsed: 1,
+        summary: "done",
+        error: null,
+      }),
+    );
+    h.pipelineState.listAll = () => {
+      throw new Error("scan database unavailable");
+    };
+
+    await runUntil(h, () => h.orchestratorState.get().status === "idle");
+
+    expect(
+      h.audit
+        .query({ component: "orchestrator" })
+        .some((entry) => entry.message.includes("Startup merged-PR reconciliation failed")),
+    ).toBe(true);
+  });
+
+  it("drains an in-flight merged-PR scan before shutdown completes", async () => {
+    const h = setupHarness(() =>
+      Promise.resolve({
+        success: true,
+        exitCode: 0,
+        elapsed: 1,
+        summary: "done",
+        error: null,
+      }),
+    );
+    h.pipelineState.create("PROJ-99", "human-review");
+    h.pipelineState.updateBranchInfo("PROJ-99", { prNumber: 42, prBaseBranch: "main" });
+    let resolveLookup: ((value: null) => void) | null = null;
+    const lookupStarted = new Promise<void>((resolveStarted) => {
+      h.sourceControl.getPullRequest = () =>
+        new Promise<null>((resolvePromise) => {
+          resolveLookup = resolvePromise;
+          resolveStarted();
+        });
+    });
+
+    const startPromise = h.rq.start();
+    await lookupStarted;
+    let stopped = false;
+    const stopPromise = h.rq.stop().then(() => {
+      stopped = true;
+    });
+    await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+    expect(stopped).toBe(false);
+
+    resolveLookup?.(null);
+    await stopPromise;
+    await startPromise;
+    expect(stopped).toBe(true);
+  });
+
   it("new-ticket persists delegator from task metadata", async () => {
     const h = setupHarness(() =>
       Promise.resolve({

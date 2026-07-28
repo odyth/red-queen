@@ -36,6 +36,7 @@ export interface BuildAdaptersInput {
 export interface BuildAdaptersOptions {
   /** Base directory for resolving relative paths (e.g. `auth.privateKeyPath`). */
   configDir?: string;
+  audit?: (message: string, metadata: Record<string, unknown>) => void;
 }
 
 /**
@@ -69,6 +70,7 @@ export function buildAdapterPair(
       owner: githubIssues.owner,
       repo: githubIssues.repo,
       webhookSecret: githubIssues.webhookSecret ?? null,
+      audit: options.audit,
     });
     return {
       issueTracker,
@@ -133,6 +135,7 @@ export function constructIssueTracker(
       owner: parsed.owner,
       repo: parsed.repo,
       webhookSecret: parsed.webhookSecret ?? null,
+      audit: options.audit,
     });
   }
   throw new CliError(`Unknown issueTracker type: ${type}`);

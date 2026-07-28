@@ -110,6 +110,7 @@ export class MockSourceControlAdapter implements SourceControl {
       number,
       title: options.title,
       state: "open",
+      merged: false,
       headBranch: options.head,
       baseBranch: options.base,
       url: `mock://pr/${String(number)}`,

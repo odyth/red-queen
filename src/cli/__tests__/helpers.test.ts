@@ -116,9 +116,20 @@ describe("cmdPr create", () => {
     const state = JSON.parse(stdoutCapture.join("")) as {
       branchName: string;
       prNumber: number;
+      prBaseBranch: string;
     };
     expect(state.branchName).toBe("feature/ISSUE-1");
     expect(state.prNumber).toBe(1);
+    expect(state.prBaseBranch).toBe("main");
+
+    stdoutCapture = [];
+    await cmdPipeline(["update", "ISSUE-1", "--pr", "99"]);
+    const replaced = JSON.parse(stdoutCapture.join("")) as {
+      prNumber: number;
+      prBaseBranch: string | null;
+    };
+    expect(replaced.prNumber).toBe(99);
+    expect(replaced.prBaseBranch).toBeNull();
   });
 });
 

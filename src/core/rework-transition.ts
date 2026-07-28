@@ -1,4 +1,5 @@
 import type { AuditLogger } from "./audit.js";
+import { errorMessage } from "./errors.js";
 import type { PipelineStateStore } from "./pipeline-state.js";
 import type { PhaseGraph } from "./types.js";
 import type { IssueTracker } from "../integrations/issue-tracker.js";
@@ -79,11 +80,4 @@ export async function autoTransitionRework(
     metadata: { ...metadata, from: currentPhase, to: targetPhase },
   });
   return "transitioned";
-}
-
-function errorMessage(err: unknown): string {
-  if (err instanceof Error) {
-    return err.message;
-  }
-  return String(err);
 }

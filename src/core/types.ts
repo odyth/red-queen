@@ -144,7 +144,7 @@ export class PhaseGraph {
 
 // --- Task types ---
 
-export type TaskStatus = "ready" | "working" | "complete" | "failed" | "deferred";
+export type TaskStatus = "ready" | "working" | "complete" | "failed" | "deferred" | "cancelled";
 
 export interface Task {
   id: string;
@@ -178,6 +178,13 @@ export interface PipelineRecord {
   priorPhase: string | null;
   branchName: string | null;
   prNumber: number | null;
+  // Base branch recorded when the current PR was created/retargeted. Unlike
+  // the live provider value, this preserves the pre-auto-retarget relationship.
+  prBaseBranch: string | null;
+  // PR identity associated with the most recent terminal transition. A
+  // re-entered pipeline may retain that PR for history, but merge replay must
+  // not interpret it as belonging to the new run.
+  terminalPrNumber: number | null;
   worktreePath: string | null;
   reviewIterations: number;
   feedbackIterations: number;

@@ -9,6 +9,8 @@ interface PipelineRow {
   prior_phase: string | null;
   branch_name: string | null;
   pr_number: number | null;
+  pr_base_branch: string | null;
+  terminal_pr_number: number | null;
   worktree_path: string | null;
   review_iterations: number;
   feedback_iterations: number;
@@ -18,6 +20,32 @@ interface PipelineRow {
   open_question_count: number | null;
   created_at: string;
   updated_at: string;
+}
+
+export type MergeTransitionResult = "processed" | "already-processed" | "stale" | "missing";
+
+// Single source of truth for the merged-PR transition rules. The webhook's
+// classifyMergedPrEvent (early exit, before side effects) and markPrMerged
+// (transactional recheck at claim time) are intentionally layered — both must
+// route through this predicate so the layers cannot drift.
+export function classifyMergeTransition(
+  row: { currentPhase: string | null; prNumber: number | null; terminalPrNumber: number | null },
+  mergedPrNumber: number | null,
+): "process" | "already-processed" | "stale" {
+  if (row.currentPhase === "done" && row.prNumber === null) {
+    if (mergedPrNumber === null || row.terminalPrNumber === mergedPrNumber) {
+      return "already-processed";
+    }
+    return "stale";
+  }
+  if (
+    mergedPrNumber !== null &&
+    ((row.prNumber !== null && row.prNumber !== mergedPrNumber) ||
+      (row.currentPhase !== "done" && row.terminalPrNumber === mergedPrNumber))
+  ) {
+    return "stale";
+  }
+  return "process";
 }
 
 // --- Pipeline state store ---
@@ -72,6 +100,78 @@ export class PipelineStateStore {
     return result.changes > 0;
   }
 
+  markDone(issueId: string): boolean {
+    const now = new Date().toISOString();
+    const result = this.db
+      .prepare(
+        `UPDATE pipeline_state
+         SET prior_phase = CASE
+               WHEN current_phase = 'done' THEN prior_phase
+               ELSE current_phase
+             END,
+             current_phase = 'done',
+             terminal_pr_number = CASE
+               WHEN current_phase = 'done' THEN terminal_pr_number
+               ELSE pr_number
+             END,
+             updated_at = ?
+         WHERE issue_id = ?`,
+      )
+      .run(now, issueId);
+    return result.changes > 0;
+  }
+
+  markPrMerged(issueId: string, mergedPrNumber: number | null): MergeTransitionResult {
+    return this.db.transaction((): MergeTransitionResult => {
+      const row = this.db
+        .prepare(
+          `SELECT current_phase, pr_number, terminal_pr_number
+           FROM pipeline_state
+           WHERE issue_id = ?`,
+        )
+        .get(issueId) as
+        | {
+            current_phase: string | null;
+            pr_number: number | null;
+            terminal_pr_number: number | null;
+          }
+        | undefined;
+      if (row === undefined) {
+        return "missing";
+      }
+
+      const disposition = classifyMergeTransition(
+        {
+          currentPhase: row.current_phase,
+          prNumber: row.pr_number,
+          terminalPrNumber: row.terminal_pr_number,
+        },
+        mergedPrNumber,
+      );
+      if (disposition !== "process") {
+        return disposition;
+      }
+
+      const now = new Date().toISOString();
+      this.db
+        .prepare(
+          `UPDATE pipeline_state
+           SET prior_phase = CASE
+                 WHEN current_phase = 'done' THEN prior_phase
+                 ELSE current_phase
+               END,
+               current_phase = 'done',
+               terminal_pr_number = COALESCE(?, pr_number),
+               pr_number = NULL,
+               pr_base_branch = NULL,
+               updated_at = ?
+           WHERE issue_id = ?`,
+        )
+        .run(mergedPrNumber, now, issueId);
+      return "processed";
+    })();
+  }
+
   updateBranch(issueId: string, branchName: string): boolean {
     const now = new Date().toISOString();
     const result = this.db
@@ -101,6 +201,7 @@ export class PipelineStateStore {
     info: {
       branchName?: string | null;
       prNumber?: number | null;
+      prBaseBranch?: string | null;
       worktreePath?: string | null;
     },
   ): PipelineRecord {
@@ -118,6 +219,10 @@ export class PipelineStateStore {
     if (Object.prototype.hasOwnProperty.call(info, "prNumber")) {
       sets.push("pr_number = ?");
       params.push(info.prNumber ?? null);
+    }
+    if (Object.prototype.hasOwnProperty.call(info, "prBaseBranch")) {
+      sets.push("pr_base_branch = ?");
+      params.push(info.prBaseBranch ?? null);
     }
     if (Object.prototype.hasOwnProperty.call(info, "worktreePath")) {
       sets.push("worktree_path = ?");
@@ -356,6 +461,8 @@ function toPipelineRecord(row: PipelineRow): PipelineRecord {
     priorPhase: row.prior_phase,
     branchName: row.branch_name,
     prNumber: row.pr_number,
+    prBaseBranch: row.pr_base_branch,
+    terminalPrNumber: row.terminal_pr_number,
     worktreePath: row.worktree_path,
     reviewIterations: row.review_iterations,
     feedbackIterations: row.feedback_iterations,

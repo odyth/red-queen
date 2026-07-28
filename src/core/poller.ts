@@ -1,4 +1,5 @@
 import type { AuditLogger } from "./audit.js";
+import { errorMessage } from "./errors.js";
 import type { PipelineStateStore } from "./pipeline-state.js";
 import type { TaskQueue } from "./queue.js";
 import { reconcile } from "./reconciler.js";
@@ -68,11 +69,4 @@ export class Poller {
       this.running = false;
     }
   }
-}
-
-function errorMessage(err: unknown): string {
-  if (err instanceof Error) {
-    return err.message;
-  }
-  return String(err);
 }

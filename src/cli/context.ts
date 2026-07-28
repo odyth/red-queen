@@ -42,7 +42,17 @@ export function loadCliContext(): CliContext {
       sourceControlType: config.sourceControl.type,
       sourceControlConfig: config.sourceControl.config,
     },
-    { configDir },
+    {
+      configDir,
+      audit: (message, metadata) => {
+        audit.log({
+          component: "github-issues",
+          issueId: null,
+          message,
+          metadata,
+        });
+      },
+    },
   );
 
   return {

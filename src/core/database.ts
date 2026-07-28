@@ -29,6 +29,8 @@ export const SCHEMA_SQL = `
     prior_phase TEXT,
     branch_name TEXT,
     pr_number INTEGER,
+    pr_base_branch TEXT,
+    terminal_pr_number INTEGER,
     worktree_path TEXT,
     review_iterations INTEGER NOT NULL DEFAULT 0,
     feedback_iterations INTEGER NOT NULL DEFAULT 0,
@@ -197,5 +199,29 @@ export class RedQueenDatabase {
         throw err;
       }
     }
+    // Merge reconciliation: retain the PR's intended base across GitHub's
+    // automatic retarget, and remember which PR belonged to a terminal run so
+    // re-entry cannot replay its old merge.
+    try {
+      this.db.exec("ALTER TABLE pipeline_state ADD COLUMN pr_base_branch TEXT");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("duplicate column") === false) {
+        throw err;
+      }
+    }
+    try {
+      this.db.exec("ALTER TABLE pipeline_state ADD COLUMN terminal_pr_number INTEGER");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("duplicate column") === false) {
+        throw err;
+      }
+    }
+    this.db.exec(
+      `UPDATE pipeline_state
+       SET terminal_pr_number = pr_number
+       WHERE current_phase = 'done' AND terminal_pr_number IS NULL`,
+    );
   }
 }

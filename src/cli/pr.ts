@@ -109,6 +109,7 @@ async function cmdPrCreate(args: string[]): Promise<void> {
     ctx.pipelineState.updateBranchInfo(issueId, {
       branchName: head,
       prNumber: pr.number,
+      prBaseBranch: resolvedBase,
     });
     ctx.audit.log({
       component: "helper:pr",

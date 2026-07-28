@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import type BetterSqlite3 from "better-sqlite3";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SCHEMA_SQL } from "../../core/database.js";
@@ -10,12 +10,14 @@ import { PipelineStateStore, OrchestratorStateStore } from "../../core/pipeline-
 import { DualWriteAuditLogger } from "../../core/audit.js";
 import { buildPhaseGraph } from "../../core/config.js";
 import { DEFAULT_PHASES } from "../../core/defaults.js";
+import { reconcile } from "../../core/reconciler.js";
 import { RuntimeState } from "../../core/runtime-state.js";
 import { DashboardServer } from "../../dashboard/server.js";
 import { WebhookServer } from "../server.js";
 import {
   MockIssueTracker,
   MockSourceControl,
+  makeIssue,
 } from "../../core/__tests__/fixtures/mock-adapters.js";
 import { makeTestConfig } from "../../core/__tests__/fixtures/test-config.js";
 import type { PipelineEvent } from "../../core/types.js";
@@ -617,6 +619,34 @@ describe("WebhookServer pr-merged cleanup", () => {
     expect(gitCalls).toHaveLength(0);
     expect(pipelineState3.get("PROJ-201")?.currentPhase).toBe("done");
   });
+
+  it("processes a numbered merge when the PR was never persisted locally", async () => {
+    pipelineState3.create("PROJ-202", "coding");
+    pipelineState3.updateBranchInfo("PROJ-202", {
+      branchName: "feature/PROJ-202",
+      prBaseBranch: "main",
+    });
+    sourceControl3.parseResult = {
+      source: "webhook",
+      type: "pr-merged",
+      issueId: "PROJ-202",
+      timestamp: new Date().toISOString(),
+      payload: { prNumber: 77, branch: "feature/PROJ-202", base: "main" },
+    };
+
+    await fetch(`http://127.0.0.1:${String(port3)}/webhook/source-control`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    await new Promise((r) => setTimeout(r, 30));
+
+    const record = pipelineState3.get("PROJ-202");
+    expect(record?.currentPhase).toBe("done");
+    expect(record?.priorPhase).toBe("coding");
+    expect(record?.terminalPrNumber).toBe(77);
+    expect(record?.prNumber).toBeNull();
+  });
 });
 
 describe("WebhookServer custom paths", () => {
@@ -730,8 +760,13 @@ describe("WebhookServer pr-merged stack retarget + refresh", () => {
   let dashboard4: DashboardServer;
   let port4: number;
   let sourceControl4: MockSourceControl;
+  let issueTracker4: MockIssueTracker;
+  let webhook4: WebhookServer;
+  let audit4: DualWriteAuditLogger;
   let gitCalls4: { args: string[]; cwd: string }[];
   let failOnMerge: boolean;
+  let cleanupGate: Promise<void> | null;
+  let releaseCleanup: (() => void) | null;
 
   beforeEach(async () => {
     tempDir4 = mkdtempSync(join(tmpdir(), "rq-webhook-stack-"));
@@ -740,11 +775,13 @@ describe("WebhookServer pr-merged stack retarget + refresh", () => {
     queue4 = new SqliteTaskQueue(db4);
     pipelineState4 = new PipelineStateStore(db4);
     const orchestratorState4 = new OrchestratorStateStore(db4);
-    const audit4 = new DualWriteAuditLogger(db4, join(tempDir4, "audit.log"));
-    const issueTracker4 = new MockIssueTracker();
+    audit4 = new DualWriteAuditLogger(db4, join(tempDir4, "audit.log"));
+    issueTracker4 = new MockIssueTracker();
     sourceControl4 = new MockSourceControl();
     gitCalls4 = [];
     failOnMerge = false;
+    cleanupGate = null;
+    releaseCleanup = null;
     port4 = await getFreePort();
     dashboard4 = new DashboardServer(
       { queue: queue4, orchestratorState: orchestratorState4, audit: audit4 },
@@ -765,7 +802,7 @@ describe("WebhookServer pr-merged stack retarget + refresh", () => {
       },
     });
     const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), config);
-    const webhook = new WebhookServer({
+    webhook4 = new WebhookServer({
       issueTracker: issueTracker4,
       sourceControl: sourceControl4,
       queue: queue4,
@@ -774,45 +811,58 @@ describe("WebhookServer pr-merged stack retarget + refresh", () => {
       audit: audit4,
       gitRunner: (args, cwd) => {
         gitCalls4.push({ args, cwd });
+        if (cleanupGate !== null && args[0] === "branch" && args[1] === "-D") {
+          return cleanupGate;
+        }
         if (failOnMerge && args[0] === "merge") {
           return Promise.reject(new Error("merge conflict"));
         }
         return Promise.resolve();
       },
     });
-    webhook.register(dashboard4);
+    webhook4.register(dashboard4);
 
     // Merged blocker PROJ-200 (feature/PROJ-200 → main).
     pipelineState4.create("PROJ-200", "human-review");
     pipelineState4.updateBranchInfo("PROJ-200", {
       branchName: "feature/PROJ-200",
       prNumber: 42,
+      prBaseBranch: "main",
     });
     sourceControl4.parseResult = {
       source: "webhook",
       type: "pr-merged",
       issueId: "PROJ-200",
       timestamp: new Date().toISOString(),
-      payload: { branch: "feature/PROJ-200", base: "main" },
+      payload: { branch: "feature/PROJ-200", base: "main", prNumber: 42 },
     };
   });
 
   afterEach(async () => {
+    releaseCleanup?.();
     await dashboard4.stop();
     db4.close();
     rmSync(tempDir4, { recursive: true, force: true });
   });
 
-  function seedDependent(issueId: string, prNumber: number, base: string, state = "open"): void {
+  function seedDependent(
+    issueId: string,
+    prNumber: number,
+    base: string,
+    state: "open" | "closed" = "open",
+    recordedBase = base,
+  ): void {
     pipelineState4.create(issueId, "human-review");
     pipelineState4.updateBranchInfo(issueId, {
       branchName: `feature/${issueId}`,
       prNumber,
+      prBaseBranch: recordedBase,
     });
     sourceControl4.prs.set(prNumber, {
       number: prNumber,
       title: issueId,
       state,
+      merged: false,
       headBranch: `feature/${issueId}`,
       baseBranch: base,
       url: `https://example.com/pr/${String(prNumber)}`,
@@ -857,6 +907,228 @@ describe("WebhookServer pr-merged stack retarget + refresh", () => {
     );
     expect(flat.some((c) => c.includes("feature/PROJ-202"))).toBe(false);
     expect(flat.some((c) => c.includes("feature/PROJ-203"))).toBe(false);
+  });
+
+  it("refreshes a dependent GitHub already auto-retargeted to the merged base", async () => {
+    seedDependent("PROJ-201", 43, "main", "open", "feature/PROJ-200");
+
+    await fireMerge();
+
+    // Base is already right — no wasted API call, but the branch still needs
+    // the merged base folded in.
+    expect(sourceControl4.calls).not.toContain("updatePullRequestBase:43:main");
+    const flat = gitCalls4.map((c) => c.args.join(" "));
+    expect(flat).toContain("merge --no-edit origin/main");
+    expect(flat).toContain("push origin HEAD:feature/PROJ-201");
+  });
+
+  it("does not refresh a scheduling-only blocker whose PR was always based on main", async () => {
+    seedDependent("PROJ-201", 43, "main");
+    issueTracker4.blockedBy.set("PROJ-201", [{ id: "PROJ-200", closed: false }]);
+
+    await fireMerge();
+
+    const flat = gitCalls4.map((call) => call.args.join(" "));
+    expect(flat.some((call) => call.includes("feature/PROJ-201"))).toBe(false);
+    expect(flat.some((call) => call.startsWith("push"))).toBe(false);
+    expect(issueTracker4.calls).not.toContain("getBlockedBy:PROJ-201");
+  });
+
+  it("retargets a PR manually moved onto the merged branch", async () => {
+    seedDependent("PROJ-201", 43, "feature/PROJ-200", "open", "main");
+
+    await fireMerge();
+
+    expect(sourceControl4.calls).toContain("updatePullRequestBase:43:main");
+    expect(gitCalls4.map((call) => call.args.join(" "))).toContain(
+      "push origin HEAD:feature/PROJ-201",
+    );
+  });
+
+  it("detaches the PR before async cleanup so reconciliation cannot recreate work", async () => {
+    pipelineState4.updatePhase("PROJ-200", "coding");
+    issueTracker4.listByPhaseResults.set("coding", [makeIssue("PROJ-200", "coding")]);
+    cleanupGate = new Promise<void>((resolvePromise) => {
+      releaseCleanup = resolvePromise;
+    });
+
+    await fireMerge();
+
+    const duringCleanup = pipelineState4.get("PROJ-200");
+    expect(duringCleanup?.currentPhase).toBe("done");
+    expect(duringCleanup?.priorPhase).toBe("coding");
+    expect(duringCleanup?.prNumber).toBeNull();
+
+    const result = await reconcile({
+      issueTracker: issueTracker4,
+      queue: queue4,
+      runtime: new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig()),
+      pipelineState: pipelineState4,
+      audit: audit4,
+    });
+    expect(result.tasksCreated).toBe(0);
+    expect(queue4.hasOpenTask("PROJ-200", "coding")).toBe(false);
+
+    releaseCleanup?.();
+    cleanupGate = null;
+    releaseCleanup = null;
+    await new Promise((r) => setTimeout(r, 30));
+  });
+
+  it("recovers a missed pr-merged webhook on reconcile and refreshes the stack", async () => {
+    // PROJ-200's PR merged on GitHub; no webhook ever reached us.
+    sourceControl4.prs.set(42, {
+      number: 42,
+      title: "PROJ-200",
+      state: "closed",
+      merged: true,
+      headBranch: "feature/PROJ-200",
+      baseBranch: "main",
+      url: "https://example.com/pr/42",
+      reviewDecision: null,
+    });
+    seedDependent("PROJ-201", 43, "feature/PROJ-200");
+
+    await webhook4.reconcileMergedPrs();
+
+    expect(pipelineState4.get("PROJ-200")?.currentPhase).toBe("done");
+    expect(pipelineState4.get("PROJ-200")?.prNumber).toBeNull();
+    expect(sourceControl4.calls).toContain("updatePullRequestBase:43:main");
+    expect(gitCalls4.map((c) => c.args.join(" "))).toContain("push origin HEAD:feature/PROJ-201");
+  });
+
+  it("does not mark a closed-but-unmerged PR done on reconcile", async () => {
+    sourceControl4.prs.set(42, {
+      number: 42,
+      title: "PROJ-200",
+      state: "closed",
+      merged: false,
+      headBranch: "feature/PROJ-200",
+      baseBranch: "main",
+      url: "https://example.com/pr/42",
+      reviewDecision: null,
+    });
+
+    await webhook4.reconcileMergedPrs();
+
+    expect(pipelineState4.get("PROJ-200")?.currentPhase).toBe("human-review");
+    expect(pipelineState4.get("PROJ-200")?.prNumber).toBe(42);
+  });
+
+  it("defers merged-issue cleanup until its working task finishes", async () => {
+    const worktree = join(tempDir4, ".redqueen", "worktrees", "PROJ-200");
+    mkdirSync(worktree, { recursive: true });
+    pipelineState4.updateBranchInfo("PROJ-200", { worktreePath: worktree });
+    sourceControl4.prs.set(42, {
+      number: 42,
+      title: "PROJ-200",
+      state: "closed",
+      merged: true,
+      headBranch: "feature/PROJ-200",
+      baseBranch: "main",
+      url: "https://example.com/pr/42",
+      reviewDecision: null,
+    });
+    const task = queue4.enqueue({ type: "code-feedback", issueId: "PROJ-200" });
+    queue4.markWorking(task.id);
+
+    await webhook4.reconcileMergedPrs();
+
+    expect(pipelineState4.get("PROJ-200")?.currentPhase).toBe("human-review");
+    expect(pipelineState4.get("PROJ-200")?.worktreePath).toBe(worktree);
+    expect(gitCalls4).toHaveLength(0);
+
+    queue4.markComplete(task.id, "worker stopped");
+    sourceControl4.getPullRequest = () =>
+      Promise.reject(new Error("deferred cleanup must not start another PR scan"));
+    await webhook4.retryPendingMergeCleanup("PROJ-200");
+
+    expect(pipelineState4.get("PROJ-200")?.currentPhase).toBe("done");
+    expect(pipelineState4.get("PROJ-200")?.worktreePath).toBeNull();
+    expect(gitCalls4.map((call) => call.args.join(" "))).toContain(
+      `worktree remove --force -- ${worktree}`,
+    );
+  });
+
+  it("retries a deferred merge even when neither event nor record has a PR number", async () => {
+    pipelineState4.updateBranchInfo("PROJ-200", { prNumber: null });
+    sourceControl4.parseResult = {
+      source: "webhook",
+      type: "pr-merged",
+      issueId: "PROJ-200",
+      timestamp: new Date().toISOString(),
+      payload: { branch: "feature/PROJ-200", base: "main" },
+    };
+    const task = queue4.enqueue({ type: "code-feedback", issueId: "PROJ-200" });
+    queue4.markWorking(task.id);
+
+    await fireMerge();
+    expect(pipelineState4.get("PROJ-200")?.currentPhase).toBe("human-review");
+
+    queue4.markComplete(task.id, "worker stopped");
+    await webhook4.retryPendingMergeCleanup("PROJ-200");
+
+    expect(pipelineState4.get("PROJ-200")?.currentPhase).toBe("done");
+    expect(pipelineState4.get("PROJ-200")?.branchName).toBeNull();
+  });
+
+  it("does not replay a terminal PR after the issue re-enters the pipeline", async () => {
+    sourceControl4.prs.set(42, {
+      number: 42,
+      title: "PROJ-200",
+      state: "closed",
+      merged: true,
+      headBranch: "feature/PROJ-200",
+      baseBranch: "main",
+      url: "https://example.com/pr/42",
+      reviewDecision: null,
+    });
+    pipelineState4.markDone("PROJ-200");
+    pipelineState4.updatePhase("PROJ-200", "coding");
+
+    await webhook4.reconcileMergedPrs();
+
+    expect(pipelineState4.get("PROJ-200")?.currentPhase).toBe("coding");
+    expect(pipelineState4.get("PROJ-200")?.prNumber).toBe(42);
+    expect(gitCalls4).toHaveLength(0);
+  });
+
+  it("sweeps branch artifacts left by a crash between merge commit and git cleanup", async () => {
+    const worktree = join(tempDir4, ".redqueen", "worktrees", "PROJ-200");
+    mkdirSync(worktree, { recursive: true });
+    pipelineState4.updateBranchInfo("PROJ-200", { worktreePath: worktree });
+    // Simulate the crash: the DB transition committed, the git cleanup never ran.
+    expect(pipelineState4.markPrMerged("PROJ-200", 42)).toBe("processed");
+
+    await webhook4.reconcileMergedPrs();
+
+    const flat = gitCalls4.map((c) => c.args.join(" "));
+    expect(flat).toContain(`worktree remove --force -- ${worktree}`);
+    expect(flat).toContain("branch -D -- feature/PROJ-200");
+    const record = pipelineState4.get("PROJ-200");
+    expect(record?.branchName).toBeNull();
+    expect(record?.worktreePath).toBeNull();
+    // Healed purely from local state — no PR lookups involved.
+    expect(sourceControl4.calls).toHaveLength(0);
+  });
+
+  it("does not sweep a done record whose PR never went through merge cleanup", async () => {
+    // Pipeline finished but the PR is still open: markDone keeps pr_number set.
+    pipelineState4.markDone("PROJ-200");
+
+    await webhook4.reconcileMergedPrs();
+
+    expect(gitCalls4).toHaveLength(0);
+    expect(pipelineState4.get("PROJ-200")?.branchName).toBe("feature/PROJ-200");
+  });
+
+  it("does not reject a merged-PR scan when lookup and audit reporting both fail", async () => {
+    sourceControl4.getPullRequest = () => Promise.reject(new Error("GitHub unavailable"));
+    audit4.log = () => {
+      throw new Error("audit database unavailable");
+    };
+
+    await expect(webhook4.reconcileMergedPrs()).resolves.toBeUndefined();
   });
 
   it("still retargets but skips the refresh when the dependent has a working task", async () => {
@@ -942,5 +1214,8 @@ describe("WebhookServer pr-merged stack retarget + refresh", () => {
     expect(sourceControl4.calls.filter((c) => c === "updatePullRequestBase:43:main")).toHaveLength(
       1,
     );
+    const merged = pipelineState4.get("PROJ-200");
+    expect(merged?.priorPhase).toBe("human-review");
+    expect(merged?.terminalPrNumber).toBe(42);
   });
 });

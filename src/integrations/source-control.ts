@@ -16,7 +16,10 @@ export interface CreatePROptions {
 export interface PullRequest {
   number: number;
   title: string;
-  state: string;
+  state: "open" | "closed";
+  // A merged PR reports state "closed" — only this distinguishes it from one
+  // closed without merging.
+  merged: boolean;
   headBranch: string;
   baseBranch: string;
   url: string;

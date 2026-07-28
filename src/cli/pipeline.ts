@@ -42,6 +42,7 @@ function cmdPipelineUpdate(args: string[]): Promise<void> {
   const update: {
     branchName?: string | null;
     prNumber?: number | null;
+    prBaseBranch?: string | null;
     worktreePath?: string | null;
   } = {};
   if (values.branch !== undefined) {
@@ -53,9 +54,14 @@ function cmdPipelineUpdate(args: string[]): Promise<void> {
       throw new CliError("pipeline update: --pr must be a number");
     }
     update.prNumber = n;
+    // A PR number and its recorded base are one identity. Carrying the old
+    // PR's base across a manual replacement makes stack-retarget decisions
+    // confidently wrong; unknown is safe and can still be resolved live.
+    update.prBaseBranch = null;
   }
   if (values["clear-pr"] === true) {
     update.prNumber = null;
+    update.prBaseBranch = null;
   }
   if (values.worktree !== undefined) {
     update.worktreePath = values.worktree;

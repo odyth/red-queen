@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { withTimeout } from "../core/async.js";
 import { DualWriteAuditLogger } from "../core/audit.js";
 import { buildPhaseGraph, validatePhaseGraph } from "../core/config.js";
 import { RedQueenDatabase } from "../core/database.js";
@@ -100,7 +101,17 @@ export async function cmdStart(args: string[]): Promise<void> {
       sourceControlType: config.sourceControl.type,
       sourceControlConfig: config.sourceControl.config,
     },
-    { configDir: dirname(configPath) },
+    {
+      configDir: dirname(configPath),
+      audit: (message, metadata) => {
+        audit.log({
+          component: "github-issues",
+          issueId: null,
+          message,
+          metadata,
+        });
+      },
+    },
   );
   const { issueTracker, sourceControl } = adapterPair;
 
@@ -142,7 +153,7 @@ export async function cmdStart(args: string[]): Promise<void> {
   }
 
   try {
-    await withTimeout(adapterPair.warmup(), 2000);
+    await withTimeout(adapterPair.warmup(), 2000, "Adapter warmup");
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (isAuthError(message)) {
@@ -230,24 +241,6 @@ interface BannerInput {
     paths: { issueTracker: string; sourceControl: string };
   };
   pid: number;
-}
-
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      reject(new Error(`timed out after ${String(ms)}ms`));
-    }, ms);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (err: unknown) => {
-        clearTimeout(timer);
-        reject(err as Error);
-      },
-    );
-  });
 }
 
 function isAuthError(message: string): boolean {
