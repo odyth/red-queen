@@ -342,10 +342,16 @@ function detectDefaultBranch(projectDir: string): string | null {
   } catch {
     // fall through
   }
+  // Without an origin remote `gh repo view` has nothing to resolve — skip the
+  // spawn entirely. gh is a ~50MB binary; cold-loading it just to watch it fail
+  // costs seconds on a loaded machine.
+  if (readGitRemote(projectDir) === null) {
+    return null;
+  }
   try {
     const out = execSync(
       "gh repo view --json defaultBranchRef --jq .defaultBranchRef.name 2>/dev/null",
-      { cwd: projectDir, encoding: "utf8" },
+      { cwd: projectDir, encoding: "utf8", timeout: 5000 },
     ).trim();
     if (out.length > 0) {
       return `origin/${out}`;
