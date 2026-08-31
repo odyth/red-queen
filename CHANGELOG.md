@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   flows into the existing cost accounting (price via `pipeline.cost.pricing`).
   Set `pipeline.codexBin` when `codex` isn't on the service PATH.
 
+### Changed
+
+- The default worker effort is now `max` (previously `high`). Upgraders who
+  don't pin `pipeline.effort` (or a per-phase `effort`) get longer, more
+  expensive runs; set `effort: high` to keep the old behavior.
+
 ### Fixed
 
 - Worker effort is no longer silently clamped between CLI-specific scales.

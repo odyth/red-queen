@@ -66,6 +66,37 @@ describe("worker diagnostics", () => {
     expect(sanitized).toContain("/Users/justin/projects/redqueen/settings");
   });
 
+  it("sanitizes a long digit-free token run in bounded time", () => {
+    const hostile = "a".repeat(100 * 1024);
+
+    const start = performance.now();
+    const sanitized = sanitizeWorkerDiagnostic(hostile);
+    const elapsedMs = performance.now() - start;
+
+    expect(elapsedMs).toBeLessThan(2000);
+    expect(sanitized).toContain("...[diagnostic truncated]");
+  });
+
+  it("caps oversized input before running redaction", () => {
+    const oversized = `${"a".repeat(20000)} api_key=secret-value-123`;
+
+    const sanitized = sanitizeWorkerDiagnostic(oversized);
+
+    expect(sanitized.length).toBeLessThan(17000);
+    expect(sanitized).toContain("...[diagnostic truncated]");
+  });
+
+  it("preserves token-count fields while redacting credential tokens", () => {
+    const sanitized = sanitizeWorkerDiagnostic(
+      "input_tokens: 5000 output_tokens=12345 access_token: 12345 api_tokens=8f3a9c1d",
+    );
+
+    expect(sanitized).toContain("input_tokens: 5000");
+    expect(sanitized).toContain("output_tokens=12345");
+    expect(sanitized).toContain("access_token: <redacted>");
+    expect(sanitized).toContain("api_tokens=<redacted>");
+  });
+
   it("strips ANSI sequences and controls while normalizing whitespace", () => {
     const diagnostic = "\u001b[31mWarning:\u001b[0m bad\u0000thing\t here\r\nnext\u0085line";
 
