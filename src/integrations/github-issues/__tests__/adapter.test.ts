@@ -253,10 +253,31 @@ describe("GitHubIssuesAdapter", () => {
     await expect(adapter.getAiAssignmentState("#7")).resolves.toEqual({
       phase: "coding",
       assignedToAi: true,
+      closed: false,
     });
     await expect(adapter.getAiAssignmentState("#8")).resolves.toEqual({
       phase: "spec-review",
       assignedToAi: false,
+      closed: false,
+    });
+  });
+
+  it("getAiAssignmentState reports a closed issue that kept its active label", async () => {
+    fake.add("get", () => ({
+      number: 9,
+      title: "closed with label",
+      state: "closed",
+      labels: [{ name: "rq:active" }, { name: "rq:phase:coding" }],
+      assignee: null,
+      user: { login: "alice" },
+      created_at: "2026-01-01",
+      updated_at: "2026-01-02",
+    }));
+
+    await expect(adapter.getAiAssignmentState("#9")).resolves.toEqual({
+      phase: "coding",
+      assignedToAi: true,
+      closed: true,
     });
   });
 
@@ -275,6 +296,7 @@ describe("GitHubIssuesAdapter", () => {
     await expect(adapter.getAiAssignmentState("#7")).resolves.toEqual({
       phase: "coding",
       assignedToAi: true,
+      closed: false,
     });
   });
 

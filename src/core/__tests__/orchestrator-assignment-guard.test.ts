@@ -25,6 +25,7 @@ interface AssignmentGuardHarness {
   issueTracker: MockIssueTracker;
   runtime: RuntimeState;
   orchestrator: RedQueen;
+  orchestratorState: OrchestratorStateStore;
   tempDir: string;
 }
 
@@ -43,12 +44,13 @@ describe("assignment-guarded orchestration", () => {
     const audit = new DualWriteAuditLogger(database.db, join(tempDir, "audit.log"));
     const issueTracker = new MockIssueTracker();
     const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
+    const orchestratorState = new OrchestratorStateStore(database.db);
     const orchestrator = new RedQueen({
       runtime,
       queue,
       pipelineState,
       phaseUsage: new PhaseUsageStore(database.db),
-      orchestratorState: new OrchestratorStateStore(database.db),
+      orchestratorState,
       audit,
       issueTracker,
       sourceControl: new MockSourceControl(),
@@ -64,6 +66,7 @@ describe("assignment-guarded orchestration", () => {
       issueTracker,
       runtime,
       orchestrator,
+      orchestratorState,
       tempDir,
     };
   });
@@ -109,7 +112,7 @@ describe("assignment-guarded orchestration", () => {
       if (assignmentReads === 1) {
         return Promise.reject(new Error("temporary 503"));
       }
-      return Promise.resolve({ assignedToAi: true, phase: "spec-writing" });
+      return Promise.resolve({ assignedToAi: true, phase: "spec-writing", closed: false });
     };
     const task = harness.queue.enqueue({
       type: "new-ticket",
@@ -157,7 +160,7 @@ describe("assignment-guarded orchestration", () => {
       if (assignmentReads === 1) {
         return Promise.reject(new Error("temporary timeout"));
       }
-      return Promise.resolve({ assignedToAi: true, phase: "code-review" });
+      return Promise.resolve({ assignedToAi: true, phase: "code-review", closed: false });
     };
     const task = harness.queue.enqueue({
       type: "coding",
@@ -202,6 +205,98 @@ describe("assignment-guarded orchestration", () => {
 
     expect(result.reason).toBe("matching-local-state");
     expect(harness.queue.getTask(task.id)?.status).toBe("ready");
+  });
+
+  it("retires a guarded task when the tracker issue is closed, even with the claim revoked", async () => {
+    const issueId = "PROJ-CLOSED";
+    harness.pipelineState.create(issueId, "coding");
+    harness.issueTracker.phases.set(issueId, "coding");
+    harness.issueTracker.assignments.set(issueId, "human");
+    harness.issueTracker.closedIssues.add(issueId);
+    const task = harness.queue.enqueue({
+      type: "coding",
+      issueId,
+      metadata: { [ASSIGNMENT_CLAIM_REQUIRED_METADATA_KEY]: true },
+    });
+
+    await processTask(harness.orchestrator, task);
+
+    expect(harness.queue.getTask(task.id)?.status).toBe("complete");
+    expect(harness.queue.getTask(task.id)?.result).toContain("closed");
+  });
+
+  it("fails a guarded task instead of deferring when the tracker lacks assignment support", async () => {
+    const issueId = "PROJ-NO-SUPPORT";
+    Object.assign(harness.issueTracker, { getAiAssignmentState: undefined });
+    const task = harness.queue.enqueue({
+      type: "coding",
+      issueId,
+      metadata: { [ASSIGNMENT_CLAIM_REQUIRED_METADATA_KEY]: true },
+    });
+
+    await processTask(harness.orchestrator, task);
+
+    expect(harness.queue.getTask(task.id)?.status).toBe("failed");
+    expect(harness.queue.getTask(task.id)?.result).toContain("support");
+  });
+
+  it("counts an assignment-check outage once, not once per deferred retry", async () => {
+    const issueId = "PROJ-OUTAGE";
+    harness.issueTracker.getPhaseThrowsFor.add(issueId);
+    const task = harness.queue.enqueue({
+      type: "coding",
+      issueId,
+      metadata: { [ASSIGNMENT_CLAIM_REQUIRED_METADATA_KEY]: true },
+    });
+
+    await processTask(harness.orchestrator, task);
+    expect(harness.queue.getTask(task.id)?.status).toBe("deferred");
+    expect(harness.orchestratorState.get().errorCount).toBe(1);
+
+    harness.queue.releaseDeferred();
+    const retry = harness.queue.dequeue();
+    if (retry === null) {
+      throw new Error("deferred assignment claim was not released");
+    }
+    await processTask(harness.orchestrator, retry);
+
+    expect(harness.queue.getTask(task.id)?.status).toBe("deferred");
+    expect(harness.orchestratorState.get().errorCount).toBe(1);
+  });
+
+  it("posts a one-time routing comment when new-ticket dead-ends on a mid-pipeline phase", async () => {
+    const issueId = "PROJ-DEAD-END";
+    harness.issueTracker.assignments.set(issueId, "ai");
+    harness.issueTracker.phases.set(issueId, "coding");
+    const task = harness.queue.enqueue({
+      type: "new-ticket",
+      issueId,
+      metadata: { [ASSIGNMENT_CLAIM_REQUIRED_METADATA_KEY]: true },
+    });
+
+    await processTask(harness.orchestrator, task);
+
+    expect(harness.queue.getTask(task.id)?.status).toBe("complete");
+    expect(harness.queue.hasOpenTask(issueId, "coding")).toBe(false);
+    const comments = harness.issueTracker.commentsById.get(issueId) ?? [];
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("entry phase");
+  });
+
+  it("does not post a routing comment when new-ticket skips a human-gate phase", async () => {
+    const issueId = "PROJ-GATED-SKIP";
+    harness.issueTracker.assignments.set(issueId, "ai");
+    harness.issueTracker.phases.set(issueId, "spec-review");
+    const task = harness.queue.enqueue({
+      type: "new-ticket",
+      issueId,
+      metadata: { [ASSIGNMENT_CLAIM_REQUIRED_METADATA_KEY]: true },
+    });
+
+    await processTask(harness.orchestrator, task);
+
+    expect(harness.queue.getTask(task.id)?.status).toBe("complete");
+    expect(harness.issueTracker.commentsById.get(issueId) ?? []).toHaveLength(0);
   });
 
   it("continues to create unguarded tasks for ordinary phase reconciliation", async () => {

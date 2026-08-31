@@ -116,6 +116,19 @@ describe("reconcile", () => {
     expect(queue.hasOpenTask(issue.id, "new-ticket")).toBe(false);
   });
 
+  it("skips human-gated recovery candidates without a live assignment read", async () => {
+    const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
+    const issueTracker = new MockIssueTracker();
+    issueTracker.assignedToAiResults = [makeIssue("PROJ-GATED", "spec-review")];
+
+    const result = await reconcile({ issueTracker, queue, runtime, pipelineState, audit });
+
+    expect(result.issuesFound).toBe(1);
+    expect(result.tasksCreated).toBe(0);
+    expect(issueTracker.calls).not.toContain("getAiAssignmentState:PROJ-GATED");
+    expect(queue.listByStatus("ready")).toHaveLength(0);
+  });
+
   it("lets the phase sweep win over a stale unphased assignment snapshot", async () => {
     const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
     const issueTracker = new MockIssueTracker();

@@ -242,12 +242,13 @@ describe("JiraIssueTrackerAdapter", () => {
     expect(issues[0]?.phase).toBeNull();
   });
 
-  it("getAiAssignmentState returns the live phase and bot ownership", async () => {
+  it("getAiAssignmentState returns the live phase, bot ownership, and done-ness", async () => {
     h.setResponse((c) => c.url.endsWith("/issue/RQ-ACTIVE") && c.method === "GET", {
       id: "10009",
       key: "RQ-ACTIVE",
       fields: {
         summary: "active",
+        status: { name: "In Progress", statusCategory: { key: "indeterminate" } },
         assignee: { accountId: "bot-1" },
         issuetype: { name: "Task" },
         customfield_10158: { id: "10056" },
@@ -263,14 +264,32 @@ describe("JiraIssueTrackerAdapter", () => {
         customfield_10158: null,
       },
     });
+    h.setResponse((c) => c.url.endsWith("/issue/RQ-DONE") && c.method === "GET", {
+      id: "10011",
+      key: "RQ-DONE",
+      fields: {
+        summary: "finished but still assigned",
+        status: { name: "Done", statusCategory: { key: "done" } },
+        assignee: { accountId: "bot-1" },
+        issuetype: { name: "Task" },
+        customfield_10158: { id: "10056" },
+      },
+    });
 
     await expect(h.adapter.getAiAssignmentState("RQ-ACTIVE")).resolves.toEqual({
       phase: "coding",
       assignedToAi: true,
+      closed: false,
     });
     await expect(h.adapter.getAiAssignmentState("RQ-REVOKED")).resolves.toEqual({
       phase: null,
       assignedToAi: false,
+      closed: false,
+    });
+    await expect(h.adapter.getAiAssignmentState("RQ-DONE")).resolves.toEqual({
+      phase: "coding",
+      assignedToAi: true,
+      closed: true,
     });
   });
 

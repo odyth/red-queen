@@ -17,6 +17,10 @@ export interface Issue {
 export interface AiAssignmentState {
   phase: string | null;
   assignedToAi: boolean;
+  // Tracker-level done-ness (Jira statusCategory Done, GitHub closed). Jira
+  // keeps the assignee and GitHub keeps labels on finished issues, so
+  // assignedToAi alone cannot retire a claim a human closed out-of-band.
+  closed: boolean;
 }
 
 // A direct blocker of an issue ("is blocked by" edge). `closed` reflects the
@@ -42,6 +46,9 @@ export interface IssueTracker {
   listIssuesByPhase(phaseName: string): Promise<Issue[]>;
   // Optional for compatibility with third-party adapters. Built-in adapters
   // implement it so missed assignment webhooks can recover unphased tickets.
+  // Adapters implementing getAiAssignmentState should implement this too:
+  // without it, a failed webhook-time ownership read on an unphased issue has
+  // no retry path.
   listIssuesAssignedToAi?(): Promise<Issue[]>;
   // Optional for compatibility with third-party adapters. Assignment-driven
   // routing fails closed when this live ownership check is unavailable.

@@ -35,6 +35,7 @@ export class MockIssueTracker implements IssueTracker {
   getSpecThrowsFor = new Set<string>();
   getPhaseThrowsFor = new Set<string>();
   defaultAssignedToAi = false;
+  closedIssues = new Set<string>();
 
   async getIssue(issueId: string): Promise<Issue> {
     this.calls.push(`getIssue:${issueId}`);
@@ -67,6 +68,7 @@ export class MockIssueTracker implements IssueTracker {
       assignedToAi:
         explicitAssignment === "ai" ||
         (explicitAssignment === undefined && (this.defaultAssignedToAi || discoveredAsAssigned)),
+      closed: this.closedIssues.has(issueId),
     });
   }
 

@@ -102,7 +102,7 @@ describe("routeAiAssignment", () => {
 
   it("rechecks local state after the live phase lookup", async () => {
     let resolveState:
-      | ((state: { phase: string | null; assignedToAi: boolean }) => void)
+      | ((state: { phase: string | null; assignedToAi: boolean; closed: boolean }) => void)
       | undefined;
     issueTracker.getAiAssignmentState = () =>
       new Promise((resolve) => {
@@ -112,7 +112,7 @@ describe("routeAiAssignment", () => {
     const pendingRoute = route("PROJ-STATE-RACE", "delegator-race");
     pipelineState.create("PROJ-STATE-RACE", "coding");
     expect(resolveState).toBeDefined();
-    resolveState?.({ phase: null, assignedToAi: true });
+    resolveState?.({ phase: null, assignedToAi: true, closed: false });
 
     const result = await pendingRoute;
 
@@ -158,6 +158,34 @@ describe("routeAiAssignment", () => {
         .some((entry) => entry.message.includes("assignment state read failed")),
     ).toBe(true);
     expect(pipelineState.get("PROJ-FAIL")?.delegatorAccountId).toBe("delegator-new");
+  });
+
+  it("audits the missing retry path when the tracker cannot list AI-assigned issues", async () => {
+    Object.assign(issueTracker, { listIssuesAssignedToAi: undefined });
+    issueTracker.getPhaseThrowsFor.add("PROJ-NO-SWEEP");
+
+    const result = await route("PROJ-NO-SWEEP");
+
+    expect(result.outcome).toBe("deferred");
+    const messages = audit.query({ issueId: "PROJ-NO-SWEEP" }).map((entry) => entry.message);
+    expect(messages.some((m) => m.includes("reconciliation will retry"))).toBe(false);
+    expect(messages.some((m) => m.includes("re-assign the issue"))).toBe(true);
+  });
+
+  it("does not enqueue when the tracker issue is closed", async () => {
+    issueTracker.phases.set("PROJ-DONE", "coding");
+    issueTracker.closedIssues.add("PROJ-DONE");
+    pipelineState.create("PROJ-DONE", "spec-writing");
+
+    const result = await route("PROJ-DONE");
+
+    expect(result).toEqual({
+      outcome: "skipped",
+      reason: "issue-closed",
+      phase: "coding",
+      taskType: null,
+    });
+    expect(queue.listByStatus("ready")).toHaveLength(0);
   });
 
   it("does not enqueue when the AI assignment was revoked before routing", async () => {

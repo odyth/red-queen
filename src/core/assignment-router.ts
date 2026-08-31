@@ -27,6 +27,7 @@ export type AssignmentRouteReason =
   | "enqueued"
   | "already-queued"
   | "assignment-state-read-failed"
+  | "issue-closed"
   | "assignment-revoked"
   | "unphased-existing-state"
   | "unknown-phase"
@@ -82,10 +83,16 @@ export async function routeAiAssignment(
     if (initialRecord === null && delegator !== null) {
       pipelineState.updateDelegator(issueId, delegator);
     }
+    // The recovery sweep only re-finds unphased issues via
+    // listIssuesAssignedToAi — without it this failure has no retry path.
+    const retryNote =
+      issueTracker.listIssuesAssignedToAi === undefined
+        ? "no sweep recovery on this tracker — re-assign the issue to retry"
+        : "reconciliation will retry";
     audit.log({
       component,
       issueId,
-      message: `assignment-change: live assignment state read failed; reconciliation will retry: ${errorMessage(err)}`,
+      message: `assignment-change: live assignment state read failed; ${retryNote}: ${errorMessage(err)}`,
       metadata: {},
     });
     return {
@@ -105,6 +112,20 @@ export async function routeAiAssignment(
   }
 
   const currentPhase = assignmentState.phase;
+  if (assignmentState.closed) {
+    audit.log({
+      component,
+      issueId,
+      message: "assignment-change: issue is closed on the tracker — no task created",
+      metadata: { phase: currentPhase },
+    });
+    return {
+      outcome: "skipped",
+      reason: "issue-closed",
+      phase: currentPhase,
+      taskType: null,
+    };
+  }
   if (assignmentState.assignedToAi === false) {
     audit.log({
       component,

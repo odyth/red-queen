@@ -157,6 +157,15 @@ export async function reconcile(deps: ReconcilerDeps): Promise<ReconcileResult> 
       }
       seenIssueIds.add(issue.id);
       issuesFound++;
+      // GitHub's active-label listing includes issues parked at human gates.
+      // Their snapshot phase is enough to skip them here — live routing would
+      // only rediscover the gate after one tracker read per issue per sweep.
+      // A gate exit missed by this snapshot is caught by its webhook or the
+      // next sweep's phase listing.
+      if (issue.phase !== null && runtime.phaseGraph.isHumanGate(issue.phase)) {
+        skipped++;
+        continue;
+      }
       recoveryCandidates.push(issue);
     }
 

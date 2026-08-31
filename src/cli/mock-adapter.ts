@@ -45,7 +45,7 @@ export class MockIssueTrackerAdapter implements IssueTracker {
     return Promise.resolve([]);
   }
   getAiAssignmentState(): Promise<AiAssignmentState> {
-    return Promise.resolve({ phase: null, assignedToAi: false });
+    return Promise.resolve({ phase: null, assignedToAi: false, closed: false });
   }
   getPhase(): Promise<string | null> {
     return Promise.resolve(null);

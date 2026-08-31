@@ -605,21 +605,64 @@ export class RedQueen {
       return { action: "proceed", state: null };
     }
 
+    // Missing adapter support is a durable configuration mismatch, not an
+    // outage — deferring would churn dequeue → throw → defer every sweep
+    // forever. Fail visibly; reconciliation recreates unguarded work if the
+    // live phase still warrants it.
+    if (this.deps.issueTracker.getAiAssignmentState === undefined) {
+      if (this.deps.queue.markWorking(task.id)) {
+        this.deps.queue.markFailed(
+          task.id,
+          "Issue tracker does not support AI assignment checks — guarded task cannot run",
+        );
+        this.deps.orchestratorState.incrementErrors();
+      }
+      this.deps.audit.log({
+        component: "orchestrator",
+        issueId,
+        message: "Failing assignment-guarded task — tracker lacks getAiAssignmentState support",
+        metadata: { taskId: task.id, type: task.type },
+      });
+      this.emitQueueChanged();
+      return { action: "stop" };
+    }
+
     let state: AiAssignmentState;
     try {
       state = await readAiAssignmentState(this.deps.issueTracker, issueId);
     } catch (err) {
       // Keep the guarded task open so a transient tracker outage cannot turn
       // the claim into a terminal failure that reconciliation replaces with an
-      // unguarded phase task. The deferred-release sweep retries this same task.
+      // unguarded phase task. The deferred-release sweep retries this same
+      // task; repeat deferrals of one outage are liveness churn, not new
+      // errors, so only the first one counts.
       if (this.deps.queue.markDeferred(task.id, [ASSIGNMENT_CHECK_ERROR_BLOCKER])) {
-        this.deps.orchestratorState.incrementErrors();
+        if (JSON.stringify(task.blockedOn) !== JSON.stringify([ASSIGNMENT_CHECK_ERROR_BLOCKER])) {
+          this.deps.orchestratorState.incrementErrors();
+        }
       }
       this.deps.audit.log({
         component: "orchestrator",
         issueId,
         message: `AI assignment revalidation failed closed — task deferred for retry: ${errorMessage(err)}`,
         metadata: { taskId: task.id, type: task.type },
+      });
+      this.emitQueueChanged();
+      return { action: "stop" };
+    }
+
+    // A closed issue is finished work regardless of who still holds the
+    // assignment — Jira keeps the assignee on Done tickets and GitHub keeps
+    // labels on closed issues, so a claim here would otherwise churn forever.
+    if (state.closed) {
+      if (this.deps.queue.markWorking(task.id)) {
+        this.deps.queue.markComplete(task.id, "Issue is closed on the tracker — claim retired");
+      }
+      this.deps.audit.log({
+        component: "orchestrator",
+        issueId,
+        message: `Retiring assignment-guarded ${task.type} task — issue is closed on the tracker`,
+        metadata: { taskId: task.id, type: task.type, phase: state.phase },
       });
       this.emitQueueChanged();
       return { action: "stop" };
@@ -730,6 +773,25 @@ export class RedQueen {
           : `new-ticket revalidation found ${livePhase} — skipped initialization`,
         metadata: { taskId: task.id, phase: livePhase },
       });
+      // A mid-pipeline automated phase with no local record is unroutable from
+      // here on: the phase sweep and assignment routing both skip it, and the
+      // stall would otherwise be audit-log-only. This task completes exactly
+      // once, so the comment cannot repeat.
+      if (canRouteExistingPhase === false && phase?.type === "automated") {
+        try {
+          await this.deps.issueTracker.addComment(
+            issueId,
+            `Red Queen: cannot route this issue — it is in ${livePhase} but has no local pipeline history. Move it to an entry phase or clear the phase to let Red Queen initialize it.`,
+          );
+        } catch (commentErr) {
+          this.deps.audit.log({
+            component: "orchestrator",
+            issueId,
+            message: `Failed to post unroutable-phase comment: ${errorMessage(commentErr)}`,
+            metadata: { taskId: task.id },
+          });
+        }
+      }
       this.emitQueueChanged();
       return;
     }

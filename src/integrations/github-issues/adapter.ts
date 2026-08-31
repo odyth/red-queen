@@ -93,6 +93,7 @@ export class GitHubIssuesAdapter implements IssueTracker {
     return {
       phase: issue.phase,
       assignedToAi: issue.labels.some((label) => labelsEqual(label, ACTIVE_LABEL)),
+      closed: issue.status === "closed",
     };
   }
 

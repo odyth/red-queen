@@ -67,7 +67,7 @@ interface JiraIssueRaw {
   key: string;
   fields: {
     summary?: string;
-    status?: { name?: string };
+    status?: { name?: string; statusCategory?: { key?: string } };
     assignee?: { accountId?: string; displayName?: string } | null;
     reporter?: { accountId?: string; displayName?: string } | null;
     issuetype?: { name?: string };
@@ -183,13 +183,15 @@ export class JiraIssueTrackerAdapter implements IssueTracker {
   }
 
   async getAiAssignmentState(issueId: string): Promise<AiAssignmentState> {
-    const [issue, botAccountId] = await Promise.all([
-      this.getIssue(issueId),
+    const [raw, botAccountId] = await Promise.all([
+      this.client.request<JiraIssueRaw>("GET", `/rest/api/3/issue/${encodeURIComponent(issueId)}`),
       this.ensureBotAccountId(),
     ]);
+    const issue = this.toIssue(raw);
     return {
       phase: issue.phase,
       assignedToAi: issue.assignee === botAccountId,
+      closed: raw.fields.status?.statusCategory?.key === "done",
     };
   }
 
