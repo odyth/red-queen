@@ -50,7 +50,7 @@ pipeline:
   # agent: codex
   # codexBin: /usr/local/bin/codex   # if `codex` isn't on the service PATH
   # model: opus                      # agent-specific; omit under codex to use ~/.codex/config.toml
-  # effort: high                     # minimal|low|medium|high|xhigh|max
+  # effort: max                      # default; provider-specific values are accepted
   cost:
     # Post an estimated per-phase + total cost comment on each ticket (upserted
     # in place). Works on Bedrock and Claude Max — cost comes from Claude Code's

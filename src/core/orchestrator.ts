@@ -34,6 +34,7 @@ import type { PhaseDefinition, Task } from "./types.js";
 import type { OrchestratorState } from "./types.js";
 import { resolveAgentBin, resolveAgentSettings, runWorker as defaultRunWorker } from "./worker.js";
 import type { WorkerOptions, WorkerResult } from "./worker.js";
+import { sanitizeWorkerDiagnostic } from "./worker-diagnostics.js";
 import type { AiAssignmentState, IssueTracker } from "../integrations/issue-tracker.js";
 import type { SourceControl } from "../integrations/source-control.js";
 import { DashboardServer } from "../dashboard/server.js";
@@ -1244,9 +1245,18 @@ export class RedQueen {
       this.currentWorkerPid = null;
       safeUnlink(tempPath);
     }
+    result = sanitizeWorkerResultDiagnostics(result);
 
     const elapsed = Math.round((this.now() - startedAt) / 1000);
     this.emitWorkerCompleted(task, phase, result, elapsed);
+    if (result.warning !== undefined) {
+      safeAudit(this.deps.audit, {
+        component: "worker",
+        issueId,
+        message: `${phase.name} worker warning: ${result.warning}`,
+        metadata: { taskId: task.id, phase: phase.name },
+      });
+    }
 
     // An abort means the ticket left this phase mid-run (the watch killed the
     // worker). That's not a failure — don't retry or route onFail. Gate on
@@ -2191,6 +2201,26 @@ export class RedQueen {
       },
     });
   }
+}
+
+function sanitizeWorkerResultDiagnostics(result: WorkerResult): WorkerResult {
+  const { warning, ...rest } = result;
+  const error =
+    result.error === null
+      ? null
+      : sanitizeAndTruncateDiagnostic(result.error) ||
+        "Worker failed without a readable diagnostic";
+  if (warning === undefined) {
+    return { ...rest, error };
+  }
+  const safeWarning = sanitizeAndTruncateDiagnostic(warning);
+  return safeWarning.length > 0 ? { ...rest, error, warning: safeWarning } : { ...rest, error };
+}
+
+function sanitizeAndTruncateDiagnostic(value: string): string {
+  const maxLength = 2000;
+  const safe = sanitizeWorkerDiagnostic(value);
+  return safe.length <= maxLength ? safe : `${safe.substring(0, maxLength)}...`;
 }
 
 function safeUnlink(path: string): void {

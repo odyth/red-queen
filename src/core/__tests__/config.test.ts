@@ -23,6 +23,17 @@ project:
   buildCommand: "npm run build"
   testCommand: "npm test"
 `;
+  const invalidEfforts = [
+    ["empty", ""],
+    ["whitespace-only", "   "],
+    ["too long", "x".repeat(65)],
+    ["NUL", "\u0000"],
+    ["C0 control", "high\u0001"],
+    ["escape control", "high\u001b"],
+    ["DEL", "high\u007f"],
+    ["internal whitespace", "high mode"],
+    ["parser-hostile punctuation", "high=override"],
+  ] as const;
 
   it("parses minimal config with defaults applied", () => {
     const config = parseConfig(minimalYaml);
@@ -81,9 +92,35 @@ dashboard:
     const config = parseConfig(minimalYaml);
     expect(config.pipeline.agent).toBe("claude-code");
     expect(config.pipeline.model).toBeUndefined();
-    expect(config.pipeline.effort).toBe("high");
+    expect(config.pipeline.effort).toBe("max");
     expect(config.pipeline.codexBin).toBeUndefined();
   });
+
+  it("accepts an arbitrary pipeline effort", () => {
+    const yaml = `${minimalYaml}pipeline:
+  effort: future-mode
+`;
+    const config = parseConfig(yaml);
+    expect(config.pipeline.effort).toBe("future-mode");
+  });
+
+  it("trims a pipeline effort", () => {
+    const yaml = `${minimalYaml}pipeline:
+  effort: "  future-mode  "
+`;
+    const config = parseConfig(yaml);
+    expect(config.pipeline.effort).toBe("future-mode");
+  });
+
+  it.each(invalidEfforts)(
+    "rejects a structurally invalid pipeline effort: %s",
+    (_description, effort) => {
+      const yaml = `${minimalYaml}pipeline:
+  effort: ${JSON.stringify(effort)}
+`;
+      expect(() => parseConfig(yaml)).toThrow();
+    },
+  );
 
   it("parses a codex master agent", () => {
     const yaml = `${minimalYaml}pipeline:
@@ -111,16 +148,16 @@ dashboard:
     next: done
     assignTo: ai
     agent: codex
-    model: gpt-5.3-codex
-    effort: xhigh
+    model: gpt-5.6-sol
+    effort: ultra
 `;
     const config = parseConfig(yaml);
     expect(config.phases[0]?.agent).toBe("codex");
-    expect(config.phases[0]?.model).toBe("gpt-5.3-codex");
-    expect(config.phases[0]?.effort).toBe("xhigh");
+    expect(config.phases[0]?.model).toBe("gpt-5.6-sol");
+    expect(config.phases[0]?.effort).toBe("ultra");
   });
 
-  it("rejects an invalid per-phase effort", () => {
+  it("accepts an arbitrary per-phase effort", () => {
     const yaml = `${minimalYaml}phases:
   - name: coding
     label: Coding
@@ -130,8 +167,25 @@ dashboard:
     assignTo: ai
     effort: turbo
 `;
-    expect(() => parseConfig(yaml)).toThrow();
+    const config = parseConfig(yaml);
+    expect(config.phases[0]?.effort).toBe("turbo");
   });
+
+  it.each(invalidEfforts)(
+    "rejects a structurally invalid per-phase effort: %s",
+    (_description, effort) => {
+      const yaml = `${minimalYaml}phases:
+  - name: coding
+    label: Coding
+    type: automated
+    skill: coder
+    next: done
+    assignTo: ai
+    effort: ${JSON.stringify(effort)}
+`;
+      expect(() => parseConfig(yaml)).toThrow();
+    },
+  );
 
   it("accepts skipRetryOnFailure on a YAML-defined phase", () => {
     const yaml = `${minimalYaml}phases:

@@ -10,6 +10,7 @@ import {
   runWorker,
 } from "../worker.js";
 import type { WorkerOptions } from "../worker.js";
+import { parseConfig } from "../config.js";
 
 let tempDir: string;
 
@@ -147,6 +148,28 @@ describe("buildWorkerArgs", () => {
     effort: "high",
   };
 
+  it("composes minimal config defaults into supported Claude worker arguments", () => {
+    const config = parseConfig(`
+issueTracker:
+  type: jira
+sourceControl:
+  type: github
+project:
+  buildCommand: "npm run build"
+  testCommand: "npm test"
+`);
+    const settings = resolveAgentSettings(config.pipeline, {});
+    const args = buildWorkerArgs({
+      ...base,
+      agent: settings.agent,
+      model: settings.model,
+      effort: settings.effort,
+    });
+
+    expect(settings).toEqual({ agent: "claude-code", model: "opus", effort: "max" });
+    expect(args[args.indexOf("--effort") + 1]).toBe("max");
+  });
+
   it("builds the claude-code argv exactly as before", () => {
     expect(buildWorkerArgs(base)).toEqual([
       "-p",
@@ -185,20 +208,25 @@ describe("buildWorkerArgs", () => {
     expect(claudeArgs).not.toContain("--model");
   });
 
-  it("clamps max to xhigh for codex", () => {
-    const args = buildWorkerArgs({ ...base, agent: "codex", effort: "max" });
-    expect(args).toContain("model_reasoning_effort=xhigh");
+  it.each(["max", "ultra", "future-mode"])("passes %s through unchanged for codex", (effort) => {
+    const args = buildWorkerArgs({ ...base, agent: "codex", effort });
+    expect(args).toContain(`model_reasoning_effort=${effort}`);
   });
 
-  it("clamps minimal to low for claude-code", () => {
+  it("maps Claude's legacy minimal effort to low", () => {
     const args = buildWorkerArgs({ ...base, effort: "minimal" });
-    expect(args).toContain("--effort");
     expect(args[args.indexOf("--effort") + 1]).toBe("low");
   });
 
-  it("passes minimal through for codex", () => {
+  it("passes minimal through unchanged for codex", () => {
     const args = buildWorkerArgs({ ...base, agent: "codex", effort: "minimal" });
     expect(args).toContain("model_reasoning_effort=minimal");
+  });
+
+  it("passes effort through unchanged for claude-code", () => {
+    const args = buildWorkerArgs({ ...base, effort: "future-mode" });
+    expect(args).toContain("--effort");
+    expect(args[args.indexOf("--effort") + 1]).toBe("future-mode");
   });
 });
 
@@ -210,6 +238,31 @@ describe("runWorker", () => {
   afterEach(() => {
     rmSync(tempDir, { recursive: true, force: true });
   });
+
+  it.each(["claude-code", "codex"] as const)(
+    "normalizes synchronous %s spawn argument failures",
+    async (agent) => {
+      const result = await runWorker({
+        bin: "/usr/bin/true",
+        agent,
+        prompt: "",
+        cwd: tempDir,
+        timeoutMs: 5000,
+        stallThresholdMs: 60000,
+        model: null,
+        effort: "\0",
+      });
+
+      expect(result).toMatchObject({
+        success: false,
+        exitCode: -1,
+        summary: "",
+        usage: null,
+        reportedCostUsd: null,
+      });
+      expect(result.error).toContain("without null bytes");
+    },
+  );
 
   it("captures stdout JSON on success", async () => {
     // Script that prints a JSON result and exits 0. It ignores its args.
@@ -234,13 +287,63 @@ exit 0
     expect(result.success).toBe(true);
     expect(result.exitCode).toBe(0);
     expect(result.summary).toBe("Completed the task");
+    expect(result.warning).toBeUndefined();
+  });
+
+  it("captures stderr as a warning on a successful exit", async () => {
+    const script = writeScript(
+      "worker.sh",
+      `#!/bin/sh
+echo "unsupported effort; using default" 1>&2
+printf '%s' '{"result":"Completed the task"}'
+exit 0
+`,
+    );
+    const result = await runWorker({
+      bin: script,
+      prompt: "",
+      cwd: tempDir,
+      timeoutMs: 5000,
+      stallThresholdMs: 60000,
+      model: "opus",
+      effort: "max",
+      heartbeatIntervalMs: 1000,
+      stallGracePeriodMs: 60000,
+    });
+    expect(result.success).toBe(true);
+    expect(result.warning).toBe("unsupported effort; using default");
+  });
+
+  it("omits arbitrary successful stderr instead of persisting its contents", async () => {
+    const script = writeScript(
+      "worker.sh",
+      `#!/bin/sh
+echo "plugin request token=short-secret" 1>&2
+printf '%s' '{"result":"Completed the task"}'
+exit 0
+`,
+    );
+    const result = await runWorker({
+      bin: script,
+      prompt: "",
+      cwd: tempDir,
+      timeoutMs: 5000,
+      stallThresholdMs: 60000,
+      model: "opus",
+      effort: "max",
+      heartbeatIntervalMs: 1000,
+      stallGracePeriodMs: 60000,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.warning).toBeUndefined();
   });
 
   it("captures stderr on non-zero exit", async () => {
     const script = writeScript(
       "worker.sh",
       `#!/bin/sh
-echo "bad things happened" 1>&2
+echo "bad things happened token=failure-secret" 1>&2
 exit 2
 `,
     );
@@ -258,6 +361,8 @@ exit 2
     expect(result.success).toBe(false);
     expect(result.exitCode).toBe(2);
     expect(result.error).toContain("bad things happened");
+    expect(result.error).toContain("token=<redacted>");
+    expect(result.error).not.toContain("failure-secret");
   });
 
   it("kills on hard timeout", async () => {

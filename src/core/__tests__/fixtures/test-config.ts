@@ -27,7 +27,7 @@ export function makeTestConfig(overrides: Partial<RedQueenConfig> = {}): RedQuee
       cost: { enabled: false, pricing: {} },
       agent: "claude-code",
       model: "opus",
-      effort: "high",
+      effort: "max",
       stallThresholdMs: 300000,
       reconcileInterval: 300,
       skipSpecReviewIfReady: false,

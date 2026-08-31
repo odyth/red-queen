@@ -82,6 +82,17 @@ describe("buildFailureNotice", () => {
     expect(body).not.toContain("attempts");
   });
 
+  it("sanitizes secrets in the parsed summary before posting", () => {
+    const body = buildFailureNotice({
+      phaseLabel: "Coding",
+      destinationLabel: "Blocked",
+      attempts: 1,
+      result: failure({ error: "boom", summary: "Authorization: Bearer short-secret" }),
+    });
+    expect(body).not.toContain("short-secret");
+    expect(body).toContain("Bearer <redacted>");
+  });
+
   it("neutralizes code fences in worker output", () => {
     const body = buildFailureNotice({
       phaseLabel: "Coding",

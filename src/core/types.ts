@@ -8,11 +8,6 @@ export type AssignTo = "ai" | "human";
 // per-phase (PhaseDefinition.agent); resolution is phase-over-pipeline.
 export type WorkerAgent = "claude-code" | "codex";
 
-// Superset of both CLIs' reasoning-effort scales. Clamped to what the resolved
-// agent supports at arg-build time: codex has no "max" (→ xhigh), claude-code
-// has no "minimal" (→ low).
-export type WorkerEffort = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
-
 export interface PhaseDefinition {
   name: string;
   label: string;
@@ -56,10 +51,11 @@ export interface PhaseDefinition {
   requiresSpec?: boolean;
   // Per-phase worker overrides. Omitted fields fall back to pipeline.agent /
   // pipeline.model / pipeline.effort — except model, which never inherits across
-  // an agent boundary (model names are agent-specific).
+  // an agent boundary (model names are agent-specific). Effort is intentionally
+  // opaque so downstream CLIs can add modes without requiring a Red Queen release.
   agent?: WorkerAgent;
   model?: string;
-  effort?: WorkerEffort;
+  effort?: string;
 }
 
 export class PhaseGraph {

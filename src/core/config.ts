@@ -9,6 +9,16 @@ import { DEFAULT_PHASES } from "./defaults.js";
 // --- Zod schemas ---
 
 const SKILL_NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
+const EFFORT_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const EffortSchema = z
+  .string()
+  .trim()
+  .min(1, "effort must not be empty")
+  .max(64, "effort must be at most 64 characters")
+  .regex(
+    EFFORT_RE,
+    "effort must start with a letter or digit and contain only letters, digits, '.', '_' or '-'",
+  );
 // Service unit / plist filenames are derived from this value without
 // sanitization downstream, so lock it down to a safe character set. No path
 // separators, no '..' traversal — just a POSIX-ish identifier with dots.
@@ -40,7 +50,7 @@ const PhaseDefinitionSchema = z
     skipRetryOnFailure: z.boolean().optional(),
     agent: z.enum(["claude-code", "codex"]).optional(),
     model: z.string().min(1).optional(),
-    effort: z.enum(["minimal", "low", "medium", "high", "xhigh", "max"]).optional(),
+    effort: EffortSchema.optional(),
   })
   .strict();
 
@@ -142,7 +152,7 @@ const ConfigSchema = z
         // resolved agent is claude-code. A schema-level default would leak an
         // Anthropic model name into codex runs.
         model: z.string().optional(),
-        effort: z.string().default("high"),
+        effort: EffortSchema.default("max"),
         stallThresholdMs: z.number().default(300000),
         reconcileInterval: z.number().default(300),
         skipSpecReviewIfReady: z.boolean().default(false),
@@ -162,7 +172,7 @@ const ConfigSchema = z
         },
         cost: { enabled: false, pricing: {} },
         agent: "claude-code",
-        effort: "high",
+        effort: "max",
         stallThresholdMs: 300000,
         reconcileInterval: 300,
         skipSpecReviewIfReady: false,

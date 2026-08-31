@@ -68,15 +68,17 @@ export class DualWriteAuditLogger implements AuditLogger {
 
   log(entry: Omit<AuditEntry, "timestamp">): void {
     const timestamp = new Date().toISOString();
+    const safeMessage = stripControlCharacters(entry.message);
     const metadataJson =
       Object.keys(entry.metadata).length > 0 ? JSON.stringify(entry.metadata) : null;
 
     // SQLite write
-    this.insertStmt.run(timestamp, entry.component, entry.issueId, entry.message, metadataJson);
+    this.insertStmt.run(timestamp, entry.component, entry.issueId, safeMessage, metadataJson);
 
-    // Flat file write — sanitize message so embedded newlines/pipes can't forge
-    // a fake log record in the pipe-delimited format.
-    const line = this.formatLine(timestamp, entry.component, entry.issueId, entry.message);
+    // Flat file write — the shared control-character pass prevents terminal
+    // escapes and forged lines in both durable sinks; pipes are additionally
+    // replaced here because they delimit the human-readable file format.
+    const line = this.formatLine(timestamp, entry.component, entry.issueId, safeMessage);
     appendFileSync(this.logFilePath, line);
   }
 
@@ -87,7 +89,9 @@ export class DualWriteAuditLogger implements AuditLogger {
     message: string,
   ): string {
     const issueIdPart = issueId ?? "-";
-    const safeMessage = message.replace(/[\r\n|]/g, " ");
+    // Strip here too: rows stored before write-time stripping existed can carry
+    // raw newlines/escapes, and rewriteLogFile() replays them through this path.
+    const safeMessage = stripControlCharacters(message).replaceAll("|", " ");
     return `[${timestamp}] ${component} | ${issueIdPart} | ${safeMessage}\n`;
   }
 
@@ -142,6 +146,19 @@ export class DualWriteAuditLogger implements AuditLogger {
     writeFileSync(tmpPath, contents);
     renameSync(tmpPath, this.logFilePath);
   }
+}
+
+function stripControlCharacters(value: string): string {
+  let safe = "";
+  for (const character of value) {
+    const codePoint = character.codePointAt(0) ?? 0;
+    if (codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)) {
+      safe += " ";
+    } else {
+      safe += character;
+    }
+  }
+  return safe;
 }
 
 function toAuditEntry(row: AuditRow): AuditEntry {

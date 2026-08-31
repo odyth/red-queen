@@ -72,6 +72,29 @@ describe("DualWriteAuditLogger", () => {
       const entries = logger.query({});
       expect(entries[0]?.metadata).toEqual({});
     });
+
+    it("strips control characters before writing either durable sink", () => {
+      const controls = String.fromCodePoint(0x00, 0x08, 0x1b, 0x7f, 0x85);
+      logger.log({
+        component: "worker",
+        issueId: "PROJ-1",
+        message: `before${controls}after\nforged|tail`,
+        metadata: {},
+      });
+
+      const stored = logger.query({})[0]?.message ?? "";
+      expect(
+        Array.from(stored).every((character) => {
+          const codePoint = character.codePointAt(0) ?? 0;
+          return codePoint > 0x1f && (codePoint < 0x7f || codePoint > 0x9f);
+        }),
+      ).toBe(true);
+      expect(stored).toContain("after forged|tail");
+
+      const fileContent = readFileSync(logFilePath, "utf8");
+      expect(fileContent).toContain("after forged tail");
+      expect(fileContent.split("\n").filter((line) => line.length > 0)).toHaveLength(1);
+    });
   });
 
   describe("query", () => {
@@ -192,6 +215,26 @@ describe("DualWriteAuditLogger", () => {
       expect(contents.split("\n").filter((l) => l.length > 0)).toHaveLength(
         logger.query({}).length,
       );
+    });
+
+    it("strips control characters from legacy rows when rewriting the flat file", () => {
+      // Rows written before write-time stripping existed were stored raw —
+      // rewriteLogFile() must not replay their newlines or escapes.
+      db.prepare(
+        "INSERT INTO audit_log (timestamp, component, issue_id, message, metadata) VALUES (?, ?, ?, ?, ?)",
+      ).run(
+        new Date().toISOString(),
+        "worker",
+        "PROJ-1",
+        "line one\n[2020-01-01T00:00:00.000Z] forged | PROJ-9 | fake\u001b[31mred",
+        null,
+      );
+
+      logger.prune(30);
+
+      const contents = readFileSync(logFilePath, "utf8");
+      expect(contents).not.toContain("\u001b");
+      expect(contents.split("\n").filter((l) => l.length > 0)).toHaveLength(1);
     });
 
     it("empties the flat file when everything is pruned", () => {

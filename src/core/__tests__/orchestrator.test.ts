@@ -19,6 +19,7 @@ import { RuntimeState } from "../runtime-state.js";
 import type { WorkerOptions, WorkerResult } from "../worker.js";
 import { MockIssueTracker, MockSourceControl, makeIssue } from "./fixtures/mock-adapters.js";
 import { makeTestConfig } from "./fixtures/test-config.js";
+import { makeWorkerResult } from "./fixtures/worker-result.js";
 
 let tempDir: string;
 let dbPath: string;
@@ -209,21 +210,25 @@ describe("RedQueen orchestrator", () => {
       runCount++;
       phasesSeen.push(h.issueTracker.phases.get("PROJ-1") ?? null);
       if (runCount === 1) {
-        return Promise.resolve({
-          success: true,
-          exitCode: 0,
-          elapsed: 1,
-          summary: "done",
-          error: null,
-        });
+        return Promise.resolve(
+          makeWorkerResult({
+            success: true,
+            exitCode: 0,
+            elapsed: 1,
+            summary: "done",
+            error: null,
+          }),
+        );
       }
-      return Promise.resolve({
-        success: false,
-        exitCode: 1,
-        elapsed: 0,
-        summary: "",
-        error: "stop cascade",
-      });
+      return Promise.resolve(
+        makeWorkerResult({
+          success: false,
+          exitCode: 1,
+          elapsed: 0,
+          summary: "",
+          error: "stop cascade",
+        }),
+      );
     });
     h.pipelineState.create("PROJ-1", "coding");
     h.issueTracker.phases.set("PROJ-1", "coding");
@@ -244,14 +249,16 @@ describe("RedQueen orchestrator", () => {
       if (content !== null) {
         prompts.push(content);
       }
-      return Promise.resolve({
-        success: false,
-        exitCode: 1,
-        elapsed: 0,
-        summary: "",
-        error: "blockers",
-        usage: null,
-      });
+      return Promise.resolve(
+        makeWorkerResult({
+          success: false,
+          exitCode: 1,
+          elapsed: 0,
+          summary: "",
+          error: "blockers",
+          usage: null,
+        }),
+      );
     });
     h.pipelineState.create("PROJ-RW1", "code-review");
     h.issueTracker.phases.set("PROJ-RW1", "code-review");
@@ -283,14 +290,16 @@ describe("RedQueen orchestrator", () => {
       if (content !== null) {
         prompts.push(content);
       }
-      return Promise.resolve({
-        success: false,
-        exitCode: 1,
-        elapsed: 0,
-        summary: "",
-        error: "tests failed",
-        usage: null,
-      });
+      return Promise.resolve(
+        makeWorkerResult({
+          success: false,
+          exitCode: 1,
+          elapsed: 0,
+          summary: "",
+          error: "tests failed",
+          usage: null,
+        }),
+      );
     });
     h.pipelineState.create("PROJ-RW2", "testing");
     h.issueTracker.phases.set("PROJ-RW2", "testing");
@@ -316,14 +325,16 @@ describe("RedQueen orchestrator", () => {
       if (content !== null) {
         prompts.push(content);
       }
-      return Promise.resolve({
-        success: false,
-        exitCode: 1,
-        elapsed: 0,
-        summary: "",
-        error: "stop cascade",
-        usage: null,
-      });
+      return Promise.resolve(
+        makeWorkerResult({
+          success: false,
+          exitCode: 1,
+          elapsed: 0,
+          summary: "",
+          error: "stop cascade",
+          usage: null,
+        }),
+      );
     });
     h.pipelineState.create("PROJ-RW3", "coding");
     h.issueTracker.phases.set("PROJ-RW3", "coding");
@@ -338,13 +349,15 @@ describe("RedQueen orchestrator", () => {
 
   it("skips stale task when issue is at human gate", async () => {
     const h = setupHarness(() =>
-      Promise.resolve({
-        success: true,
-        exitCode: 0,
-        elapsed: 1,
-        summary: "done",
-        error: null,
-      }),
+      Promise.resolve(
+        makeWorkerResult({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "done",
+          error: null,
+        }),
+      ),
     );
     h.pipelineState.create("PROJ-1", "coding");
     // Issue is actually in spec-review (human gate) — stale task
@@ -364,13 +377,15 @@ describe("RedQueen orchestrator", () => {
     let attempts = 0;
     const h = setupHarness(() => {
       attempts++;
-      return Promise.resolve({
-        success: false,
-        exitCode: 1,
-        elapsed: 1,
-        summary: "",
-        error: "boom",
-      });
+      return Promise.resolve(
+        makeWorkerResult({
+          success: false,
+          exitCode: 1,
+          elapsed: 1,
+          summary: "",
+          error: "boom",
+        }),
+      );
     });
     h.pipelineState.create("PROJ-1", "coding");
     h.issueTracker.phases.set("PROJ-1", "coding");
@@ -390,14 +405,16 @@ describe("RedQueen orchestrator", () => {
       if (content !== null) {
         prompts.push(content);
       }
-      return Promise.resolve({
-        success: false,
-        exitCode: 1,
-        elapsed: 0,
-        summary: "",
-        error: "blockers",
-        usage: null,
-      });
+      return Promise.resolve(
+        makeWorkerResult({
+          success: false,
+          exitCode: 1,
+          elapsed: 0,
+          summary: "",
+          error: "blockers",
+          usage: null,
+        }),
+      );
     });
     h.pipelineState.create("PROJ-NR", "code-review");
     h.issueTracker.phases.set("PROJ-NR", "code-review");
@@ -420,22 +437,26 @@ describe("RedQueen orchestrator", () => {
       if (runCount === 1) {
         // First run: simulate agent changing phase to "coding"
         h.issueTracker.phases.set("PROJ-1", "coding");
-        return Promise.resolve({
-          success: true,
-          exitCode: 0,
-          elapsed: 1,
-          summary: "returned to coding",
-          error: null,
-        });
+        return Promise.resolve(
+          makeWorkerResult({
+            success: true,
+            exitCode: 0,
+            elapsed: 1,
+            summary: "returned to coding",
+            error: null,
+          }),
+        );
       }
       // Subsequent runs fail so the pipeline halts after the second run
-      return Promise.resolve({
-        success: false,
-        exitCode: 1,
-        elapsed: 0,
-        summary: "",
-        error: "halt cascade",
-      });
+      return Promise.resolve(
+        makeWorkerResult({
+          success: false,
+          exitCode: 1,
+          elapsed: 0,
+          summary: "",
+          error: "halt cascade",
+        }),
+      );
     });
     h.pipelineState.create("PROJ-1", "code-review");
     h.issueTracker.phases.set("PROJ-1", "code-review");
@@ -464,13 +485,15 @@ describe("RedQueen orchestrator", () => {
         snapshot.assignment = h.issueTracker.assignments.get("PROJ-1") ?? null;
         captured = true;
       }
-      return Promise.resolve({
-        success: true,
-        exitCode: 0,
-        elapsed: 0,
-        summary: "",
-        error: null,
-      });
+      return Promise.resolve(
+        makeWorkerResult({
+          success: true,
+          exitCode: 0,
+          elapsed: 0,
+          summary: "",
+          error: null,
+        }),
+      );
     });
     h.queue.enqueue({ type: "new-ticket", issueId: "PROJ-1" });
 
@@ -483,13 +506,15 @@ describe("RedQueen orchestrator", () => {
 
   it("routes a phase added while new-ticket waited without resetting it", async () => {
     const h = setupHarness(() =>
-      Promise.resolve({
-        success: true,
-        exitCode: 0,
-        elapsed: 0,
-        summary: "",
-        error: null,
-      }),
+      Promise.resolve(
+        makeWorkerResult({
+          success: true,
+          exitCode: 0,
+          elapsed: 0,
+          summary: "",
+          error: null,
+        }),
+      ),
     );
     const issue = makeIssue("PROJ-1", "spec-writing");
     h.issueTracker.issues.set(issue.id, issue);
@@ -504,13 +529,15 @@ describe("RedQueen orchestrator", () => {
 
   it("does not reset a ticket moved to a human gate while new-ticket waited", async () => {
     const h = setupHarness(() =>
-      Promise.resolve({
-        success: true,
-        exitCode: 0,
-        elapsed: 0,
-        summary: "should not run",
-        error: null,
-      }),
+      Promise.resolve(
+        makeWorkerResult({
+          success: true,
+          exitCode: 0,
+          elapsed: 0,
+          summary: "should not run",
+          error: null,
+        }),
+      ),
     );
     const task = h.queue.enqueue({ type: "new-ticket", issueId: "PROJ-1" });
     h.issueTracker.phases.set("PROJ-1", "spec-review");
@@ -524,13 +551,15 @@ describe("RedQueen orchestrator", () => {
 
   it("fails closed when new-ticket cannot revalidate a human-gate phase", async () => {
     const h = setupHarness(() =>
-      Promise.resolve({
-        success: true,
-        exitCode: 0,
-        elapsed: 0,
-        summary: "should not run",
-        error: null,
-      }),
+      Promise.resolve(
+        makeWorkerResult({
+          success: true,
+          exitCode: 0,
+          elapsed: 0,
+          summary: "should not run",
+          error: null,
+        }),
+      ),
     );
     const task = h.queue.enqueue({ type: "new-ticket", issueId: "PROJ-PHASE-ERROR" });
     h.issueTracker.phases.set("PROJ-PHASE-ERROR", "spec-review");
@@ -548,13 +577,15 @@ describe("RedQueen orchestrator", () => {
 
   it("parks a recovered new-ticket after its AI assignment is revoked", async () => {
     const h = setupHarness(() =>
-      Promise.resolve({
-        success: true,
-        exitCode: 0,
-        elapsed: 0,
-        summary: "should not run",
-        error: null,
-      }),
+      Promise.resolve(
+        makeWorkerResult({
+          success: true,
+          exitCode: 0,
+          elapsed: 0,
+          summary: "should not run",
+          error: null,
+        }),
+      ),
     );
     const task = h.queue.enqueue({
       type: "new-ticket",
@@ -574,15 +605,17 @@ describe("RedQueen orchestrator", () => {
     expect(h.runs).toHaveLength(0);
   });
 
-  it("fails a recovered task closed when live assignment state cannot be read", async () => {
+  it("defers a recovered task when live assignment state cannot be read", async () => {
     const h = setupHarness(() =>
-      Promise.resolve({
-        success: true,
-        exitCode: 0,
-        elapsed: 0,
-        summary: "should not run",
-        error: null,
-      }),
+      Promise.resolve(
+        makeWorkerResult({
+          success: true,
+          exitCode: 0,
+          elapsed: 0,
+          summary: "should not run",
+          error: null,
+        }),
+      ),
     );
     const task = h.queue.enqueue({
       type: "new-ticket",
@@ -592,8 +625,9 @@ describe("RedQueen orchestrator", () => {
     h.issueTracker.assignments.set("PROJ-CLAIM-ERROR", "ai");
     h.issueTracker.getPhaseThrowsFor.add("PROJ-CLAIM-ERROR");
 
-    await runUntil(h, () => h.queue.getTask(task.id)?.status === "failed");
+    await runUntil(h, () => h.queue.getTask(task.id)?.status === "deferred");
 
+    expect(h.queue.getTask(task.id)?.blockedOn).toEqual(["<assignment-check-error>"]);
     expect(h.issueTracker.calls.some((call) => call.startsWith("setPhase:PROJ-CLAIM-ERROR:"))).toBe(
       false,
     );
@@ -604,13 +638,15 @@ describe("RedQueen orchestrator", () => {
 
   it("performs crash recovery for working tasks", async () => {
     const h = setupHarness(() =>
-      Promise.resolve({
-        success: true,
-        exitCode: 0,
-        elapsed: 1,
-        summary: "done",
-        error: null,
-      }),
+      Promise.resolve(
+        makeWorkerResult({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "done",
+          error: null,
+        }),
+      ),
     );
     // Simulate a crashed state: task is "working", orchestrator state also working
     const task = h.queue.enqueue({ type: "coding", issueId: "PROJ-1" });
@@ -633,13 +669,15 @@ describe("RedQueen orchestrator", () => {
     // "working" task the pointer never named. Pointer-based recovery skipped it
     // and reconcile then saw hasOpenTask=true, stranding the issue forever.
     const h = setupHarness(() =>
-      Promise.resolve({
-        success: true,
-        exitCode: 0,
-        elapsed: 1,
-        summary: "done",
-        error: null,
-      }),
+      Promise.resolve(
+        makeWorkerResult({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "done",
+          error: null,
+        }),
+      ),
     );
     const task = h.queue.enqueue({ type: "coding", issueId: "PROJ-1" });
     h.queue.markWorking(task.id);
@@ -658,13 +696,15 @@ describe("RedQueen orchestrator", () => {
     // spec-writing -> spec-review (human). spec-writing succeeds and the
     // orchestrator parks the ticket at the spec-review human gate.
     const h = setupHarness(() =>
-      Promise.resolve({
-        success: true,
-        exitCode: 0,
-        elapsed: 1,
-        summary: "done",
-        error: null,
-      }),
+      Promise.resolve(
+        makeWorkerResult({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "done",
+          error: null,
+        }),
+      ),
     );
     h.pipelineState.create("PROJ-1", "spec-writing");
     h.issueTracker.phases.set("PROJ-1", "spec-writing");
@@ -687,21 +727,25 @@ describe("RedQueen orchestrator", () => {
       () => {
         runCount += 1;
         if (runCount === 1) {
-          return Promise.resolve({
-            success: true,
-            exitCode: 0,
-            elapsed: 1,
-            summary: "spec written",
-            error: null,
-          });
+          return Promise.resolve(
+            makeWorkerResult({
+              success: true,
+              exitCode: 0,
+              elapsed: 1,
+              summary: "spec written",
+              error: null,
+            }),
+          );
         }
-        return Promise.resolve({
-          success: false,
-          exitCode: 1,
-          elapsed: 1,
-          summary: "",
-          error: "stop cascade",
-        });
+        return Promise.resolve(
+          makeWorkerResult({
+            success: false,
+            exitCode: 1,
+            elapsed: 1,
+            summary: "",
+            error: "stop cascade",
+          }),
+        );
       },
       { skipSpecReviewIfReady: true },
     );
@@ -723,13 +767,15 @@ describe("RedQueen orchestrator", () => {
   it("skipSpecReviewIfReady: holds at spec-review when there are open questions", async () => {
     const h = setupHarness(
       () =>
-        Promise.resolve({
-          success: true,
-          exitCode: 0,
-          elapsed: 1,
-          summary: "spec written",
-          error: null,
-        }),
+        Promise.resolve(
+          makeWorkerResult({
+            success: true,
+            exitCode: 0,
+            elapsed: 1,
+            summary: "spec written",
+            error: null,
+          }),
+        ),
       { skipSpecReviewIfReady: true },
     );
     h.pipelineState.create("PROJ-HOLD", "spec-writing");
@@ -749,13 +795,15 @@ describe("RedQueen orchestrator", () => {
   it("skipSpecReviewIfReady=false: never skips even when 0 open questions", async () => {
     const h = setupHarness(
       () =>
-        Promise.resolve({
-          success: true,
-          exitCode: 0,
-          elapsed: 1,
-          summary: "spec written",
-          error: null,
-        }),
+        Promise.resolve(
+          makeWorkerResult({
+            success: true,
+            exitCode: 0,
+            elapsed: 1,
+            summary: "spec written",
+            error: null,
+          }),
+        ),
       { skipSpecReviewIfReady: false },
     );
     h.pipelineState.create("PROJ-OFF", "spec-writing");
@@ -793,13 +841,15 @@ describe("RedQueen orchestrator", () => {
     );
     const h = setupHarness(
       () =>
-        Promise.resolve({
-          success: false,
-          exitCode: 1,
-          elapsed: 0,
-          summary: "",
-          error: "stop cascade",
-        }),
+        Promise.resolve(
+          makeWorkerResult({
+            success: false,
+            exitCode: 1,
+            elapsed: 0,
+            summary: "",
+            error: "stop cascade",
+          }),
+        ),
       { phases, pipeline: { codexBin: "/bin/sh" } },
     );
     h.pipelineState.create("PROJ-1", "coding");
@@ -819,13 +869,15 @@ describe("RedQueen orchestrator", () => {
 
   it("uses the master agent settings for phases without overrides", async () => {
     const h = setupHarness(() =>
-      Promise.resolve({
-        success: false,
-        exitCode: 1,
-        elapsed: 0,
-        summary: "",
-        error: "stop cascade",
-      }),
+      Promise.resolve(
+        makeWorkerResult({
+          success: false,
+          exitCode: 1,
+          elapsed: 0,
+          summary: "",
+          error: "stop cascade",
+        }),
+      ),
     );
     h.pipelineState.create("PROJ-1", "coding");
     h.issueTracker.phases.set("PROJ-1", "coding");
@@ -864,13 +916,15 @@ describe("RedQueen orchestrator", () => {
 
   it("updates priorContext from worker summary", async () => {
     const h = setupHarness(() =>
-      Promise.resolve({
-        success: true,
-        exitCode: 0,
-        elapsed: 1,
-        summary: "handoff notes for next phase",
-        error: null,
-      }),
+      Promise.resolve(
+        makeWorkerResult({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "handoff notes for next phase",
+          error: null,
+        }),
+      ),
     );
     h.pipelineState.create("PROJ-1", "coding");
     h.issueTracker.phases.set("PROJ-1", "coding");
@@ -883,15 +937,49 @@ describe("RedQueen orchestrator", () => {
     expect(record?.priorContext).toBe("handoff notes for next phase");
   });
 
+  it("writes successful worker warnings to the audit log", async () => {
+    const escape = String.fromCodePoint(0x1b);
+    const nul = String.fromCodePoint(0x00);
+    const h = setupHarness(() =>
+      Promise.resolve(
+        makeWorkerResult({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "done",
+          error: null,
+          warning: `${escape}[33mUnknown effort; using default token=secret${escape}[0m${nul}`,
+        }),
+      ),
+    );
+    h.pipelineState.create("PROJ-WARN", "coding");
+    h.issueTracker.phases.set("PROJ-WARN", "coding");
+    h.issueTracker.specs.set("PROJ-WARN", "Implementation spec body.");
+    const task = h.queue.enqueue({ type: "coding", issueId: "PROJ-WARN" });
+
+    await runUntil(h, () => h.queue.getTask(task.id)?.status === "complete");
+
+    const warnings = h.audit.query({ issueId: "PROJ-WARN", component: "worker" });
+    const warning = warnings.find((entry) =>
+      entry.message.includes("Unknown effort; using default"),
+    );
+    expect(warning?.message).toContain("token=<redacted>");
+    expect(warning?.message).not.toContain("secret");
+    expect(warning?.message).not.toContain(escape);
+    expect(warning?.message).not.toContain(nul);
+  });
+
   it("syncs out-of-sync phase before dispatch", async () => {
     const h = setupHarness(() =>
-      Promise.resolve({
-        success: true,
-        exitCode: 0,
-        elapsed: 1,
-        summary: "done",
-        error: null,
-      }),
+      Promise.resolve(
+        makeWorkerResult({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "done",
+          error: null,
+        }),
+      ),
     );
     h.pipelineState.create("PROJ-1", "coding");
     // Issue is in testing but queue has a coding task — tracker is out of sync but not at a human gate
@@ -906,13 +994,15 @@ describe("RedQueen orchestrator", () => {
 
   it("creates reconciliation task on startup", async () => {
     const h = setupHarness(() =>
-      Promise.resolve({
-        success: true,
-        exitCode: 0,
-        elapsed: 1,
-        summary: "done",
-        error: null,
-      }),
+      Promise.resolve(
+        makeWorkerResult({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "done",
+          error: null,
+        }),
+      ),
     );
     h.issueTracker.listByPhaseResults.set("coding", [makeIssue("PROJ-99", "coding")]);
     h.issueTracker.phases.set("PROJ-99", "coding");
@@ -928,13 +1018,15 @@ describe("RedQueen orchestrator", () => {
   it("recovers a missed unphased assignment immediately on startup", async () => {
     const h = setupHarness(
       () =>
-        Promise.resolve({
-          success: true,
-          exitCode: 0,
-          elapsed: 1,
-          summary: "done",
-          error: null,
-        }),
+        Promise.resolve(
+          makeWorkerResult({
+            success: true,
+            exitCode: 0,
+            elapsed: 1,
+            summary: "done",
+            error: null,
+          }),
+        ),
       { pipeline: { reconcileInterval: 60 } },
     );
     const issue = makeIssue("PROJ-OFFLINE");
@@ -954,13 +1046,15 @@ describe("RedQueen orchestrator", () => {
 
   it("replays merged PRs before tracker reconciliation can recreate their work", async () => {
     const h = setupHarness(() =>
-      Promise.resolve({
-        success: true,
-        exitCode: 0,
-        elapsed: 1,
-        summary: "should not run",
-        error: null,
-      }),
+      Promise.resolve(
+        makeWorkerResult({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "should not run",
+          error: null,
+        }),
+      ),
     );
     h.pipelineState.create("PROJ-99", "coding");
     h.pipelineState.updateBranchInfo("PROJ-99", { prNumber: 42, prBaseBranch: "main" });
@@ -984,13 +1078,15 @@ describe("RedQueen orchestrator", () => {
 
   it("continues startup when the merged-PR scan itself throws", async () => {
     const h = setupHarness(() =>
-      Promise.resolve({
-        success: true,
-        exitCode: 0,
-        elapsed: 1,
-        summary: "done",
-        error: null,
-      }),
+      Promise.resolve(
+        makeWorkerResult({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "done",
+          error: null,
+        }),
+      ),
     );
     h.pipelineState.listAll = () => {
       throw new Error("scan database unavailable");
@@ -1007,13 +1103,15 @@ describe("RedQueen orchestrator", () => {
 
   it("drains an in-flight merged-PR scan before shutdown completes", async () => {
     const h = setupHarness(() =>
-      Promise.resolve({
-        success: true,
-        exitCode: 0,
-        elapsed: 1,
-        summary: "done",
-        error: null,
-      }),
+      Promise.resolve(
+        makeWorkerResult({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "done",
+          error: null,
+        }),
+      ),
     );
     h.pipelineState.create("PROJ-99", "human-review");
     h.pipelineState.updateBranchInfo("PROJ-99", { prNumber: 42, prBaseBranch: "main" });
@@ -1043,13 +1141,15 @@ describe("RedQueen orchestrator", () => {
 
   it("new-ticket persists delegator from task metadata", async () => {
     const h = setupHarness(() =>
-      Promise.resolve({
-        success: false,
-        exitCode: 1,
-        elapsed: 0,
-        summary: "",
-        error: "stop cascade",
-      }),
+      Promise.resolve(
+        makeWorkerResult({
+          success: false,
+          exitCode: 1,
+          elapsed: 0,
+          summary: "",
+          error: "stop cascade",
+        }),
+      ),
     );
     h.queue.enqueue({
       type: "new-ticket",
@@ -1065,13 +1165,15 @@ describe("RedQueen orchestrator", () => {
 
   it("passes stored delegator to assignToHuman on phase advance", async () => {
     const h = setupHarness(() =>
-      Promise.resolve({
-        success: true,
-        exitCode: 0,
-        elapsed: 1,
-        summary: "done",
-        error: null,
-      }),
+      Promise.resolve(
+        makeWorkerResult({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "done",
+          error: null,
+        }),
+      ),
     );
     h.pipelineState.create("PROJ-50", "spec-writing", "justin-50");
     h.issueTracker.phases.set("PROJ-50", "spec-writing");
@@ -1095,13 +1197,15 @@ describe("RedQueen orchestrator", () => {
       if (promptMatch?.[1] !== undefined) {
         capturedPrompt = readFileSync(promptMatch[1], "utf8");
       }
-      return Promise.resolve({
-        success: false,
-        exitCode: 1,
-        elapsed: 1,
-        summary: "",
-        error: "stop cascade",
-      });
+      return Promise.resolve(
+        makeWorkerResult({
+          success: false,
+          exitCode: 1,
+          elapsed: 1,
+          summary: "",
+          error: "stop cascade",
+        }),
+      );
     });
     h.pipelineState.create("PROJ-70", "coding");
     h.pipelineState.updateSpec("PROJ-70", "STALE spec body");
@@ -1118,13 +1222,15 @@ describe("RedQueen orchestrator", () => {
 
   it("skips spec re-fetch for spec-writing phase", async () => {
     const h = setupHarness(() =>
-      Promise.resolve({
-        success: false,
-        exitCode: 1,
-        elapsed: 1,
-        summary: "",
-        error: "stop cascade",
-      }),
+      Promise.resolve(
+        makeWorkerResult({
+          success: false,
+          exitCode: 1,
+          elapsed: 1,
+          summary: "",
+          error: "stop cascade",
+        }),
+      ),
     );
     h.pipelineState.create("PROJ-71", "spec-writing");
     h.issueTracker.phases.set("PROJ-71", "spec-writing");
@@ -1149,13 +1255,15 @@ describe("RedQueen orchestrator", () => {
       if (promptMatch?.[1] !== undefined) {
         capturedPrompt = readFileSync(promptMatch[1], "utf8");
       }
-      return Promise.resolve({
-        success: false,
-        exitCode: 1,
-        elapsed: 1,
-        summary: "",
-        error: "stop cascade",
-      });
+      return Promise.resolve(
+        makeWorkerResult({
+          success: false,
+          exitCode: 1,
+          elapsed: 1,
+          summary: "",
+          error: "stop cascade",
+        }),
+      );
     });
     h.pipelineState.create("PROJ-REENTRY", "spec-writing");
     h.pipelineState.updateSpec("PROJ-REENTRY", "STALE prompt from last cycle");
@@ -1174,13 +1282,15 @@ describe("RedQueen orchestrator", () => {
     // guard treats this as a failed run (retry → onFail) rather than parking an
     // empty prompt at the spec-review human gate.
     const h = setupHarness(() =>
-      Promise.resolve({
-        success: true,
-        exitCode: 0,
-        elapsed: 1,
-        summary: "claims done but wrote no spec",
-        error: null,
-      }),
+      Promise.resolve(
+        makeWorkerResult({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "claims done but wrote no spec",
+          error: null,
+        }),
+      ),
     );
     h.pipelineState.create("PROJ-EMPTY", "spec-writing");
     h.issueTracker.phases.set("PROJ-EMPTY", "spec-writing");
@@ -1201,13 +1311,15 @@ describe("RedQueen orchestrator", () => {
     // spec-awaiting-info with no explanation — the reported bug. The notice gives
     // a human looking at the ticket (not the logs) the reason.
     const h = setupHarness(() =>
-      Promise.resolve({
-        success: false,
-        exitCode: 1,
-        elapsed: 1,
-        summary: "",
-        error: 'API Error: 401 {"type":"authentication_error","message":"invalid x-api-key"}',
-      }),
+      Promise.resolve(
+        makeWorkerResult({
+          success: false,
+          exitCode: 1,
+          elapsed: 1,
+          summary: "",
+          error: 'API Error: 401 {"type":"authentication_error","message":"invalid x-api-key"}',
+        }),
+      ),
     );
     h.pipelineState.create("PROJ-401", "spec-writing");
     h.issueTracker.phases.set("PROJ-401", "spec-writing");
@@ -1226,13 +1338,15 @@ describe("RedQueen orchestrator", () => {
     // code-review -> coding is a normal feedback loop; commenting there would
     // spam the ticket every reconcile cycle, so no notice is posted.
     const h = setupHarness(() =>
-      Promise.resolve({
-        success: false,
-        exitCode: 1,
-        elapsed: 0,
-        summary: "",
-        error: "blockers found",
-      }),
+      Promise.resolve(
+        makeWorkerResult({
+          success: false,
+          exitCode: 1,
+          elapsed: 0,
+          summary: "",
+          error: "blockers found",
+        }),
+      ),
     );
     h.pipelineState.create("PROJ-NC", "code-review");
     h.issueTracker.phases.set("PROJ-NC", "code-review");
@@ -1253,13 +1367,15 @@ describe("RedQueen orchestrator", () => {
     // the human there rather than parking an empty prompt at spec-review.
     const h = setupHarness(() => {
       void h.issueTracker.setPhase("PROJ-SELF", "spec-review");
-      return Promise.resolve({
-        success: true,
-        exitCode: 0,
-        elapsed: 1,
-        summary: "self-routed to review but wrote no spec",
-        error: null,
-      });
+      return Promise.resolve(
+        makeWorkerResult({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "self-routed to review but wrote no spec",
+          error: null,
+        }),
+      );
     });
     h.pipelineState.create("PROJ-SELF", "spec-writing");
     h.issueTracker.phases.set("PROJ-SELF", "spec-writing");
@@ -1283,13 +1399,15 @@ describe("RedQueen orchestrator", () => {
     // human can't tell an infra failure from a real clarification request. The notice
     // names the failed phase and surfaces the worker error.
     const h = setupHarness(() =>
-      Promise.resolve({
-        success: false,
-        exitCode: -1,
-        elapsed: 1,
-        summary: "",
-        error: "Worker stalled (no CPU work for 300s)",
-      }),
+      Promise.resolve(
+        makeWorkerResult({
+          success: false,
+          exitCode: -1,
+          elapsed: 1,
+          summary: "",
+          error: "Worker stalled (no CPU work for 300s)",
+        }),
+      ),
     );
     h.pipelineState.create("PROJ-STALL", "spec-writing");
     h.issueTracker.phases.set("PROJ-STALL", "spec-writing");
@@ -1305,13 +1423,15 @@ describe("RedQueen orchestrator", () => {
 
   it("auto-transitions human-review -> code-feedback when PR exists", async () => {
     const h = setupHarness(() =>
-      Promise.resolve({
-        success: false,
-        exitCode: 1,
-        elapsed: 1,
-        summary: "",
-        error: "stop cascade",
-      }),
+      Promise.resolve(
+        makeWorkerResult({
+          success: false,
+          exitCode: 1,
+          elapsed: 1,
+          summary: "",
+          error: "stop cascade",
+        }),
+      ),
     );
     h.pipelineState.create("PROJ-80", "human-review");
     h.pipelineState.updatePrNumber("PROJ-80", 42);
@@ -1328,13 +1448,15 @@ describe("RedQueen orchestrator", () => {
 
   it("auto-transitions spec-review -> spec-feedback when no PR exists", async () => {
     const h = setupHarness(() =>
-      Promise.resolve({
-        success: false,
-        exitCode: 1,
-        elapsed: 1,
-        summary: "",
-        error: "stop cascade",
-      }),
+      Promise.resolve(
+        makeWorkerResult({
+          success: false,
+          exitCode: 1,
+          elapsed: 1,
+          summary: "",
+          error: "stop cascade",
+        }),
+      ),
     );
     h.pipelineState.create("PROJ-81", "spec-review");
     h.issueTracker.phases.set("PROJ-81", "spec-review");
@@ -1382,13 +1504,15 @@ describe("RedQueen orchestrator", () => {
   it("keeps cached spec and logs when getSpec throws", async () => {
     const auditPathLocal = auditPath;
     const h = setupHarness(() =>
-      Promise.resolve({
-        success: false,
-        exitCode: 1,
-        elapsed: 1,
-        summary: "",
-        error: "stop cascade",
-      }),
+      Promise.resolve(
+        makeWorkerResult({
+          success: false,
+          exitCode: 1,
+          elapsed: 1,
+          summary: "",
+          error: "stop cascade",
+        }),
+      ),
     );
     // PROJ-90 is in coding (next-after-spec-review), so syncSpecFromTracker runs.
     h.pipelineState.create("PROJ-90", "coding");
@@ -1409,13 +1533,15 @@ describe("RedQueen orchestrator", () => {
   it("keeps cached spec and warns when tracker returns null but cache has content", async () => {
     const auditPathLocal = auditPath;
     const h = setupHarness(() =>
-      Promise.resolve({
-        success: false,
-        exitCode: 1,
-        elapsed: 1,
-        summary: "",
-        error: "stop cascade",
-      }),
+      Promise.resolve(
+        makeWorkerResult({
+          success: false,
+          exitCode: 1,
+          elapsed: 1,
+          summary: "",
+          error: "stop cascade",
+        }),
+      ),
     );
     h.pipelineState.create("PROJ-91", "coding");
     h.pipelineState.updateSpec("PROJ-91", "CACHED spec");
@@ -1438,13 +1564,15 @@ describe("RedQueen orchestrator", () => {
       // is right after tryAutoTransitionRework has committed the transition
       // and before handleFailure's retry/escalate cascade can mutate it.
       phaseAtDispatch = h.pipelineState.get("PROJ-92")?.currentPhase;
-      return Promise.resolve({
-        success: false,
-        exitCode: 1,
-        elapsed: 1,
-        summary: "",
-        error: "stop cascade",
-      });
+      return Promise.resolve(
+        makeWorkerResult({
+          success: false,
+          exitCode: 1,
+          elapsed: 1,
+          summary: "",
+          error: "stop cascade",
+        }),
+      );
     });
     h.pipelineState.create("PROJ-92", "human-review");
     h.pipelineState.updatePrNumber("PROJ-92", 42);
@@ -1458,13 +1586,15 @@ describe("RedQueen orchestrator", () => {
 
   it("calls dismissStaleReviews after a requiresPr phase succeeds", async () => {
     const h = setupHarness(() =>
-      Promise.resolve({
-        success: true,
-        exitCode: 0,
-        elapsed: 1,
-        summary: "addressed feedback",
-        error: null,
-      }),
+      Promise.resolve(
+        makeWorkerResult({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "addressed feedback",
+          error: null,
+        }),
+      ),
     );
     h.pipelineState.create("PROJ-100", "code-feedback");
     h.pipelineState.updatePrNumber("PROJ-100", 77);
@@ -1482,21 +1612,25 @@ describe("RedQueen orchestrator", () => {
     const h = setupHarness(() => {
       runCount++;
       if (runCount === 1) {
-        return Promise.resolve({
-          success: true,
-          exitCode: 0,
-          elapsed: 1,
-          summary: "done",
-          error: null,
-        });
+        return Promise.resolve(
+          makeWorkerResult({
+            success: true,
+            exitCode: 0,
+            elapsed: 1,
+            summary: "done",
+            error: null,
+          }),
+        );
       }
-      return Promise.resolve({
-        success: false,
-        exitCode: 1,
-        elapsed: 0,
-        summary: "",
-        error: "stop cascade",
-      });
+      return Promise.resolve(
+        makeWorkerResult({
+          success: false,
+          exitCode: 1,
+          elapsed: 0,
+          summary: "",
+          error: "stop cascade",
+        }),
+      );
     });
     h.pipelineState.create("PROJ-101", "coding");
     h.pipelineState.updatePrNumber("PROJ-101", 78);
@@ -1511,13 +1645,15 @@ describe("RedQueen orchestrator", () => {
 
   it("skips dismissStaleReviews when prNumber is null", async () => {
     const h = setupHarness(() =>
-      Promise.resolve({
-        success: true,
-        exitCode: 0,
-        elapsed: 1,
-        summary: "done",
-        error: null,
-      }),
+      Promise.resolve(
+        makeWorkerResult({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "done",
+          error: null,
+        }),
+      ),
     );
     // code-feedback with no PR — orchestrator auto-transition guard should have prevented dispatch,
     // but if we bypass by seeding the phase directly, dismissStaleReviews must still be skipped.
@@ -1533,13 +1669,15 @@ describe("RedQueen orchestrator", () => {
 
   it("continues pipeline when dismissStaleReviews throws", async () => {
     const h = setupHarness(() =>
-      Promise.resolve({
-        success: true,
-        exitCode: 0,
-        elapsed: 1,
-        summary: "addressed",
-        error: null,
-      }),
+      Promise.resolve(
+        makeWorkerResult({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "addressed",
+          error: null,
+        }),
+      ),
     );
     h.sourceControl.dismissStaleReviewsThrows = true;
     h.pipelineState.create("PROJ-103", "code-feedback");
@@ -1560,13 +1698,15 @@ describe("RedQueen orchestrator", () => {
     // Pre-bump reviewIterations past maxIterations so code-review failure escalates
     // immediately via transitionTo, which is the path that reads delegator.
     const h = setupHarness(() =>
-      Promise.resolve({
-        success: false,
-        exitCode: 1,
-        elapsed: 1,
-        summary: "",
-        error: "rejected",
-      }),
+      Promise.resolve(
+        makeWorkerResult({
+          success: false,
+          exitCode: 1,
+          elapsed: 1,
+          summary: "",
+          error: "rejected",
+        }),
+      ),
     );
     h.pipelineState.create("PROJ-60", "code-review", "justin-60");
     h.issueTracker.phases.set("PROJ-60", "code-review");
@@ -1586,13 +1726,15 @@ describe("RedQueen orchestrator", () => {
 
   it("Gap 1: calls markInProgress once on happy-path dispatch", async () => {
     const h = setupHarness(() =>
-      Promise.resolve({
-        success: true,
-        exitCode: 0,
-        elapsed: 1,
-        summary: "done",
-        error: null,
-      }),
+      Promise.resolve(
+        makeWorkerResult({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "done",
+          error: null,
+        }),
+      ),
     );
     h.pipelineState.create("PROJ-201", "coding");
     h.issueTracker.phases.set("PROJ-201", "coding");
@@ -1606,13 +1748,15 @@ describe("RedQueen orchestrator", () => {
 
   it("Gap 1: swallows markInProgress failures, worker still dispatches", async () => {
     const h = setupHarness(() =>
-      Promise.resolve({
-        success: true,
-        exitCode: 0,
-        elapsed: 1,
-        summary: "done",
-        error: null,
-      }),
+      Promise.resolve(
+        makeWorkerResult({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "done",
+          error: null,
+        }),
+      ),
     );
     h.pipelineState.create("PROJ-202", "coding");
     h.issueTracker.phases.set("PROJ-202", "coding");
@@ -1632,13 +1776,15 @@ describe("RedQueen orchestrator", () => {
   it("Gap 1: does not call markInProgress on fail-fast dispatch paths", async () => {
     // Skill not found → fail-fast before reaching the markInProgress call site.
     const h = setupHarness(() =>
-      Promise.resolve({
-        success: true,
-        exitCode: 0,
-        elapsed: 1,
-        summary: "done",
-        error: null,
-      }),
+      Promise.resolve(
+        makeWorkerResult({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "done",
+          error: null,
+        }),
+      ),
     );
     // Remove the reviewer skill file to force "Skill not found"
     rmSync(join(skillsDir, "reviewer"), { recursive: true, force: true });
@@ -1653,13 +1799,15 @@ describe("RedQueen orchestrator", () => {
 
   it("Gap 3: resets iteration counters when leaving a human-gate phase", async () => {
     const h = setupHarness(() =>
-      Promise.resolve({
-        success: true,
-        exitCode: 0,
-        elapsed: 1,
-        summary: "done",
-        error: null,
-      }),
+      Promise.resolve(
+        makeWorkerResult({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "done",
+          error: null,
+        }),
+      ),
     );
     h.pipelineState.create("PROJ-301", "human-review");
     h.pipelineState.incrementReviewIterations("PROJ-301");
@@ -1683,13 +1831,15 @@ describe("RedQueen orchestrator", () => {
     // automated) and the Alice-parity code-review-pass reset isn't in scope
     // either (the worker isn't running code-review here).
     const h = setupHarness(() =>
-      Promise.resolve({
-        success: true,
-        exitCode: 0,
-        elapsed: 1,
-        summary: "done",
-        error: null,
-      }),
+      Promise.resolve(
+        makeWorkerResult({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "done",
+          error: null,
+        }),
+      ),
     );
     h.pipelineState.create("PROJ-302", "code-review");
     h.pipelineState.incrementReviewIterations("PROJ-302");
@@ -1718,21 +1868,25 @@ describe("RedQueen orchestrator", () => {
     const h = setupHarness(() => {
       runCount += 1;
       if (runCount === 1) {
-        return Promise.resolve({
-          success: true,
-          exitCode: 0,
-          elapsed: 1,
-          summary: "code written",
-          error: null,
-        });
+        return Promise.resolve(
+          makeWorkerResult({
+            success: true,
+            exitCode: 0,
+            elapsed: 1,
+            summary: "code written",
+            error: null,
+          }),
+        );
       }
-      return Promise.resolve({
-        success: false,
-        exitCode: 1,
-        elapsed: 1,
-        summary: "review failed",
-        error: "blockers found",
-      });
+      return Promise.resolve(
+        makeWorkerResult({
+          success: false,
+          exitCode: 1,
+          elapsed: 1,
+          summary: "review failed",
+          error: "blockers found",
+        }),
+      );
     });
     h.pipelineState.create("PROJ-304", "coding");
     h.pipelineState.incrementReviewIterations("PROJ-304");
@@ -1753,13 +1907,15 @@ describe("RedQueen orchestrator", () => {
 
   it("Alice parity: code-review pass resets reviewIterations but not feedbackIterations", async () => {
     const h = setupHarness(() =>
-      Promise.resolve({
-        success: true,
-        exitCode: 0,
-        elapsed: 1,
-        summary: "approved",
-        error: null,
-      }),
+      Promise.resolve(
+        makeWorkerResult({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "approved",
+          error: null,
+        }),
+      ),
     );
     h.pipelineState.create("PROJ-303", "code-review");
     h.pipelineState.incrementReviewIterations("PROJ-303");
@@ -1781,13 +1937,15 @@ describe("RedQueen orchestrator", () => {
     const h = setupHarness(() => {
       // Simulate the prompt-writer self-routing to spec-awaiting-info
       void h.issueTracker.setPhase("PROJ-401", "spec-awaiting-info");
-      return Promise.resolve({
-        success: true,
-        exitCode: 0,
-        elapsed: 1,
-        summary: "awaiting info",
-        error: null,
-      });
+      return Promise.resolve(
+        makeWorkerResult({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "awaiting info",
+          error: null,
+        }),
+      );
     });
     h.pipelineState.create("PROJ-401", "spec-writing", "reporter-42");
     h.issueTracker.phases.set("PROJ-401", "spec-writing");
@@ -1804,13 +1962,15 @@ describe("RedQueen orchestrator", () => {
   it("Gap 4: respectAgentPhaseChange to blocked calls assignToHuman (regression)", async () => {
     const h = setupHarness(() => {
       void h.issueTracker.setPhase("PROJ-402", "blocked");
-      return Promise.resolve({
-        success: true,
-        exitCode: 0,
-        elapsed: 1,
-        summary: "blocked",
-        error: null,
-      });
+      return Promise.resolve(
+        makeWorkerResult({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "blocked",
+          error: null,
+        }),
+      );
     });
     h.pipelineState.create("PROJ-402", "coding", "reporter-99");
     h.issueTracker.phases.set("PROJ-402", "coding");
@@ -1831,14 +1991,16 @@ describe("RedQueen orchestrator", () => {
       if (content !== null) {
         prompts.push(content);
       }
-      return Promise.resolve({
-        success: false,
-        exitCode: 1,
-        elapsed: 0,
-        summary: "",
-        error: "stop cascade",
-        usage: null,
-      });
+      return Promise.resolve(
+        makeWorkerResult({
+          success: false,
+          exitCode: 1,
+          elapsed: 0,
+          summary: "",
+          error: "stop cascade",
+          usage: null,
+        }),
+      );
     });
     // The bug: a ticket moved straight to coding with no spec in cache or tracker.
     h.pipelineState.create("PROJ-NOSPEC", "coding");
@@ -1867,28 +2029,32 @@ describe("RedQueen orchestrator", () => {
             opts.signal?.addEventListener(
               "abort",
               () => {
-                resolve({
-                  success: false,
-                  exitCode: -1,
-                  elapsed: 1,
-                  summary: "",
-                  error: "Aborted — ticket left the phase",
-                  usage: null,
-                });
+                resolve(
+                  makeWorkerResult({
+                    success: false,
+                    exitCode: -1,
+                    elapsed: 1,
+                    summary: "",
+                    error: "Aborted — ticket left the phase",
+                    usage: null,
+                  }),
+                );
               },
               { once: true },
             );
           });
         }
         // The follow-up spec-writing run fails fast so nothing hangs.
-        return Promise.resolve({
-          success: false,
-          exitCode: 1,
-          elapsed: 0,
-          summary: "",
-          error: "stop cascade",
-          usage: null,
-        });
+        return Promise.resolve(
+          makeWorkerResult({
+            success: false,
+            exitCode: 1,
+            elapsed: 0,
+            summary: "",
+            error: "stop cascade",
+            usage: null,
+          }),
+        );
       },
       // Tiny grace so a persistent (human-move) drift aborts within the test window.
       { extra: { phaseWatchIntervalMs: 5, phaseDriftGraceMs: 1 } },
@@ -1920,27 +2086,31 @@ describe("RedQueen orchestrator", () => {
           h.issueTracker.phases.set("PROJ-NEXT", "code-review");
           return new Promise<WorkerResult>((resolve) => {
             setTimeout(() => {
-              resolve({
-                success: true,
-                exitCode: 0,
-                elapsed: 1,
-                summary: "coded",
-                error: null,
-                usage: null,
-              });
+              resolve(
+                makeWorkerResult({
+                  success: true,
+                  exitCode: 0,
+                  elapsed: 1,
+                  summary: "coded",
+                  error: null,
+                  usage: null,
+                }),
+              );
             }, 40);
           });
         }
         // Downstream phases succeed fast; advanceNormal drives the tracker phase
         // forward so no spurious drift is detected.
-        return Promise.resolve({
-          success: true,
-          exitCode: 0,
-          elapsed: 1,
-          summary: "ok",
-          error: null,
-          usage: null,
-        });
+        return Promise.resolve(
+          makeWorkerResult({
+            success: true,
+            exitCode: 0,
+            elapsed: 1,
+            summary: "ok",
+            error: null,
+            usage: null,
+          }),
+        );
       },
       { extra: { phaseWatchIntervalMs: 5 } },
     );
@@ -1973,25 +2143,29 @@ describe("RedQueen orchestrator", () => {
           h.issueTracker.phases.set("PROJ-SELF", "blocked");
           return new Promise<WorkerResult>((resolve) => {
             setTimeout(() => {
-              resolve({
-                success: true,
-                exitCode: 0,
-                elapsed: 1,
-                summary: "Blocked — needs human input",
-                error: null,
-                usage: null,
-              });
+              resolve(
+                makeWorkerResult({
+                  success: true,
+                  exitCode: 0,
+                  elapsed: 1,
+                  summary: "Blocked — needs human input",
+                  error: null,
+                  usage: null,
+                }),
+              );
             }, 30);
           });
         }
-        return Promise.resolve({
-          success: true,
-          exitCode: 0,
-          elapsed: 1,
-          summary: "ok",
-          error: null,
-          usage: null,
-        });
+        return Promise.resolve(
+          makeWorkerResult({
+            success: true,
+            exitCode: 0,
+            elapsed: 1,
+            summary: "ok",
+            error: null,
+            usage: null,
+          }),
+        );
       },
       { extra: { phaseWatchIntervalMs: 5, phaseDriftGraceMs: 10_000 } },
     );
@@ -2025,14 +2199,16 @@ describe("RedQueen orchestrator", () => {
         // Delete the temp dir out from under the running daemon.
         rmSync(tmpRoot, { recursive: true, force: true });
       }
-      return Promise.resolve({
-        success: false,
-        exitCode: 1,
-        elapsed: 0,
-        summary: "",
-        error: "stop cascade",
-        usage: null,
-      });
+      return Promise.resolve(
+        makeWorkerResult({
+          success: false,
+          exitCode: 1,
+          elapsed: 0,
+          summary: "",
+          error: "stop cascade",
+          usage: null,
+        }),
+      );
     });
     h.pipelineState.create("PROJ-REAP", "coding");
     h.issueTracker.phases.set("PROJ-REAP", "coding");
@@ -2053,13 +2229,15 @@ describe("RedQueen orchestrator", () => {
     const spy = new SpyAudit();
     const h = setupHarness(
       () =>
-        Promise.resolve({
-          success: true,
-          exitCode: 0,
-          elapsed: 1,
-          summary: "done",
-          error: null,
-        }),
+        Promise.resolve(
+          makeWorkerResult({
+            success: true,
+            exitCode: 0,
+            elapsed: 1,
+            summary: "done",
+            error: null,
+          }),
+        ),
       { extra: { audit: spy, now: () => nowMs } },
     );
 

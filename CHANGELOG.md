@@ -12,14 +12,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - OpenAI Codex can now run workers alongside Claude Code. `pipeline.agent`
   picks the default CLI (`claude-code`, unchanged, or `codex`), and any phase
   can override `agent` / `model` / `effort` individually — e.g. Claude plans
-  and reviews while Codex codes. Effort accepts a superset scale
-  (`minimal`→`max`) clamped to what each CLI supports, the pipeline model
-  never leaks across an agent switch, and Codex token usage flows into the
-  existing cost accounting (price via `pipeline.cost.pricing`). Set
-  `pipeline.codexBin` when `codex` isn't on the service PATH.
+  and reviews while Codex codes. Effort defaults to `max` and is forwarded as
+  an opaque CLI-specific value, so new modes do not require a Red Queen release
+  and unsupported-value handling remains downstream. The
+  pipeline model never leaks across an agent switch, and Codex token usage
+  flows into the existing cost accounting (price via `pipeline.cost.pricing`).
+  Set `pipeline.codexBin` when `codex` isn't on the service PATH.
 
 ### Fixed
 
+- Worker effort is no longer silently clamped between CLI-specific scales.
+  Values such as `max`, `ultra`, and future modes now pass through unchanged;
+  Claude's legacy `minimal` alias still maps to `low`. Empty, whitespace-only,
+  and oversized values are rejected without enumerating provider modes, and
+  downstream warnings from otherwise successful workers are retained in the
+  audit log.
 - Stacked dependents are no longer skipped when GitHub wins the retarget
   race. `retargetAndRefreshDependents` identified a dependent purely by its
   PR still pointing at the merged branch, but with head-branch auto-delete

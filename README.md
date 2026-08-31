@@ -179,22 +179,28 @@ pipeline:
   agent: claude-code # or codex; default claude-code
   model: opus        # optional; names are agent-specific — omit under codex
                      # to let ~/.codex/config.toml decide
-  effort: high       # minimal|low|medium|high|xhigh|max — clamped to what the
-                     # CLI supports (codex max→xhigh, claude minimal→low)
+  effort: max        # optional; omitted defaults to max
+                     # provider-specific values are accepted
 
 phases:
   - name: coding
     # ...routing fields...
     agent: codex     # per-phase override; wins over pipeline.agent
-    model: gpt-5.3-codex
-    effort: xhigh
+    model: gpt-5.6-sol
+    effort: ultra
 ```
 
 Resolution is phase-over-pipeline per field, with one guard: the
 pipeline `model` never carries across an agent switch (model names are
 agent-specific). A phase that overrides only `agent` runs that CLI's
-default model. Codex runs report token usage but no dollar cost — add a
-`pipeline.cost.pricing` entry keyed by the model name to price them.
+default model. Effort is an opaque, CLI-specific value: Red Queen defaults
+it to `max` and forwards configured values without enumerating provider modes.
+The legacy Claude `minimal` value remains an alias for `low`; other unsupported
+values are left to the downstream CLI, with successful-process warnings written
+to the audit log. Codex runs report token usage but no dollar cost — add a
+`pipeline.cost.pricing` entry keyed by the model name to price them. Effort
+inherits across agent switches, so mixed pipelines should override it per phase
+when their CLIs or models support different modes.
 
 ### Stacked branches
 

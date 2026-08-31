@@ -1,4 +1,5 @@
 import type { WorkerResult } from "./worker.js";
+import { sanitizeWorkerDiagnostic } from "./worker-diagnostics.js";
 
 // Substrings that mark a worker failure as an authentication/credentials problem
 // rather than a normal task failure. Kept tight on purpose: worker output can
@@ -72,7 +73,9 @@ export function buildFailureNotice(input: FailureNoticeInput): string {
 // surface both unless they duplicate each other.
 function failureDetails(result: WorkerResult): string {
   const error = (result.error ?? "").trim();
-  const summary = result.summary.trim();
+  // error arrives sanitized from the worker/orchestrator; summary is raw parsed
+  // stdout and this comment is its only path out of the system.
+  const summary = sanitizeWorkerDiagnostic(result.summary);
   const hasSummary = summary.length > 0 && summary !== "Completed (no output)";
   const bareExitCode = /^exit code -?\d+$/i.test(error);
 

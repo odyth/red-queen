@@ -1,7 +1,11 @@
 import { spawn, execSync } from "node:child_process";
+import type { ChildProcessByStdio } from "node:child_process";
 import { accessSync, constants as fsConstants } from "node:fs";
 import { delimiter, join } from "node:path";
-import type { RunUsage, WorkerAgent, WorkerEffort } from "./types.js";
+import type { Readable } from "node:stream";
+import { errorMessage } from "./errors.js";
+import type { RunUsage, WorkerAgent } from "./types.js";
+import { extractSuccessfulWorkerWarning, sanitizeWorkerDiagnostic } from "./worker-diagnostics.js";
 
 export interface HeartbeatInfo {
   pid: number;
@@ -18,6 +22,9 @@ export interface WorkerResult {
   elapsed: number;
   summary: string;
   error: string | null;
+  // Non-fatal stderr emitted by a worker that otherwise exited successfully.
+  // Optional so custom WorkerRunner implementations remain backward-compatible.
+  warning?: string;
   usage: RunUsage | null;
   // Claude Code's own total_cost_usd for the run, when emitted. Present even on
   // a Max subscription (the equivalent API list price). null when absent.
@@ -101,7 +108,7 @@ export interface ResolvedAgentSettings {
 // meaning ~/.codex/config.toml decides).
 export function resolveAgentSettings(
   pipeline: { agent: WorkerAgent; model?: string; effort: string },
-  phase: { agent?: WorkerAgent; model?: string; effort?: WorkerEffort },
+  phase: { agent?: WorkerAgent; model?: string; effort?: string },
 ): ResolvedAgentSettings {
   const agent = phase.agent ?? pipeline.agent;
   const inherited = agent === pipeline.agent ? pipeline.model : undefined;
@@ -118,15 +125,15 @@ function pathIsExecutable(filePath: string): boolean {
   }
 }
 
-// Each CLI's non-interactive invocation. Effort is clamped to the resolved
-// agent's supported scale here — the one place that knows which CLI the
-// string feeds. Both branches run unattended with full permissions: claude's
+// Each CLI's non-interactive invocation. Effort is passed through unchanged,
+// except for Claude's legacy "minimal" alias, which retains its historical
+// mapping to "low". Support is otherwise determined by the selected downstream
+// CLI and model. Both branches run unattended with full permissions: claude's
 // bypassPermissions ≙ codex's danger-full-access (skills need git push/npm),
 // and claude's --no-session-persistence ≙ codex's --ephemeral.
 export function buildWorkerArgs(options: WorkerOptions): string[] {
   const agent = options.agent ?? "claude-code";
   if (agent === "codex") {
-    const effort = options.effort === "max" ? "xhigh" : options.effort;
     const modelArgs = options.model === null ? [] : ["-m", options.model];
     return [
       "exec",
@@ -135,7 +142,7 @@ export function buildWorkerArgs(options: WorkerOptions): string[] {
       "--sandbox",
       "danger-full-access",
       "-c",
-      `model_reasoning_effort=${effort}`,
+      `model_reasoning_effort=${options.effort}`,
       ...modelArgs,
       options.prompt,
     ];
@@ -164,14 +171,19 @@ export function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     const killGracePeriodMs = options.killGracePeriodMs ?? DEFAULT_KILL_GRACE_MS;
     const maxBufferBytes = options.maxBufferBytes ?? DEFAULT_MAX_BUFFER_BYTES;
 
-    const args = buildWorkerArgs(options);
-
-    const worker = spawn(options.bin, args, {
-      cwd: options.cwd,
-      env: { ...process.env, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
-      stdio: ["ignore", "pipe", "pipe"],
-      detached: process.platform !== "win32",
-    });
+    let worker: ChildProcessByStdio<null, Readable, Readable>;
+    try {
+      const args = buildWorkerArgs(options);
+      worker = spawn(options.bin, args, {
+        cwd: options.cwd,
+        env: { ...process.env, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
+        stdio: ["ignore", "pipe", "pipe"],
+        detached: process.platform !== "win32",
+      });
+    } catch (err) {
+      resolve(workerSetupFailure(startTime, errorMessage(err)));
+      return;
+    }
 
     let stdout = "";
     let stderr = "";
@@ -293,7 +305,18 @@ export function runWorker(options: WorkerOptions): Promise<WorkerResult> {
           : extractWorkerOutput(stdout);
 
       if (exitCode === 0 && killed === false) {
-        resolve({ success: true, exitCode, elapsed, summary, error: null, usage, reportedCostUsd });
+        const extracted = extractSuccessfulWorkerWarning(stderr);
+        const warning = extracted === undefined ? undefined : truncate(extracted, ERROR_MAX_LEN);
+        resolve({
+          success: true,
+          exitCode,
+          elapsed,
+          summary,
+          error: null,
+          ...(warning === undefined ? {} : { warning }),
+          usage,
+          reportedCostUsd,
+        });
         return;
       }
 
@@ -301,7 +324,11 @@ export function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       if (killReason !== null) {
         error = killReason;
       } else if (stderr.length > 0) {
-        error = truncate(stderr, ERROR_MAX_LEN);
+        const diagnostic = sanitizeWorkerDiagnostic(stderr);
+        error =
+          diagnostic.length > 0
+            ? truncate(diagnostic, ERROR_MAX_LEN)
+            : `Exit code ${String(exitCode)}`;
       } else {
         error = `Exit code ${String(exitCode)}`;
       }
@@ -322,18 +349,22 @@ export function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       if (killTimer !== null) {
         clearTimeout(killTimer);
       }
-      const elapsed = Math.round((Date.now() - startTime) / 1000);
-      resolve({
-        success: false,
-        exitCode: -1,
-        elapsed,
-        summary: "",
-        error: err.message,
-        usage: null,
-        reportedCostUsd: null,
-      });
+      resolve(workerSetupFailure(startTime, err.message));
     });
   });
+}
+
+function workerSetupFailure(startTime: number, error: string): WorkerResult {
+  const diagnostic = sanitizeWorkerDiagnostic(error);
+  return {
+    success: false,
+    exitCode: -1,
+    elapsed: Math.round((Date.now() - startTime) / 1000),
+    summary: "",
+    error: diagnostic.length > 0 ? diagnostic : "Worker process setup failed",
+    usage: null,
+    reportedCostUsd: null,
+  };
 }
 
 function terminateWorker(
