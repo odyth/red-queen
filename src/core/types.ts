@@ -159,7 +159,8 @@ export interface Task {
   retryCount: number;
   metadata: Record<string, unknown>;
   // Issue ids this task is parked on (stack blockers), or a marker like
-  // "<cycle>"/"<resolve-error>". Kept after release as dedup memory/display.
+  // "<cycle>"/"<resolve-error>"/"<assignment-check-error>"/
+  // "<ai-assignment-required>". Kept after release as dedup memory/display.
   blockedOn: string[] | null;
 }
 

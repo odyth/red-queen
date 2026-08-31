@@ -31,7 +31,12 @@ export {
 } from "./core/config.js";
 
 // Interfaces
-export type { Issue, IssueTracker, Attachment } from "./integrations/issue-tracker.js";
+export type {
+  AiAssignmentState,
+  Issue,
+  IssueTracker,
+  Attachment,
+} from "./integrations/issue-tracker.js";
 export type {
   CreatePROptions,
   PullRequest,

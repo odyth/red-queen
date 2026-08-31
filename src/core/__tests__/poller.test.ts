@@ -45,6 +45,17 @@ describe("Poller", () => {
     expect(queue.hasOpenTask("PROJ-1", "spec-writing")).toBe(true);
   });
 
+  it("tick() recovers an unphased issue assigned to AI", async () => {
+    const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
+    const issueTracker = new MockIssueTracker();
+    issueTracker.assignedToAiResults = [makeIssue("PROJ-ASSIGNED")];
+    const poller = new Poller({ issueTracker, queue, runtime, pipelineState, audit }, 1_000_000);
+
+    await poller.tick();
+
+    expect(queue.hasOpenTask("PROJ-ASSIGNED", "new-ticket")).toBe(true);
+  });
+
   it("start/stop schedule and cancel the interval", () => {
     const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
     const issueTracker = new MockIssueTracker();

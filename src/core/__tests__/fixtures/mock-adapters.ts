@@ -7,6 +7,7 @@ import type {
   ValidationResult,
 } from "../../types.js";
 import type {
+  AiAssignmentState,
   Attachment,
   BlockerRef,
   Issue,
@@ -27,11 +28,13 @@ export class MockIssueTracker implements IssueTracker {
   specs = new Map<string, string>();
   commentsById = new Map<string, Comment[]>();
   listByPhaseResults = new Map<string, Issue[]>();
+  assignedToAiResults: Issue[] = [];
   parseResult: PipelineEvent | null = null;
   validateResult = true;
   calls: string[] = [];
   getSpecThrowsFor = new Set<string>();
   getPhaseThrowsFor = new Set<string>();
+  defaultAssignedToAi = false;
 
   async getIssue(issueId: string): Promise<Issue> {
     this.calls.push(`getIssue:${issueId}`);
@@ -45,6 +48,26 @@ export class MockIssueTracker implements IssueTracker {
   listIssuesByPhase(phaseName: string): Promise<Issue[]> {
     this.calls.push(`listIssuesByPhase:${phaseName}`);
     return Promise.resolve(this.listByPhaseResults.get(phaseName) ?? []);
+  }
+
+  listIssuesAssignedToAi(): Promise<Issue[]> {
+    this.calls.push("listIssuesAssignedToAi");
+    return Promise.resolve(this.assignedToAiResults);
+  }
+
+  getAiAssignmentState(issueId: string): Promise<AiAssignmentState> {
+    this.calls.push(`getAiAssignmentState:${issueId}`);
+    if (this.getPhaseThrowsFor.has(issueId)) {
+      return Promise.reject(new Error(`mock assignment state failure for ${issueId}`));
+    }
+    const explicitAssignment = this.assignments.get(issueId);
+    const discoveredAsAssigned = this.assignedToAiResults.some((issue) => issue.id === issueId);
+    return Promise.resolve({
+      phase: this.phases.get(issueId) ?? null,
+      assignedToAi:
+        explicitAssignment === "ai" ||
+        (explicitAssignment === undefined && (this.defaultAssignedToAi || discoveredAsAssigned)),
+    });
   }
 
   getPhase(issueId: string): Promise<string | null> {

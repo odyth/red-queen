@@ -1,9 +1,24 @@
+import {
+  ASSIGNMENT_CLAIM_REQUIRED_METADATA_KEY,
+  readAiAssignmentState,
+  routeAiAssignment,
+} from "./assignment-router.js";
 import type { AuditLogger } from "./audit.js";
 import { errorMessage } from "./errors.js";
 import type { PipelineStateStore } from "./pipeline-state.js";
 import type { TaskQueue } from "./queue.js";
 import type { RuntimeState } from "./runtime-state.js";
-import type { IssueTracker } from "../integrations/issue-tracker.js";
+import type { AiAssignmentState, Issue, IssueTracker } from "../integrations/issue-tracker.js";
+import type { Task, TaskStatus } from "./types.js";
+
+const ASSIGNMENT_RECOVERY_READ_CONCURRENCY = 8;
+const OPEN_TASK_STATUSES: readonly TaskStatus[] = ["ready", "working", "deferred"];
+
+interface AssignmentRecoveryRead {
+  issue: Issue;
+  state: AiAssignmentState | null;
+  error: string | null;
+}
 
 export interface ReconcilerDeps {
   issueTracker: IssueTracker;
@@ -25,6 +40,7 @@ export async function reconcile(deps: ReconcilerDeps): Promise<ReconcileResult> 
   let tasksCreated = 0;
   let skipped = 0;
 
+  const openGuardedNewTickets = collectOpenGuardedNewTickets(queue);
   const seenIssueIds = new Set<string>();
   const automatedPhases = runtime.phaseGraph.getAutomatedPhases();
   const entryPhaseNames = new Set(runtime.phaseGraph.getEntryPhases().map((p) => p.name));
@@ -52,6 +68,21 @@ export async function reconcile(deps: ReconcilerDeps): Promise<ReconcileResult> 
 
       if (queue.hasOpenTask(issue.id, phase.name)) {
         skipped++;
+        continue;
+      }
+
+      // A guarded new-ticket can have a live phase selected while it waits.
+      // Preserve that ownership hold until new-ticket revalidation can transfer
+      // its metadata. Other cross-phase work remains an independent trigger.
+      const guardedTask = openGuardedNewTickets.get(issue.id) ?? null;
+      if (guardedTask !== null) {
+        skipped++;
+        audit.log({
+          component: "reconciler",
+          issueId: issue.id,
+          message: `Skipping ${phase.name} reconciliation — assignment-guarded ${guardedTask.type} task is still open`,
+          metadata: { phase: phase.name, guardedTaskId: guardedTask.id },
+        });
         continue;
       }
 
@@ -103,6 +134,81 @@ export async function reconcile(deps: ReconcilerDeps): Promise<ReconcileResult> 
     }
   }
 
+  // An assignment webhook can be the only signal for a brand-new ticket that
+  // has no Red Queen phase yet. Run this after the phase sweep so a stale
+  // assignment-search snapshot cannot hide newer, phase-tagged work.
+  if (issueTracker.listIssuesAssignedToAi !== undefined) {
+    let assignedIssues: Issue[] = [];
+    try {
+      assignedIssues = await issueTracker.listIssuesAssignedToAi();
+    } catch (err) {
+      audit.log({
+        component: "reconciler",
+        issueId: null,
+        message: `Failed to list issues assigned to AI: ${errorMessage(err)}`,
+        metadata: {},
+      });
+    }
+
+    const recoveryCandidates: Issue[] = [];
+    for (const issue of assignedIssues) {
+      if (seenIssueIds.has(issue.id)) {
+        continue;
+      }
+      seenIssueIds.add(issue.id);
+      issuesFound++;
+      recoveryCandidates.push(issue);
+    }
+
+    // Read remote claim state concurrently, then apply routing effects in the
+    // original discovery order so queue insertion remains deterministic.
+    for (
+      let offset = 0;
+      offset < recoveryCandidates.length;
+      offset += ASSIGNMENT_RECOVERY_READ_CONCURRENCY
+    ) {
+      const batch = recoveryCandidates.slice(offset, offset + ASSIGNMENT_RECOVERY_READ_CONCURRENCY);
+      const reads = await Promise.all(
+        batch.map(async (issue): Promise<AssignmentRecoveryRead> => {
+          try {
+            return {
+              issue,
+              state: await readAiAssignmentState(issueTracker, issue.id),
+              error: null,
+            };
+          } catch (err) {
+            return { issue, state: null, error: errorMessage(err) };
+          }
+        }),
+      );
+
+      for (const read of reads) {
+        if (read.state === null) {
+          skipped++;
+          audit.log({
+            component: "reconciler",
+            issueId: read.issue.id,
+            message: `assignment-change: live assignment state read failed; reconciliation will retry: ${read.error ?? "unknown error"}`,
+            metadata: {},
+          });
+          continue;
+        }
+
+        const routeResult = await routeAiAssignment(deps, {
+          issueId: read.issue.id,
+          component: "reconciler",
+          description: "Recovered missed AI assignment",
+          assignmentState: read.state,
+        });
+        if (routeResult.outcome === "enqueued") {
+          tasksCreated++;
+        } else {
+          skipped++;
+        }
+      }
+    }
+  }
+
   // Every sweep re-evaluates parked tasks: releaseDeferred is the liveness
   // backstop for state changes no webhook reported (link edits, manual moves).
   queue.releaseDeferred();
@@ -115,4 +221,21 @@ export async function reconcile(deps: ReconcilerDeps): Promise<ReconcileResult> 
   });
 
   return { issuesFound, tasksCreated, skipped };
+}
+
+function collectOpenGuardedNewTickets(queue: TaskQueue): Map<string, Task> {
+  const claims = new Map<string, Task>();
+  for (const status of OPEN_TASK_STATUSES) {
+    for (const task of queue.listByStatus(status)) {
+      if (
+        task.issueId !== null &&
+        task.type === "new-ticket" &&
+        task.metadata[ASSIGNMENT_CLAIM_REQUIRED_METADATA_KEY] === true &&
+        claims.has(task.issueId) === false
+      ) {
+        claims.set(task.issueId, task);
+      }
+    }
+  }
+  return claims;
 }

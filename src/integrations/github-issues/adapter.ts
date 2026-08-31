@@ -1,12 +1,25 @@
 import { z } from "zod";
 import type { Comment, CostBreakdown, PipelineEvent, ValidationResult } from "../../core/types.js";
 import { renderBreakdownMarkdown } from "../../core/cost-markdown.js";
-import type { Attachment, BlockerRef, Issue, IssueTracker } from "../issue-tracker.js";
+import type {
+  AiAssignmentState,
+  Attachment,
+  BlockerRef,
+  Issue,
+  IssueTracker,
+} from "../issue-tracker.js";
 import { parseGitHubWebhookEvent, validateGitHubWebhook } from "../github/webhook.js";
 import type { GitHubAuthStrategy, GitHubIdentity } from "../github/auth.js";
 import { GitHubAuthConfigSchema } from "../github/auth/config.js";
 import type { GitHubClient } from "../github/client.js";
-import { ACTIVE_LABEL, colorFor, isPhaseLabel, phaseFromLabel, phaseLabel } from "./labels.js";
+import {
+  ACTIVE_LABEL,
+  colorFor,
+  isPhaseLabel,
+  labelsEqual,
+  phaseFromLabel,
+  phaseLabel,
+} from "./labels.js";
 import { findCost, formatCostBody } from "./cost-marker.js";
 import { findSpec, formatSpecBody } from "./spec-marker.js";
 
@@ -68,7 +81,22 @@ export class GitHubIssuesAdapter implements IssueTracker {
   }
 
   async listIssuesByPhase(phaseName: string): Promise<Issue[]> {
-    const label = phaseLabel(phaseName);
+    return this.listOpenIssuesByLabel(phaseLabel(phaseName));
+  }
+
+  async listIssuesAssignedToAi(): Promise<Issue[]> {
+    return this.listOpenIssuesByLabel(ACTIVE_LABEL);
+  }
+
+  async getAiAssignmentState(issueId: string): Promise<AiAssignmentState> {
+    const issue = await this.getIssue(issueId);
+    return {
+      phase: issue.phase,
+      assignedToAi: issue.labels.some((label) => labelsEqual(label, ACTIVE_LABEL)),
+    };
+  }
+
+  private async listOpenIssuesByLabel(label: string): Promise<Issue[]> {
     const items = (await this.client.paginate(this.client.rest.issues.listForRepo, {
       owner: this.owner,
       repo: this.repo,

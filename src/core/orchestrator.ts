@@ -2,6 +2,10 @@ import { mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node
 import { join } from "node:path";
 import { safeAudit } from "./audit.js";
 import type { AuditLogger } from "./audit.js";
+import {
+  ASSIGNMENT_CLAIM_REQUIRED_METADATA_KEY,
+  readAiAssignmentState,
+} from "./assignment-router.js";
 import { withTimeout } from "./async.js";
 import { buildPhaseGraph } from "./config.js";
 import type { RedQueenConfig } from "./config.js";
@@ -30,12 +34,16 @@ import type { PhaseDefinition, Task } from "./types.js";
 import type { OrchestratorState } from "./types.js";
 import { resolveAgentBin, resolveAgentSettings, runWorker as defaultRunWorker } from "./worker.js";
 import type { WorkerOptions, WorkerResult } from "./worker.js";
-import type { IssueTracker } from "../integrations/issue-tracker.js";
+import type { AiAssignmentState, IssueTracker } from "../integrations/issue-tracker.js";
 import type { SourceControl } from "../integrations/source-control.js";
 import { DashboardServer } from "../dashboard/server.js";
 import { WebhookServer } from "../webhook/server.js";
 
 export type WorkerRunner = (options: WorkerOptions) => Promise<WorkerResult>;
+
+type AssignmentClaimValidation =
+  | { action: "proceed"; state: AiAssignmentState | null }
+  | { action: "stop" };
 
 export interface ReloadResult {
   applied: string[];
@@ -81,6 +89,8 @@ const PHASE_DRIFT_GRACE_MS = 30_000;
 // not a state transition, so it runs off the main loop rather than any phase.
 const AUDIT_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const STARTUP_MERGE_SCAN_TIMEOUT_MS = 30_000;
+const ASSIGNMENT_CHECK_ERROR_BLOCKER = "<assignment-check-error>";
+const AI_ASSIGNMENT_REQUIRED_BLOCKER = "<ai-assignment-required>";
 
 export class RedQueen {
   private readonly deps: RedQueenDeps;
@@ -369,6 +379,11 @@ export class RedQueen {
       return;
     }
 
+    const assignmentClaim = await this.revalidateAssignmentClaim(task);
+    if (assignmentClaim.action === "stop") {
+      return;
+    }
+
     // If pipeline_state's last phase was a human-gate, we're leaving it now.
     // Reset iteration counters so reopens/reworks start fresh. Lives at the
     // top of processTask so it fires once per gate-leave regardless of source
@@ -391,7 +406,7 @@ export class RedQueen {
     }
 
     if (task.type === "new-ticket") {
-      await this.processNewTicketTask(task);
+      await this.processNewTicketTask(task, assignmentClaim.state);
       return;
     }
 
@@ -427,7 +442,7 @@ export class RedQueen {
       return;
     }
 
-    const validation = await this.preDispatchValidation(task, phaseName);
+    const validation = await this.preDispatchValidation(task, phaseName, assignmentClaim.state);
     if (validation === "stale") {
       return;
     }
@@ -579,13 +594,154 @@ export class RedQueen {
     return { action: "deferred" };
   }
 
-  private async processNewTicketTask(task: Task): Promise<void> {
+  private async revalidateAssignmentClaim(task: Task): Promise<AssignmentClaimValidation> {
+    if (task.metadata[ASSIGNMENT_CLAIM_REQUIRED_METADATA_KEY] !== true) {
+      return { action: "proceed", state: null };
+    }
+
+    const issueId = task.issueId;
+    if (issueId === null) {
+      return { action: "proceed", state: null };
+    }
+
+    let state: AiAssignmentState;
+    try {
+      state = await readAiAssignmentState(this.deps.issueTracker, issueId);
+    } catch (err) {
+      // Keep the guarded task open so a transient tracker outage cannot turn
+      // the claim into a terminal failure that reconciliation replaces with an
+      // unguarded phase task. The deferred-release sweep retries this same task.
+      if (this.deps.queue.markDeferred(task.id, [ASSIGNMENT_CHECK_ERROR_BLOCKER])) {
+        this.deps.orchestratorState.incrementErrors();
+      }
+      this.deps.audit.log({
+        component: "orchestrator",
+        issueId,
+        message: `AI assignment revalidation failed closed — task deferred for retry: ${errorMessage(err)}`,
+        metadata: { taskId: task.id, type: task.type },
+      });
+      this.emitQueueChanged();
+      return { action: "stop" };
+    }
+
+    if (state.assignedToAi) {
+      // A phase change is an independent trigger. If the guarded claim waited
+      // long enough for the issue to move elsewhere, retire the old claim
+      // instead of letting pre-dispatch reset the tracker to its stale phase.
+      // new-ticket is the exception: it transfers its guard to the live phase.
+      if (task.type !== "new-ticket" && state.phase !== task.type) {
+        if (this.deps.queue.markWorking(task.id)) {
+          this.deps.queue.markComplete(
+            task.id,
+            `Stale — guarded claim moved to ${state.phase ?? "no phase"}`,
+          );
+        }
+        this.deps.audit.log({
+          component: "orchestrator",
+          issueId,
+          message: `Skipping stale assignment-guarded ${task.type} task — issue is in ${state.phase ?? "no phase"}`,
+          metadata: { taskId: task.id, type: task.type, phase: state.phase },
+        });
+        this.emitQueueChanged();
+        return { action: "stop" };
+      }
+      return { action: "proceed", state };
+    }
+
+    // Revocation is a durable ownership hold, not completion. Keeping the
+    // claim task deferred prevents phase reconciliation from laundering it
+    // into an unguarded replacement. A later assignment event or deferred
+    // sweep revalidates the same task before any worker may run.
+    this.deps.queue.markDeferred(task.id, [AI_ASSIGNMENT_REQUIRED_BLOCKER]);
+    this.deps.audit.log({
+      component: "orchestrator",
+      issueId,
+      message: "Deferring recovered task because its AI assignment was revoked",
+      metadata: { taskId: task.id, type: task.type, phase: state.phase },
+    });
+    this.emitQueueChanged();
+    return { action: "stop" };
+  }
+
+  private async processNewTicketTask(
+    task: Task,
+    assignmentState: AiAssignmentState | null,
+  ): Promise<void> {
     const issueId = task.issueId;
     if (issueId === null) {
       return;
     }
 
-    this.deps.queue.markWorking(task.id);
+    let livePhase: string | null;
+    if (assignmentState !== null) {
+      livePhase = assignmentState.phase;
+    } else {
+      try {
+        livePhase = await this.deps.issueTracker.getPhase(issueId);
+      } catch (err) {
+        if (this.deps.queue.markWorking(task.id)) {
+          this.deps.queue.markFailed(task.id, `Phase revalidation failed: ${errorMessage(err)}`);
+          this.deps.orchestratorState.incrementErrors();
+        }
+        this.deps.audit.log({
+          component: "orchestrator",
+          issueId,
+          message: `new-ticket phase revalidation failed closed: ${errorMessage(err)}`,
+          metadata: { taskId: task.id },
+        });
+        this.emitQueueChanged();
+        return;
+      }
+    }
+
+    // Assignment recovery snapshots an unphased ticket, but the task can wait
+    // behind older work. Never reset a phase selected while it was queued.
+    if (livePhase !== null) {
+      if (this.deps.queue.markWorking(task.id) === false) {
+        this.deps.audit.log({
+          component: "orchestrator",
+          issueId,
+          message: "new-ticket revalidation stopped because the task is no longer ready",
+          metadata: { taskId: task.id, phase: livePhase },
+        });
+        return;
+      }
+      const phase = this.deps.runtime.phaseGraph.getPhase(livePhase);
+      const isEntryPhase = this.deps.runtime.phaseGraph
+        .getEntryPhases()
+        .some((entry) => entry.name === livePhase);
+      const hasLocalState = this.deps.pipelineState.get(issueId) !== null;
+      const canRouteExistingPhase = phase?.type === "automated" && (isEntryPhase || hasLocalState);
+      if (canRouteExistingPhase && this.deps.queue.hasOpenTask(issueId, livePhase) === false) {
+        this.deps.queue.enqueue({
+          type: livePhase,
+          issueId,
+          description: `Recovered live phase ${phase.label}`,
+          metadata: task.metadata,
+        });
+      }
+      this.deps.queue.markComplete(task.id, `Skipped — issue is already in ${livePhase}`);
+      this.deps.audit.log({
+        component: "orchestrator",
+        issueId,
+        message: canRouteExistingPhase
+          ? `new-ticket revalidation found ${livePhase} — routed the live phase without resetting it`
+          : `new-ticket revalidation found ${livePhase} — skipped initialization`,
+        metadata: { taskId: task.id, phase: livePhase },
+      });
+      this.emitQueueChanged();
+      return;
+    }
+
+    if (this.deps.queue.markWorking(task.id) === false) {
+      this.deps.audit.log({
+        component: "orchestrator",
+        issueId,
+        message: "new-ticket initialization stopped because the task is no longer ready",
+        metadata: { taskId: task.id },
+      });
+      return;
+    }
     this.deps.orchestratorState.setCurrentTaskId(task.id);
     this.deps.orchestratorState.setStatus("working");
 
@@ -599,7 +755,9 @@ export class RedQueen {
 
     try {
       await this.deps.issueTracker.setPhase(issueId, firstPhase.name);
-      await this.deps.issueTracker.assignToAi(issueId);
+      if (task.metadata[ASSIGNMENT_CLAIM_REQUIRED_METADATA_KEY] !== true) {
+        await this.deps.issueTracker.assignToAi(issueId);
+      }
     } catch (err) {
       this.deps.audit.log({
         component: "orchestrator",
@@ -630,6 +788,10 @@ export class RedQueen {
         type: firstPhase.name,
         issueId,
         description: `Initial ${firstPhase.label} task`,
+        metadata:
+          task.metadata[ASSIGNMENT_CLAIM_REQUIRED_METADATA_KEY] === true
+            ? task.metadata
+            : undefined,
       });
     }
 
@@ -647,24 +809,32 @@ export class RedQueen {
     this.emitQueueChanged();
   }
 
-  private async preDispatchValidation(task: Task, phaseName: string): Promise<"proceed" | "stale"> {
+  private async preDispatchValidation(
+    task: Task,
+    phaseName: string,
+    assignmentState: AiAssignmentState | null,
+  ): Promise<"proceed" | "stale"> {
     const issueId = task.issueId;
     if (issueId === null) {
       return "proceed";
     }
 
     let currentPhase: string | null;
-    try {
-      currentPhase = await this.deps.issueTracker.getPhase(issueId);
-    } catch (err) {
-      this.deps.audit.log({
-        component: "orchestrator",
-        issueId,
-        message: `Pre-dispatch phase read failed: ${errorMessage(err)}`,
-        metadata: { taskId: task.id, phase: phaseName },
-      });
-      await this.syncSpecFromTracker(issueId, phaseName, task.id);
-      return "proceed";
+    if (assignmentState !== null) {
+      currentPhase = assignmentState.phase;
+    } else {
+      try {
+        currentPhase = await this.deps.issueTracker.getPhase(issueId);
+      } catch (err) {
+        this.deps.audit.log({
+          component: "orchestrator",
+          issueId,
+          message: `Pre-dispatch phase read failed: ${errorMessage(err)}`,
+          metadata: { taskId: task.id, phase: phaseName },
+        });
+        await this.syncSpecFromTracker(issueId, phaseName, task.id);
+        return "proceed";
+      }
     }
 
     if (currentPhase === phaseName) {
@@ -697,7 +867,9 @@ export class RedQueen {
 
     try {
       await this.deps.issueTracker.setPhase(issueId, phaseName);
-      await this.deps.issueTracker.assignToAi(issueId);
+      if (task.metadata[ASSIGNMENT_CLAIM_REQUIRED_METADATA_KEY] !== true) {
+        await this.deps.issueTracker.assignToAi(issueId);
+      }
       this.deps.audit.log({
         component: "orchestrator",
         issueId,

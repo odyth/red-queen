@@ -14,6 +14,11 @@ export interface Issue {
   updatedAt: string;
 }
 
+export interface AiAssignmentState {
+  phase: string | null;
+  assignedToAi: boolean;
+}
+
 // A direct blocker of an issue ("is blocked by" edge). `closed` reflects the
 // tracker's own done/closed state so satisfaction can fall back on it for
 // blockers Red Queen never processed.
@@ -35,6 +40,12 @@ export interface IssueTracker {
   // Issue lifecycle
   getIssue(issueId: string): Promise<Issue>;
   listIssuesByPhase(phaseName: string): Promise<Issue[]>;
+  // Optional for compatibility with third-party adapters. Built-in adapters
+  // implement it so missed assignment webhooks can recover unphased tickets.
+  listIssuesAssignedToAi?(): Promise<Issue[]>;
+  // Optional for compatibility with third-party adapters. Assignment-driven
+  // routing fails closed when this live ownership check is unavailable.
+  getAiAssignmentState?(issueId: string): Promise<AiAssignmentState>;
 
   // Phase management (adapter maps string names to native storage)
   getPhase(issueId: string): Promise<string | null>;

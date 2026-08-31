@@ -167,6 +167,30 @@ describe("parseGitHubWebhookEvent", () => {
     expect(result?.payload.phase).toBe("coding");
   });
 
+  it("returns assignment-change when a human adds the active label", () => {
+    const payload = JSON.stringify({
+      action: "labeled",
+      sender: { login: "human", id: 2 },
+      issue: { number: 8 },
+      label: { name: "rq:active" },
+    });
+    const result = parseGitHubWebhookEvent({ identity }, { "x-github-event": "issues" }, payload);
+    expect(result?.type).toBe("assignment-change");
+    expect(result?.issueId).toBe("#8");
+  });
+
+  it("matches the active label case-insensitively", () => {
+    const payload = JSON.stringify({
+      action: "labeled",
+      sender: { login: "human", id: 2 },
+      issue: { number: 8 },
+      label: { name: "RQ:Active" },
+    });
+    const result = parseGitHubWebhookEvent({ identity }, { "x-github-event": "issues" }, payload);
+    expect(result?.type).toBe("assignment-change");
+    expect(result?.issueId).toBe("#8");
+  });
+
   it("ignores non-rq labels", () => {
     const payload = JSON.stringify({
       action: "labeled",

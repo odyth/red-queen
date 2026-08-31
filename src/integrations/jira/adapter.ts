@@ -5,7 +5,13 @@ import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { z } from "zod";
 import type { Comment, CostBreakdown, PipelineEvent, ValidationResult } from "../../core/types.js";
-import type { Attachment, BlockerRef, Issue, IssueTracker } from "../issue-tracker.js";
+import type {
+  AiAssignmentState,
+  Attachment,
+  BlockerRef,
+  Issue,
+  IssueTracker,
+} from "../issue-tracker.js";
 import { fromAdf, toAdf } from "./adf.js";
 import type { AdfNode } from "./adf.js";
 import { renderBreakdownAdf } from "./cost-adf.js";
@@ -146,10 +152,7 @@ export class JiraIssueTrackerAdapter implements IssueTracker {
     }
     // Jira JQL needs cf[<id>] (not the quoted "customfield_<id>" field name) and an
     // unquoted numeric option id; both quoted forms silently return zero rows.
-    const phaseField = this.config.customFields.phase;
-    const fieldRef = /^customfield_\d+$/.test(phaseField)
-      ? `cf[${phaseField.slice("customfield_".length)}]`
-      : `"${escapeJql(phaseField)}"`;
+    const fieldRef = this.phaseFieldJqlReference();
     const optionValue = /^\d+$/.test(mapping.optionId)
       ? mapping.optionId
       : `"${escapeJql(mapping.optionId)}"`;
@@ -163,7 +166,41 @@ export class JiraIssueTrackerAdapter implements IssueTracker {
         clauses.push("sprint in openSprints()");
       }
     }
-    const jql = clauses.join(" AND ");
+    return this.searchIssues(clauses.join(" AND "), `phase '${phaseName}'`);
+  }
+
+  async listIssuesAssignedToAi(): Promise<Issue[]> {
+    const accountId = await this.ensureBotAccountId();
+    // Assignment is an explicit handoff, so recover it project-wide even when
+    // phase reconciliation is configured to prefer the active sprint.
+    const jql = [
+      `project = "${escapeJql(this.config.projectKey)}"`,
+      `assignee = "${escapeJql(accountId)}"`,
+      `${this.phaseFieldJqlReference()} IS EMPTY`,
+      "statusCategory != Done",
+    ].join(" AND ");
+    return this.searchIssues(jql, "AI assignee");
+  }
+
+  async getAiAssignmentState(issueId: string): Promise<AiAssignmentState> {
+    const [issue, botAccountId] = await Promise.all([
+      this.getIssue(issueId),
+      this.ensureBotAccountId(),
+    ]);
+    return {
+      phase: issue.phase,
+      assignedToAi: issue.assignee === botAccountId,
+    };
+  }
+
+  private phaseFieldJqlReference(): string {
+    const phaseField = this.config.customFields.phase;
+    return /^customfield_\d+$/.test(phaseField)
+      ? `cf[${phaseField.slice("customfield_".length)}]`
+      : `"${escapeJql(phaseField)}"`;
+  }
+
+  private async searchIssues(jql: string, context: string): Promise<Issue[]> {
     const fields = [
       "summary",
       "status",
@@ -184,7 +221,7 @@ export class JiraIssueTrackerAdapter implements IssueTracker {
       pages++;
       if (pages > LIST_MAX_PAGES) {
         throw new Error(
-          `Jira listIssuesByPhase page cap (${String(LIST_MAX_PAGES)}) exceeded for phase '${phaseName}' — adapter bug or runaway result set.`,
+          `Jira issue search page cap (${String(LIST_MAX_PAGES)}) exceeded for ${context} — adapter bug or runaway result set.`,
         );
       }
       const params = new URLSearchParams({
@@ -640,5 +677,5 @@ export class JiraIssueTrackerAdapter implements IssueTracker {
 }
 
 function escapeJql(input: string): string {
-  return input.replace(/"/g, '\\"');
+  return input.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }

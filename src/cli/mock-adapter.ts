@@ -1,4 +1,10 @@
-import type { Attachment, BlockerRef, Issue, IssueTracker } from "../integrations/issue-tracker.js";
+import type {
+  AiAssignmentState,
+  Attachment,
+  BlockerRef,
+  Issue,
+  IssueTracker,
+} from "../integrations/issue-tracker.js";
 import type {
   CheckStatus,
   CreatePROptions,
@@ -34,6 +40,12 @@ export class MockIssueTrackerAdapter implements IssueTracker {
   }
   listIssuesByPhase(): Promise<Issue[]> {
     return Promise.resolve([]);
+  }
+  listIssuesAssignedToAi(): Promise<Issue[]> {
+    return Promise.resolve([]);
+  }
+  getAiAssignmentState(): Promise<AiAssignmentState> {
+    return Promise.resolve({ phase: null, assignedToAi: false });
   }
   getPhase(): Promise<string | null> {
     return Promise.resolve(null);

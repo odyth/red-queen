@@ -1,6 +1,10 @@
 export const PHASE_LABEL_PREFIX = "rq:phase:";
 export const ACTIVE_LABEL = "rq:active";
 
+export function labelsEqual(left: string, right: string): boolean {
+  return left.toLowerCase() === right.toLowerCase();
+}
+
 export function phaseLabel(phaseName: string): string {
   return `${PHASE_LABEL_PREFIX}${phaseName}`;
 }

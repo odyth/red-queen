@@ -32,7 +32,7 @@ function bodyToString(body: BodyInit): string {
   return "<binary>";
 }
 
-function mkHarness(): {
+function mkHarness(options: { resolveBotIdentity?: boolean } = {}): {
   adapter: JiraIssueTrackerAdapter;
   setResponse(matcher: (call: MockCall) => boolean, body: unknown, status?: number): void;
   calls: MockCall[];
@@ -91,7 +91,7 @@ function mkHarness(): {
     statusTransitions: {},
     reconcileScope: "active-sprint-or-all",
     blocksLinkName: "Blocks",
-    botAccountId: "bot-1",
+    ...(options.resolveBotIdentity === true ? {} : { botAccountId: "bot-1" }),
   };
 
   const adapter = new JiraIssueTrackerAdapter({ client, config });
@@ -208,6 +208,115 @@ describe("JiraIssueTrackerAdapter", () => {
     );
     const jql = new URL(phaseCall?.url ?? "").searchParams.get("jql") ?? "";
     expect(jql).toContain("sprint in openSprints()");
+  });
+
+  it("listIssuesAssignedToAi queries non-Done project issues assigned to the configured bot", async () => {
+    h.setResponse((c) => c.method === "GET" && c.url.includes("assignee"), {
+      issues: [
+        {
+          id: "10008",
+          key: "RQ-8",
+          fields: {
+            summary: "offline assignment",
+            assignee: { accountId: "bot-1" },
+            issuetype: { name: "Task" },
+          },
+        },
+      ],
+      isLast: true,
+    });
+
+    const issues = await h.adapter.listIssuesAssignedToAi();
+
+    expect(h.calls.some((c) => c.url.endsWith("/rest/api/3/myself"))).toBe(false);
+    const searchCall = h.calls.find((c) => c.url.includes("/rest/api/3/search/jql"));
+    const jql = new URL(searchCall?.url ?? "").searchParams.get("jql") ?? "";
+    expect(jql).toContain('project = "RQ"');
+    expect(jql).toContain('assignee = "bot-1"');
+    expect(jql).toContain("cf[10158] IS EMPTY");
+    expect(jql).toContain("statusCategory != Done");
+    expect(jql).not.toContain("sprint in openSprints()");
+    expect(searchCall?.url).toContain("maxResults=100");
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.id).toBe("RQ-8");
+    expect(issues[0]?.phase).toBeNull();
+  });
+
+  it("getAiAssignmentState returns the live phase and bot ownership", async () => {
+    h.setResponse((c) => c.url.endsWith("/issue/RQ-ACTIVE") && c.method === "GET", {
+      id: "10009",
+      key: "RQ-ACTIVE",
+      fields: {
+        summary: "active",
+        assignee: { accountId: "bot-1" },
+        issuetype: { name: "Task" },
+        customfield_10158: { id: "10056" },
+      },
+    });
+    h.setResponse((c) => c.url.endsWith("/issue/RQ-REVOKED") && c.method === "GET", {
+      id: "10010",
+      key: "RQ-REVOKED",
+      fields: {
+        summary: "revoked",
+        assignee: { accountId: "alice" },
+        issuetype: { name: "Task" },
+        customfield_10158: null,
+      },
+    });
+
+    await expect(h.adapter.getAiAssignmentState("RQ-ACTIVE")).resolves.toEqual({
+      phase: "coding",
+      assignedToAi: true,
+    });
+    await expect(h.adapter.getAiAssignmentState("RQ-REVOKED")).resolves.toEqual({
+      phase: null,
+      assignedToAi: false,
+    });
+  });
+
+  it("listIssuesAssignedToAi resolves and caches the bot account id when not configured", async () => {
+    h = mkHarness({ resolveBotIdentity: true });
+    h.setResponse((c) => c.method === "GET" && c.url.endsWith("/rest/api/3/myself"), {
+      accountId: 'resolved-"bot\\id',
+    });
+    h.setResponse((c) => c.method === "GET" && c.url.includes("assignee"), {
+      issues: [],
+      isLast: true,
+    });
+
+    await h.adapter.listIssuesAssignedToAi();
+    await h.adapter.listIssuesAssignedToAi();
+
+    expect(h.calls.filter((c) => c.url.endsWith("/rest/api/3/myself"))).toHaveLength(1);
+    const searchCalls = h.calls.filter((c) => c.url.includes("/rest/api/3/search/jql"));
+    expect(searchCalls).toHaveLength(2);
+    const jql = new URL(searchCalls[0]?.url ?? "").searchParams.get("jql") ?? "";
+    expect(jql).toContain('assignee = "resolved-\\"bot\\\\id"');
+  });
+
+  it("listIssuesAssignedToAi paginates via nextPageToken", async () => {
+    h.setResponse(
+      (c) =>
+        c.method === "GET" &&
+        c.url.includes("assignee") &&
+        c.url.includes("nextPageToken") === false,
+      {
+        issues: [{ id: "1", key: "RQ-A", fields: { issuetype: { name: "Task" } } }],
+        nextPageToken: "assigned-page-2",
+        isLast: false,
+      },
+    );
+    h.setResponse((c) => c.method === "GET" && c.url.includes("nextPageToken=assigned-page-2"), {
+      issues: [{ id: "2", key: "RQ-B", fields: { issuetype: { name: "Task" } } }],
+      isLast: true,
+    });
+
+    const issues = await h.adapter.listIssuesAssignedToAi();
+
+    expect(issues.map((issue) => issue.id)).toEqual(["RQ-A", "RQ-B"]);
+    const searchCalls = h.calls.filter((c) => c.url.includes("/rest/api/3/search/jql"));
+    expect(searchCalls).toHaveLength(2);
+    expect(searchCalls[1]?.url).toContain("nextPageToken=assigned-page-2");
   });
 
   it("setPhase sends PUT with option id", async () => {

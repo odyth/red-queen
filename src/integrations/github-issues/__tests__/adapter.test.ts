@@ -155,6 +155,129 @@ describe("GitHubIssuesAdapter", () => {
     expect(issue.labels).toContain("bug");
   });
 
+  it("listIssuesByPhase lists open non-PR issues with the phase label", async () => {
+    fake.setPaginate((_path, args) => {
+      expect(args).toMatchObject({
+        owner: "me",
+        repo: "r",
+        labels: "rq:phase:coding",
+        state: "open",
+        per_page: 100,
+      });
+      return [
+        {
+          number: 5,
+          title: "issue",
+          state: "open",
+          labels: [{ name: "rq:phase:coding" }],
+          assignee: null,
+          user: { login: "alice" },
+          created_at: "2026-01-01",
+          updated_at: "2026-01-02",
+        },
+        {
+          number: 6,
+          title: "pull request",
+          state: "open",
+          labels: [{ name: "rq:phase:coding" }],
+          assignee: null,
+          user: { login: "alice" },
+          created_at: "2026-01-01",
+          updated_at: "2026-01-02",
+          pull_request: {},
+        },
+      ];
+    });
+
+    const issues = await adapter.listIssuesByPhase("coding");
+
+    expect(issues.map((issue) => issue.id)).toEqual(["#5"]);
+    expect(issues[0]?.phase).toBe("coding");
+  });
+
+  it("listIssuesAssignedToAi lists open non-PR issues with the active label", async () => {
+    fake.setPaginate((_path, args) => {
+      expect(args).toMatchObject({
+        owner: "me",
+        repo: "r",
+        labels: "rq:active",
+        state: "open",
+        per_page: 100,
+      });
+      return [
+        {
+          number: 7,
+          title: "assigned issue",
+          state: "open",
+          labels: [{ name: "rq:active" }],
+          assignee: null,
+          user: { login: "alice" },
+          created_at: "2026-01-01",
+          updated_at: "2026-01-02",
+        },
+        {
+          number: 8,
+          title: "assigned pull request",
+          state: "open",
+          labels: [{ name: "rq:active" }],
+          assignee: null,
+          user: { login: "alice" },
+          created_at: "2026-01-01",
+          updated_at: "2026-01-02",
+          pull_request: {},
+        },
+      ];
+    });
+
+    const issues = await adapter.listIssuesAssignedToAi();
+
+    expect(issues.map((issue) => issue.id)).toEqual(["#7"]);
+    expect(issues[0]?.labels).toContain("rq:active");
+  });
+
+  it("getAiAssignmentState returns phase and active-label ownership", async () => {
+    fake.add("get", (args) => ({
+      number: args.issue_number,
+      title: "assignment state",
+      state: "open",
+      labels:
+        args.issue_number === 7
+          ? [{ name: "rq:active" }, { name: "rq:phase:coding" }]
+          : [{ name: "rq:phase:spec-review" }],
+      assignee: null,
+      user: { login: "alice" },
+      created_at: "2026-01-01",
+      updated_at: "2026-01-02",
+    }));
+
+    await expect(adapter.getAiAssignmentState("#7")).resolves.toEqual({
+      phase: "coding",
+      assignedToAi: true,
+    });
+    await expect(adapter.getAiAssignmentState("#8")).resolves.toEqual({
+      phase: "spec-review",
+      assignedToAi: false,
+    });
+  });
+
+  it("getAiAssignmentState matches the active label case-insensitively", async () => {
+    fake.add("get", () => ({
+      number: 7,
+      title: "assignment state",
+      state: "open",
+      labels: [{ name: "RQ:Active" }, { name: "rq:phase:coding" }],
+      assignee: null,
+      user: { login: "alice" },
+      created_at: "2026-01-01",
+      updated_at: "2026-01-02",
+    }));
+
+    await expect(adapter.getAiAssignmentState("#7")).resolves.toEqual({
+      phase: "coding",
+      assignedToAi: true,
+    });
+  });
+
   it("setPhase ensures label exists before adding", async () => {
     let labelCreated = false;
     fake.add("get", () => ({

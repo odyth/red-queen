@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RedQueenDatabase } from "../database.js";
+import { ASSIGNMENT_CLAIM_REQUIRED_METADATA_KEY } from "../assignment-router.js";
 import { SqliteTaskQueue } from "../queue.js";
 import { PipelineStateStore, OrchestratorStateStore } from "../pipeline-state.js";
 import { PhaseUsageStore } from "../phase-usage.js";
@@ -480,6 +481,127 @@ describe("RedQueen orchestrator", () => {
     expect(snapshot.assignment).toBe("ai");
   });
 
+  it("routes a phase added while new-ticket waited without resetting it", async () => {
+    const h = setupHarness(() =>
+      Promise.resolve({
+        success: true,
+        exitCode: 0,
+        elapsed: 0,
+        summary: "",
+        error: null,
+      }),
+    );
+    const issue = makeIssue("PROJ-1", "spec-writing");
+    h.issueTracker.issues.set(issue.id, issue);
+    h.issueTracker.phases.set(issue.id, "spec-writing");
+    h.queue.enqueue({ type: "new-ticket", issueId: issue.id });
+
+    await runUntil(h, () => h.runs.length >= 1);
+
+    expect(h.issueTracker.calls).not.toContain("setPhase:PROJ-1:spec-writing");
+    expect(h.pipelineState.get(issue.id)).not.toBeNull();
+  });
+
+  it("does not reset a ticket moved to a human gate while new-ticket waited", async () => {
+    const h = setupHarness(() =>
+      Promise.resolve({
+        success: true,
+        exitCode: 0,
+        elapsed: 0,
+        summary: "should not run",
+        error: null,
+      }),
+    );
+    const task = h.queue.enqueue({ type: "new-ticket", issueId: "PROJ-1" });
+    h.issueTracker.phases.set("PROJ-1", "spec-review");
+
+    await runUntil(h, () => h.queue.getTask(task.id)?.status === "complete");
+
+    expect(h.issueTracker.calls.some((call) => call.startsWith("setPhase:PROJ-1:"))).toBe(false);
+    expect(h.pipelineState.get("PROJ-1")).toBeNull();
+    expect(h.runs).toHaveLength(0);
+  });
+
+  it("fails closed when new-ticket cannot revalidate a human-gate phase", async () => {
+    const h = setupHarness(() =>
+      Promise.resolve({
+        success: true,
+        exitCode: 0,
+        elapsed: 0,
+        summary: "should not run",
+        error: null,
+      }),
+    );
+    const task = h.queue.enqueue({ type: "new-ticket", issueId: "PROJ-PHASE-ERROR" });
+    h.issueTracker.phases.set("PROJ-PHASE-ERROR", "spec-review");
+    h.issueTracker.getPhaseThrowsFor.add("PROJ-PHASE-ERROR");
+
+    await runUntil(h, () => h.queue.getTask(task.id)?.status === "failed");
+
+    expect(h.issueTracker.calls.some((call) => call.startsWith("setPhase:PROJ-PHASE-ERROR:"))).toBe(
+      false,
+    );
+    expect(h.issueTracker.calls).not.toContain("assignToAi:PROJ-PHASE-ERROR");
+    expect(h.pipelineState.get("PROJ-PHASE-ERROR")).toBeNull();
+    expect(h.runs).toHaveLength(0);
+  });
+
+  it("parks a recovered new-ticket after its AI assignment is revoked", async () => {
+    const h = setupHarness(() =>
+      Promise.resolve({
+        success: true,
+        exitCode: 0,
+        elapsed: 0,
+        summary: "should not run",
+        error: null,
+      }),
+    );
+    const task = h.queue.enqueue({
+      type: "new-ticket",
+      issueId: "PROJ-REVOKED",
+      metadata: { [ASSIGNMENT_CLAIM_REQUIRED_METADATA_KEY]: true },
+    });
+    h.issueTracker.assignments.set("PROJ-REVOKED", "human");
+
+    await runUntil(h, () => h.queue.getTask(task.id)?.status === "deferred");
+
+    expect(h.queue.getTask(task.id)?.blockedOn).toEqual(["<ai-assignment-required>"]);
+    expect(h.issueTracker.calls.some((call) => call.startsWith("setPhase:PROJ-REVOKED:"))).toBe(
+      false,
+    );
+    expect(h.issueTracker.calls).not.toContain("assignToAi:PROJ-REVOKED");
+    expect(h.pipelineState.get("PROJ-REVOKED")).toBeNull();
+    expect(h.runs).toHaveLength(0);
+  });
+
+  it("fails a recovered task closed when live assignment state cannot be read", async () => {
+    const h = setupHarness(() =>
+      Promise.resolve({
+        success: true,
+        exitCode: 0,
+        elapsed: 0,
+        summary: "should not run",
+        error: null,
+      }),
+    );
+    const task = h.queue.enqueue({
+      type: "new-ticket",
+      issueId: "PROJ-CLAIM-ERROR",
+      metadata: { [ASSIGNMENT_CLAIM_REQUIRED_METADATA_KEY]: true },
+    });
+    h.issueTracker.assignments.set("PROJ-CLAIM-ERROR", "ai");
+    h.issueTracker.getPhaseThrowsFor.add("PROJ-CLAIM-ERROR");
+
+    await runUntil(h, () => h.queue.getTask(task.id)?.status === "failed");
+
+    expect(h.issueTracker.calls.some((call) => call.startsWith("setPhase:PROJ-CLAIM-ERROR:"))).toBe(
+      false,
+    );
+    expect(h.issueTracker.calls).not.toContain("assignToAi:PROJ-CLAIM-ERROR");
+    expect(h.pipelineState.get("PROJ-CLAIM-ERROR")).toBeNull();
+    expect(h.runs).toHaveLength(0);
+  });
+
   it("performs crash recovery for working tasks", async () => {
     const h = setupHarness(() =>
       Promise.resolve({
@@ -800,6 +922,33 @@ describe("RedQueen orchestrator", () => {
     await runUntilAfterRuns(h, 1, 3000);
 
     // Task got created by reconciler and processed
+    expect(h.runs.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("recovers a missed unphased assignment immediately on startup", async () => {
+    const h = setupHarness(
+      () =>
+        Promise.resolve({
+          success: true,
+          exitCode: 0,
+          elapsed: 1,
+          summary: "done",
+          error: null,
+        }),
+      { pipeline: { reconcileInterval: 60 } },
+    );
+    const issue = makeIssue("PROJ-OFFLINE");
+    h.issueTracker.issues.set(issue.id, issue);
+    h.issueTracker.assignedToAiResults = [issue];
+
+    await runUntilAfterRuns(h, 1, 3000);
+
+    // The scheduled sweep is a minute away. Startup recovered the missed
+    // assignment, initialized the pipeline, and dispatched the entry phase.
+    expect(h.issueTracker.calls).toContain("listIssuesAssignedToAi");
+    expect(h.pipelineState.get(issue.id)).not.toBeNull();
+    expect(h.issueTracker.calls).toContain(`setPhase:${issue.id}:spec-writing`);
+    expect(h.issueTracker.calls).not.toContain(`assignToAi:${issue.id}`);
     expect(h.runs.length).toBeGreaterThanOrEqual(1);
   });
 

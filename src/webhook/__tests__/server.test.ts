@@ -64,6 +64,7 @@ describe("WebhookServer", () => {
     const orchestratorState = new OrchestratorStateStore(db);
     audit = new DualWriteAuditLogger(db, join(tempDir, "audit.log"));
     issueTracker = new MockIssueTracker();
+    issueTracker.defaultAssignedToAi = true;
     sourceControl = new MockSourceControl();
     port = await getFreePort();
     dashboard = new DashboardServer(
@@ -313,6 +314,24 @@ describe("WebhookServer", () => {
     expect(queue.hasOpenTask("PROJ-8", "new-ticket")).toBe(true);
   });
 
+  it("deduplicates repeated assignment-change deliveries", async () => {
+    issueTracker.parseResult = {
+      source: "webhook",
+      type: "assignment-change",
+      issueId: "PROJ-ASSIGN-DUP",
+      timestamp: new Date().toISOString(),
+      payload: {},
+    };
+
+    await postWebhook("/webhook/issue-tracker", "{}");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await postWebhook("/webhook/issue-tracker", "{}");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(queue.listByStatus("ready")).toHaveLength(1);
+    expect(queue.hasOpenTask("PROJ-ASSIGN-DUP", "new-ticket")).toBe(true);
+  });
+
   it("assignment-change with entry-phase Jira phase enqueues that phase", async () => {
     issueTracker.phases.set("PROJ-10", "spec-writing");
     issueTracker.parseResult = {
@@ -463,7 +482,7 @@ describe("WebhookServer", () => {
     expect(entries.some((e) => e.message.includes("matches local state"))).toBe(true);
   });
 
-  it("assignment-change defers to poller (no task) when the Jira phase read fails", async () => {
+  it("assignment-change defers to poller when the live assignment read fails", async () => {
     pipelineState.create("PROJ-21", "spec-writing");
     issueTracker.getPhaseThrowsFor.add("PROJ-21");
     issueTracker.parseResult = {
@@ -477,7 +496,7 @@ describe("WebhookServer", () => {
     await new Promise((r) => setTimeout(r, 30));
     expect(queue.listByStatus("ready")).toHaveLength(0);
     const entries = audit.query({ issueId: "PROJ-21" });
-    expect(entries.some((e) => e.message.includes("deferring to poller"))).toBe(true);
+    expect(entries.some((e) => e.message.includes("assignment state read failed"))).toBe(true);
   });
 
   it("phase-change updates delegator and propagates to task metadata", async () => {

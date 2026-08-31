@@ -1,8 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { PipelineEvent, PipelineEventType } from "../../core/types.js";
+import { ACTIVE_LABEL, labelsEqual, PHASE_LABEL_PREFIX } from "../github-issues/labels.js";
 import type { GitHubIdentity } from "./auth.js";
-
-const PHASE_LABEL_PREFIX = "rq:phase:";
 
 export function validateGitHubWebhook(
   secret: string | null,
@@ -114,14 +113,26 @@ export function parseGitHubWebhookEvent(
         return null;
       }
       const labelName = extractNested(payload, ["label", "name"]);
-      if (typeof labelName !== "string" || labelName.startsWith(PHASE_LABEL_PREFIX) === false) {
+      if (typeof labelName !== "string") {
         return null;
       }
-      const phase = labelName.slice(PHASE_LABEL_PREFIX.length);
       const issueNumber = extractNested(payload, ["issue", "number"]);
       if (typeof issueNumber !== "number") {
         return null;
       }
+      if (labelsEqual(labelName, ACTIVE_LABEL)) {
+        return {
+          source: "webhook",
+          type: "assignment-change",
+          issueId: `#${String(issueNumber)}`,
+          timestamp: nowIso,
+          payload: {},
+        };
+      }
+      if (labelName.startsWith(PHASE_LABEL_PREFIX) === false) {
+        return null;
+      }
+      const phase = labelName.slice(PHASE_LABEL_PREFIX.length);
       return {
         source: "webhook",
         type: "phase-change" as PipelineEventType,

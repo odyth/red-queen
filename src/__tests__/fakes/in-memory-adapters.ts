@@ -7,6 +7,7 @@ import type {
   ValidationResult,
 } from "../../core/types.js";
 import type {
+  AiAssignmentState,
   Attachment,
   BlockerRef,
   Issue,
@@ -69,6 +70,29 @@ export class InMemoryIssueTracker implements IssueTracker {
       }
     }
     return Promise.resolve(results);
+  }
+
+  listIssuesAssignedToAi(): Promise<Issue[]> {
+    this.calls.push("listIssuesAssignedToAi");
+    const results: Issue[] = [];
+    for (const [issueId, assignment] of this.assignments) {
+      if (assignment !== "ai") {
+        continue;
+      }
+      const issue = this.issues.get(issueId);
+      if (issue !== undefined) {
+        results.push({ ...issue, phase: this.phases.get(issueId) ?? issue.phase });
+      }
+    }
+    return Promise.resolve(results);
+  }
+
+  getAiAssignmentState(issueId: string): Promise<AiAssignmentState> {
+    this.calls.push(`getAiAssignmentState:${issueId}`);
+    return Promise.resolve({
+      phase: this.phases.get(issueId) ?? null,
+      assignedToAi: this.assignments.get(issueId) === "ai",
+    });
   }
 
   getPhase(issueId: string): Promise<string | null> {
