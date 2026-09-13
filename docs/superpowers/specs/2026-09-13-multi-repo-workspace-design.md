@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-13
 **Status:** Approved design, pending implementation
-**Scope:** `src/core/config.ts`, `src/core/database.ts`, `src/core/pipeline-state.ts`, `src/core/skill-context.ts`, `src/core/module-resolver.ts`, `src/core/orchestrator.ts`, `src/core/reconciler.ts`, `src/webhook/server.ts`, `src/integrations/github/webhook.ts`, `src/cli/{init,migrate,pr,pipeline,stack,spec,codebase-map,detect}.ts`, all five `src/skills/*/SKILL.md`, dashboard config/status partials, docs.
+**Scope:** `src/core/config.ts`, `src/core/database.ts`, `src/core/pipeline-state.ts`, `src/core/skill-context.ts`, `src/core/module-resolver.ts`, `src/core/orchestrator.ts`, `src/core/reconciler.ts`, `src/core/rework-transition.ts`, `src/core/stack.ts`, `src/webhook/server.ts`, `src/integrations/github/webhook.ts`, `src/cli/{adapters,init,migrate,pr,pipeline,stack,spec,status,codebase-map,detect}.ts`, all five `src/skills/*/SKILL.md`, dashboard config/status partials, docs.
 
 ## Problem
 
@@ -67,6 +67,17 @@ read by any skill.
    lifts config into `repos[0]`. Sibling repos are added afterwards with
    `redqueen init --add-repo <path>`. Move, never copy: two databases polling
    one tracker double-claim tickets.
+9. **Issue-tracker binding is independent of `repos[]`.** `github-issues`
+   keeps its own `owner/repo` under `issueTracker.config`; that repo need not
+   appear in `repos[]`. The github/github pairing rule becomes "same auth" and
+   one GitHub client is shared by the tracker and every repo adapter.
+10. **Descoping never touches a PR.** A repo row descoped by a later spec
+    revision keeps its branch, PR, and worktree with `in_scope = 0`. Done,
+    the reconciler skip, and dispatch consider in-scope rows only; `status`
+    and the coder's PR bodies flag the row as _orphaned_ for a human to close.
+11. **Mirror readers are an allowlist.** Only cost markers, sub-iteration,
+    failure notices, and `redqueen status` read the `pipeline_state` scalar
+    mirror. Every control decision reads `pipeline_repos` rows.
 
 ## Design
 
@@ -76,7 +87,7 @@ read by any skill.
 project:
   directory: . # workspace root; unchanged semantics
   repos:
-    - name: alignsmart # ^[a-z0-9][a-z0-9-]*$ — used as a dir segment and CLI arg
+    - name: alignsmart # ^[a-z0-9][a-z0-9-]*$ — dir segment and CLI arg; see deriveRepoName
       path: ./AlignSmart # relative to project.directory, or absolute
       owner: alignsmart
       repo: AlignSmart
@@ -101,15 +112,29 @@ Rules:
 - `repos` requires at least one entry; names unique; `path` must exist and be
   a git work tree root at load time (validated in `loadConfig`, not the zod
   schema, so `parseConfig` stays pure for tests).
+- `deriveRepoName(repo)` is the one rule for every derived name (legacy
+  synthesis, `migrate`, `--add-repo`): lowercase, collapse each run of
+  characters outside `[a-z0-9]` to `-`, strip leading and trailing `-`. The
+  result always satisfies the regex; an empty result is a `ConfigError` naming
+  the source repo. Hand-written names in `repos[]` must already match the
+  regex — they are never transformed.
+- When `sourceControl.config.auth` is GitHub App mode, every `repos[].owner`
+  must be the same: an installation token is scoped to one owner. A second
+  distinct owner is a `ConfigError`. Token auth allows any mix of owners.
+- `issueTracker.config.owner/repo` (github-issues) is untouched by workspace
+  mode and binds the tracker to its issue repo, which need not be in
+  `repos[]`. `buildAdapterPair` drops the github/github owner-repo equality
+  check in workspace mode and keeps the shared-auth, shared-client path.
 - In workspace mode `project.buildCommand`, `project.testCommand`,
   `project.modules`, and `sourceControl.config.owner/repo` are rejected with a
   message pointing at `repos[]`. No silent precedence rules.
-- In legacy mode `loadConfig` synthesizes `repos = [{ name: <sourceControl
-repo name, or "default" for mock>, path: project.directory, owner, repo,
-baseBranch: pipeline.baseBranch, buildCommand, testCommand, modules }]` and
-  sets an internal `workspaceMode: false`. Every consumer downstream reads
-  `config.project.repos`; only skill-context rendering and worktree layout
-  branch on `workspaceMode`.
+- In legacy mode `loadConfig` synthesizes `repos = [{ name:
+deriveRepoName(<sourceControl repo name>), or "default" for mock, path:
+project.directory, owner, repo, baseBranch: pipeline.baseBranch, buildCommand,
+testCommand, modules }]` and sets an internal `workspaceMode: false`. Every consumer downstream reads
+  `config.project.repos`; only skill-context rendering, worktree layout, the
+  adapter pairing check, and the dashboard header label branch on
+  `workspaceMode`.
 - Auth (`token`, `appId`, `installationId`, `privateKey`, `webhookSecret`)
   stays under `sourceControl.config`. A GitHub App installation token is
   installation-wide, so one strategy serves every repo.
@@ -160,10 +185,18 @@ CREATE INDEX IF NOT EXISTS idx_pipeline_repos_pr ON pipeline_repos(repo, pr_numb
 `pipeline_state` keeps phase, iterations, spec, prior context, delegator,
 open-question count. Its scalar PR columns stay for one release as a
 **read-only mirror** of the first in-scope repo row: every write goes through
-per-repo methods, and the mirror is refreshed in the same transaction. This
-lets cost markers, sub-iteration, failure notices, and `redqueen status` keep
-reading `record.prNumber` until they are moved. A follow-up removes the
-columns.
+per-repo methods, and the mirror is refreshed in the same transaction. The
+mirror's readers are a closed allowlist — cost markers (`cost-markdown`),
+sub-iteration, failure notices, and `redqueen status` — all display-only.
+Every control decision moves to per-row reads in this iteration:
+
+- `rework-transition`: `hasPr` is true when any in-scope row has a PR.
+- The stack blocker gate (`src/core/stack.ts`) reads per-row branch and PR
+  (rules in §7).
+- `dismissStaleReviews` after a `requiresPr` phase runs for every in-scope
+  row with a PR, via `sourceControls.get(row.repo)`.
+
+A follow-up removes the columns.
 
 `PipelineRecord` gains `repos: PipelineRepoRecord[]` (ordered as in config,
 `inScope` flag per row). The scalar fields are derived from the first
@@ -173,7 +206,12 @@ Store API (new or changed):
 
 - `setScope(issueId, repoNames[])` — upserts rows for the named repos with
   `in_scope = 1`, marks others `in_scope = 0`. Called by `spec meta --repos`.
-  Rows with a live PR are never dropped, only descoped.
+  Rows with a live PR are never dropped, only descoped: the row keeps its
+  branch, PR, and worktree. Done, the reconciler skip, dispatch, and the
+  coder's loops consider in-scope rows only. A merge event for a descoped row
+  still runs `markPrMerged` on that row (terminal transition plus local
+  cleanup) but never advances the issue. `status` labels such rows
+  `orphaned`; closing or merging the PR is a human's call.
 - `updateBranch(issueId, repo, branch)`, `updatePrNumber(issueId, repo, n,
 base)`, `updateWorktreePath(issueId, repo, path | null)`.
 - `markPrMerged(issueId, repo, mergedPrNumber)` — per-row terminal transition
@@ -186,10 +224,15 @@ base)`, `updateWorktreePath(issueId, repo, path | null)`.
 
 **Legacy-row adoption.** Schema migration creates the table only. On every
 start, before polling, the orchestrator adopts legacy rows deterministically:
-for each `pipeline_state` row with a non-null `branch_name`, `pr_number`, or
-`worktree_path` and no `pipeline_repos` rows, insert one row with `repo =
-repos[0].name`. Idempotent, config-aware, and it covers both the `migrate`
-path and a hand-edited in-place conversion.
+for each `pipeline_state` row with a non-null `branch_name`, `pr_number`,
+`worktree_path`, or `spec_content` and no `pipeline_repos` rows, insert one
+row with `repo = repos[0].name`, `in_scope = 1`. `spec_content` is included
+because in legacy mode a written spec implicitly targets the only repo;
+without it, a ticket awaiting approval at migration time would be routed
+back to spec-writing by the coder's empty-scope rule. Idempotent and
+config-aware. `migrate` runs the same adoption in its step 6, so helpers
+invoked before the first `start` see the rows too. A hand-edited in-place
+conversion is covered by the start-time pass.
 
 ### 4. Worktree layout
 
@@ -197,6 +240,15 @@ Workspace mode: `<root>/.redqueen/worktrees/<issueId>/<repoName>` for coding,
 `<root>/.redqueen/worktrees/spec-<issueId>/<repoName>` for the prompt-writer's
 throwaway exploration. One directory per ticket holds the whole change-set.
 Git ops run as `git -C <repo.path> worktree add <that path> …`.
+
+The pr-merged stack refresh's temporary worktree follows the same shape:
+`<root>/.redqueen/worktrees/refresh-<issueId>/<repoName>`.
+
+**Every git invocation** — in the orchestrator, webhook server, and CLI
+helpers — takes its cwd from the acting row's `repo.path`. Nothing runs git
+at the workspace root, which is not a repository. This covers `worktree
+add/remove`, `branch -D`, `fetch`, `ls-remote`, `push`, and the module
+resolver's `diff`.
 
 Legacy mode keeps `<projectDir>/.redqueen/worktrees/<issueId>` so existing
 in-flight worktrees and the byte-identical prompts hold.
@@ -217,11 +269,17 @@ repos:
     branchName: feature/PROJ-123 # null before coding
     prNumber: 42 # null before a PR exists
     module: null # per-repo module resolution (see §6)
+    stackPrBase: feature/PROJ-100 # stacked issues only; omitted otherwise
 ```
 
+`stackBlockedBy` stays top-level (it is ticket-level). `stackPrBase` moves
+into each repo entry using the same conditional spread, because a dependent's
+PR base differs per repo: it is the blocker's branch in repos the blocker
+touched and the repo's `baseBranch` elsewhere.
+
 Legacy scalar fields (`buildCommands`, `testCommands`, `baseBranch`,
-`repoOwner`, `repoName`, `module`, `branchName`, `prNumber`) remain present
-and typed as today. In workspace mode they are populated from the first
+`repoOwner`, `repoName`, `module`, `branchName`, `prNumber`, `stackPrBase`)
+remain present and typed as today. In workspace mode they are populated from the first
 in-scope repo (or `repos[0]` before scope is set) so custom single-repo skills
 degrade sensibly; the README marks them deprecated in workspace mode.
 
@@ -244,7 +302,8 @@ repo-level commands.
   is required in workspace mode, names must exist in config, at least one.
   Calls `setScope`. Legacy mode ignores `--repos`.
 - `redqueen pr create|diff|checks|review|reviews|comments|comment|reply` and
-  `redqueen pipeline update --worktree` gain `--repo <name>`. Required in
+  `redqueen pipeline update` (every flag: `--branch`, `--pr`, `--worktree`,
+  `--clear-pr`, `--clear-worktree`) gain `--repo <name>`. Required in
   workspace mode (PR numbers collide across repos), defaulted to the sole
   repo in legacy mode. `pr create` writes the repo row and recomputes the
   stacked base per repo.
@@ -253,14 +312,25 @@ repo-level commands.
   that exist in **that** repo's remote; ancestors that never touched the repo
   are skipped, not errors. Exit codes unchanged; the JSON output lists
   per-repo results and the conflicting repo on exit 2.
+- **Blocker gate, per repo.** `resolveStack` evaluates each blocker per repo:
+  for repo R a blocker is _satisfied_ when its R row has a branch and the
+  blocker's tracker phase is a terminal gate; _not applicable_ (skipped) when
+  the blocker has no R row; _unsatisfied_ otherwise. The ticket-level gate
+  the orchestrator checks before dispatch is unsatisfied while any in-scope
+  row of any blocker lacks a PR. Merge branches and `stackPrBase` are
+  therefore per repo.
 - `redqueen status` and the dashboard status/workflow views list every repo
-  row (branch, PR) per issue.
+  row (branch, PR, in-scope flag) per issue. A descoped row that still has a
+  PR is labelled `orphaned`.
 
 Config discovery already walks upward from cwd, so helpers invoked from
 inside a repo directory find the workspace `redqueen.yaml`.
 
 ### 8. Webhooks, reconciler, merge cleanup
 
+- Each repo needs its own GitHub webhook (or one org-level webhook) pointing
+  at the same URL with the shared secret. `src/webhook/README.md` and the
+  migrate next-steps output say so.
 - `src/integrations/github/webhook.ts` adds `repo: payload.repository.full_name`
   to `pr-merged` and `pr-feedback` payloads. The webhook server validates the
   signature with `sourceControls.any()` (shared secret), resolves the adapter
@@ -271,8 +341,14 @@ inside a repo directory find the workspace `redqueen.yaml`.
 - Startup merged-PR reconciliation checks every open repo row with
   `sourceControls.get(row.repo).getPullRequest(row.prNumber)`.
 - Merge cleanup (worktree removal, branch deletion) acts on the merged row
-  only. The ticket-level "PR merge already processed" skip in the reconciler
-  keys on `record.repos.every(r => r.prNumber === null)`.
+  only, with git rooted at that row's `repo.path` (§4). The ticket-level "PR
+  merge already processed" skip in the reconciler keys on every **in-scope**
+  row having `prNumber === null`; descoped rows are ignored.
+- The stack refresh (`refreshDependentBranch`) runs per dependent repo row
+  whose base is the merged branch, using the `refresh-<issueId>/<repoName>`
+  worktree from §4.
+- Post-phase `dismissStaleReviews` (orchestrator, `requiresPr` phases) loops
+  every in-scope row with a PR.
 
 ### 9. Skills
 
@@ -286,7 +362,10 @@ today; if present, use it as described here._ Worktree paths follow §4.
    ~200 lines each). Explicit reads, not on-demand loading, because the
    orientation is needed _before_ choosing where to grep, and Codex needs it
    explicit anyway.
-2. Create a spec worktree per candidate repo using that repo's `baseBranch`.
+2. Create a spec worktree for **every** repo using that repo's `baseBranch`
+   (`redqueen stack setup --spec` when stacked, else `git -C <repo.path>
+worktree add` per repo). Candidates are not knowable before reading code
+   and worktree creation is cheap; §7's `--spec` behaviour matches.
 3. Grep only candidate repos; drop any that turn out irrelevant.
 4. Spec gains a required **Repos in Scope** section (one line of reasoning
    per repo) and groups **Files to Change** by repo. Cross-repo contracts
@@ -299,7 +378,8 @@ a missing spec. Otherwise loop in-scope repos: worktree, implement that repo's
 part of the spec, build/test with `repo.module ?? repo` commands, commit,
 push, `pr create --repo`. Rework modes loop the same rows. The stdout summary
 and each PR body list every PR in the set so the human gate sees them
-together.
+together, and name any orphaned PR (a descoped row that still has one) so a
+human closes it.
 
 **reviewer:** one review per in-scope PR (`pr diff/checks/review --repo`). The
 phase fails (exit non-zero) if any PR has blockers. Spec compliance is judged
@@ -342,8 +422,8 @@ Run in a git repo → today's single-repo init, unchanged.
 ### 12. `redqueen init --add-repo <path>`
 
 Appends one repo entry to an existing workspace config using the same
-per-repo derivation as §11, then adds its map section. Refuses on duplicate
-name or path. In a legacy-mode install it first lifts the top-level fields
+per-repo derivation as §11 (name via `deriveRepoName`), then adds its map
+section. Refuses on duplicate name or path. In a legacy-mode install it first lifts the top-level fields
 into `repos[0]` (same transform as §13 step 4), which is the in-place
 "convert without moving" path. Config edits use the `yaml` package's
 `parseDocument` API so comments, key order, tuned phases, pricing, and
@@ -356,35 +436,40 @@ at `<parent>/<repo>`; moves it to `<parent>`. Fail-fast, nothing touched
 until every precondition passes:
 
 1. Preconditions: cwd has `redqueen.yaml` and is a git work tree root;
-   orchestrator not running (pid file); `<parent>/redqueen.yaml` does not
-   exist; `<parent>/.redqueen` does not exist; git ≥ 2.17 (for
-   `worktree move`).
+   `project.directory` resolves to cwd; orchestrator not running (pid file);
+   `<parent>/redqueen.yaml` does not exist; `<parent>/.redqueen` does not
+   exist; git ≥ 2.17 (for `worktree move`).
 2. Print the plan; `--dry-run` stops here.
 3. `mkdir <parent>/.redqueen/worktrees`, then for each registered worktree
    under `.redqueen/worktrees/`: `git worktree move <old>
 <parent>/.redqueen/worktrees/<id>/<repoName>` (spec worktrees keep their
-   `spec-` prefix). Git keeps its registration valid, so in-flight tickets
-   survive.
+   `spec-` prefix). A stale `refresh-*` worktree is a crash leftover and is
+   removed with `git worktree remove --force`, not moved. Git keeps its
+   registration valid, so in-flight tickets survive.
 4. Move the remaining `.redqueen/*` entries, `redqueen.yaml`, and `.env` (if
    present) to `<parent>`.
 5. Rewrite `<parent>/redqueen.yaml` with `parseDocument`: lift
    `project.buildCommand/testCommand/modules` and
    `sourceControl.config.owner/repo` into `project.repos[0]` with `name` =
-   lowercase repo name and `path: ./<dirname>`; set `repos[0].baseBranch`
+   `deriveRepoName(repo)` and `path: ./<dirname>`; set `repos[0].baseBranch`
    from `pipeline.baseBranch`; update `service.workingDirectory` if set.
-6. Prefix-swap `worktree_path` in `pipeline_state` to the new nested paths
-   (adoption on next start copies them into `pipeline_repos`).
+6. Prefix-swap `worktree_path` in `pipeline_state` to the new nested paths,
+   then run the §3 adoption pass against the rewritten config so
+   `pipeline_repos` is populated before any helper or `start` runs.
 7. If a service unit is installed, reinstall it (the plist/unit bakes in the
    working directory).
 8. Print next steps: review the config, `redqueen init --add-repo <path>`
-   per sibling, `redqueen start`.
+   per sibling, add a source-control webhook on each sibling repo (or one org
+   webhook) pointing at the same URL with the same secret, `redqueen start`.
 
 The old repo's `.gitignore` block is left in place; it is harmless.
 
 ### 14. Dashboard
 
 Config tab renders `repos[]` (read-only fields as today). Status and workflow
-views show a PR list per issue. No new dashboard features.
+views show a PR list per issue. The header label (`sourceControlRepoLabel`)
+becomes the workspace root's basename in workspace mode. No new dashboard
+features.
 
 ## Error handling
 
@@ -393,6 +478,10 @@ views show a PR list per issue. No new dashboard features.
 - Coder dispatched with an empty scope: routes to `spec-writing` (skill
   rule), never guesses.
 - A repo `path` missing at load time: `ConfigError` naming the entry.
+- More than one `repos[].owner` under GitHub App auth: `ConfigError` listing
+  the owners.
+- A derived repo name that is empty after `deriveRepoName`: `ConfigError`
+  naming the source repo.
 - `migrate` failure after step 3 begins: the command prints which worktrees
   were moved and the exact `git worktree move` commands to reverse them.
   Steps 4–7 are plain file moves and idempotent rewrites.
@@ -400,10 +489,17 @@ views show a PR list per issue. No new dashboard features.
 ## Testing
 
 - `config.test.ts`: legacy synthesis, workspace validation (duplicate names,
-  rejected top-level fields, nested modules), `repos[].baseBranch` default.
-- `pipeline-state.test.ts`: `pipeline_repos` CRUD, `setScope`, per-row
-  `markPrMerged` with "done only on last row", mirror refresh, legacy
-  adoption idempotence.
+  rejected top-level fields, nested modules), `repos[].baseBranch` default,
+  `deriveRepoName` (uppercase, `_`, `.`, leading symbols, empty), cross-owner
+  rejection under App auth and acceptance under token auth, github-issues
+  with an issue repo outside `repos[]`.
+- `pipeline-state.test.ts`: `pipeline_repos` CRUD, `setScope` including
+  descope-with-open-PR keeps the row, per-row `markPrMerged` with "done only
+  on last row" and "descoped row never advances the issue", mirror refresh,
+  legacy adoption idempotence including `spec_content`-only rows.
+- `rework-transition.test.ts` and `stack.test.ts`: `hasPr` over any in-scope
+  row; per-repo blocker gate (satisfied / not applicable / unsatisfied).
+- `orchestrator` tests: `dismissStaleReviews` called once per in-scope PR.
 - `webhook.test.ts`: `repo` extraction; server routes by full name and drops
   unknown repos.
 - `skill-context.test.ts`: `repos` omitted in legacy mode (byte-identical
