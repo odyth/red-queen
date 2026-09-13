@@ -1,12 +1,13 @@
 import { resolve } from "node:path";
 import { DualWriteAuditLogger } from "../core/audit.js";
 import type { AuditLogger } from "../core/audit.js";
+import { resolveProjectPaths } from "../core/config.js";
 import type { RedQueenConfig } from "../core/config.js";
 import { RedQueenDatabase } from "../core/database.js";
 import { PipelineStateStore } from "../core/pipeline-state.js";
 import { SubIterationStore } from "../core/sub-iteration.js";
 import type { IssueTracker } from "../integrations/issue-tracker.js";
-import type { SourceControl } from "../integrations/source-control.js";
+import type { SourceControlRegistry } from "../integrations/source-control-registry.js";
 import { buildAdapterPair } from "./adapters.js";
 import { loadConfigFromProject } from "./config-discovery.js";
 
@@ -15,7 +16,7 @@ export interface CliContext {
   configPath: string;
   projectRoot: string;
   issueTracker: IssueTracker;
-  sourceControl: SourceControl;
+  sourceControls: SourceControlRegistry;
   pipelineState: PipelineStateStore;
   subIteration: SubIterationStore;
   audit: AuditLogger;
@@ -23,17 +24,23 @@ export interface CliContext {
 }
 
 export function loadCliContext(): CliContext {
-  const { config, configPath, configDir, projectRoot } = loadConfigFromProject(process.cwd());
-
-  // Resolve project.directory relative to the config file.
-  const projectDir = resolve(projectRoot, config.project.directory);
+  const loaded = loadConfigFromProject(process.cwd());
+  const config = resolveProjectPaths(loaded.config, loaded.projectRoot);
+  const projectDir = config.project.directory;
   const dbPath = resolve(projectDir, ".redqueen", "redqueen.db");
   const auditPath = resolve(projectDir, ".redqueen", config.audit.logFile);
 
   const database = new RedQueenDatabase(dbPath);
-  const pipelineState = new PipelineStateStore(database.db);
+  const repoNames = config.project.repos.map((r) => r.name);
+  const pipelineState = new PipelineStateStore(database.db, repoNames);
   const subIteration = new SubIterationStore(database.db);
   const audit = new DualWriteAuditLogger(database.db, auditPath);
+  // Helpers may run before the first `start` on an upgraded install; adopt
+  // legacy rows here too so per-row reads see them. Idempotent.
+  const primary = repoNames[0];
+  if (primary !== undefined) {
+    pipelineState.adoptLegacyRows(primary, config.project.workspaceMode === false);
+  }
 
   const pair = buildAdapterPair(
     {
@@ -41,26 +48,23 @@ export function loadCliContext(): CliContext {
       issueTrackerConfig: config.issueTracker.config,
       sourceControlType: config.sourceControl.type,
       sourceControlConfig: config.sourceControl.config,
+      repos: config.project.repos,
+      workspaceMode: config.project.workspaceMode,
     },
     {
-      configDir,
+      configDir: loaded.configDir,
       audit: (message, metadata) => {
-        audit.log({
-          component: "github-issues",
-          issueId: null,
-          message,
-          metadata,
-        });
+        audit.log({ component: "github-issues", issueId: null, message, metadata });
       },
     },
   );
 
   return {
-    config: { ...config, project: { ...config.project, directory: projectDir } },
-    configPath,
-    projectRoot,
+    config,
+    configPath: loaded.configPath,
+    projectRoot: loaded.projectRoot,
     issueTracker: pair.issueTracker,
-    sourceControl: pair.sourceControl,
+    sourceControls: pair.sourceControls,
     pipelineState,
     subIteration,
     audit,

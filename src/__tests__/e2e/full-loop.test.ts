@@ -1,9 +1,10 @@
+import { createSourceControlRegistry } from "../../integrations/source-control-registry.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DualWriteAuditLogger } from "../../core/audit.js";
-import { buildPhaseGraph } from "../../core/config.js";
+import { buildPhaseGraph, legacyRepoConfig } from "../../core/config.js";
 import type { RedQueenConfig } from "../../core/config.js";
 import { RedQueenDatabase } from "../../core/database.js";
 import { DEFAULT_PHASES } from "../../core/defaults.js";
@@ -45,6 +46,18 @@ function buildConfig(overrides: Partial<RedQueenConfig> = {}): RedQueenConfig {
       buildCommand: "npm run build",
       testCommand: "npm test",
       directory: tempDir,
+      repos: [
+        legacyRepoConfig({
+          directory: tempDir,
+          buildCommand: "npm run build",
+          testCommand: "npm test",
+          modules: [],
+          sourceControlType: "mock",
+          sourceControlConfig: { owner: "acme", repo: "e2e" },
+          baseBranch: "origin/main",
+        }),
+      ],
+      workspaceMode: false,
     },
     pipeline: {
       pollInterval: 0.05,
@@ -52,8 +65,12 @@ function buildConfig(overrides: Partial<RedQueenConfig> = {}): RedQueenConfig {
       workerTimeout: 60,
       baseBranch: "origin/main",
       branchPrefixes: DEFAULT_BRANCH_PREFIXES,
-      webhooks: { enabled: false },
+      webhooks: {
+        enabled: false,
+        paths: { issueTracker: "/webhook/issue-tracker", sourceControl: "/webhook/source-control" },
+      },
       cost: { enabled: false, pricing: {} },
+      agent: "claude-code",
       model: "opus",
       effort: "high",
       stallThresholdMs: 60_000,
@@ -63,8 +80,21 @@ function buildConfig(overrides: Partial<RedQueenConfig> = {}): RedQueenConfig {
     },
     phases: DEFAULT_PHASES,
     skills: { directory: skillsDir, disabled: [] },
-    dashboard: { enabled: false, port: 0, host: "127.0.0.1" },
+    dashboard: {
+      enabled: false,
+      port: 0,
+      host: "127.0.0.1",
+      allowNonLoopback: false,
+      allowedHosts: [],
+    },
     audit: { logFile: auditPath, retentionDays: 30 },
+    service: {
+      enabled: false,
+      envFile: ".env",
+      stdoutLog: ".redqueen/redqueen.out.log",
+      stderrLog: ".redqueen/redqueen.err.log",
+      restart: "on-failure",
+    },
   };
   return { ...base, ...overrides };
 }
@@ -160,7 +190,7 @@ describe("E2E: orchestrator full pipeline loop", () => {
           base: "main",
           draft: false,
         });
-        pipelineState.updateBranchInfo("TEST-1", {
+        pipelineState.updateBranchInfo("TEST-1", "default", {
           branchName,
           prNumber: 1,
         });
@@ -189,7 +219,9 @@ describe("E2E: orchestrator full pipeline loop", () => {
       orchestratorState,
       audit,
       issueTracker,
-      sourceControl,
+      sourceControls: createSourceControlRegistry([
+        { name: "default", fullName: "default", adapter: sourceControl },
+      ]),
       workerRunner,
       installSignalHandlers: false,
       sleepFn: (ms) => new Promise((r) => setTimeout(r, Math.min(ms, 10))),

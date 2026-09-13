@@ -7,9 +7,11 @@ export type {
   Task,
   NewTask,
   PipelineRecord,
+  PipelineRepoRecord,
   OrchestratorStatus,
   OrchestratorState,
   SkillContext,
+  SkillContextRepo,
   SkillModuleContext,
   PipelineEventSource,
   PipelineEventType,
@@ -20,12 +22,15 @@ export type {
 export { PhaseGraph } from "./core/types.js";
 
 // Config
-export type { RedQueenConfig, ProjectModule } from "./core/config.js";
+export type { RedQueenConfig, ProjectModule, RepoConfig, LegacyRepoInput } from "./core/config.js";
 export {
   loadConfig,
   parseConfig,
   validatePhaseGraph,
   buildPhaseGraph,
+  deriveRepoName,
+  legacyRepoConfig,
+  resolveProjectPaths,
   ConfigSchema,
   PhaseDefinitionSchema,
 } from "./core/config.js";
@@ -57,7 +62,15 @@ export { SqliteTaskQueue } from "./core/queue.js";
 export { RedQueenDatabase } from "./core/database.js";
 
 // Pipeline state
-export { PipelineStateStore, OrchestratorStateStore } from "./core/pipeline-state.js";
+export {
+  PipelineStateStore,
+  OrchestratorStateStore,
+  classifyRepoMergeTransition,
+  firstInScopeRepo,
+  primaryRepoName,
+  DEFAULT_REPO_NAME,
+} from "./core/pipeline-state.js";
+export type { BranchInfoUpdate, MergeTransitionResult } from "./core/pipeline-state.js";
 
 // Defaults
 export { DEFAULT_PHASES } from "./core/defaults.js";
@@ -111,3 +124,12 @@ export type { DashboardEvent, DashboardEventType } from "./dashboard/events.js";
 // Webhook
 export { WebhookServer } from "./webhook/server.js";
 export type { WebhookServerDeps } from "./webhook/server.js";
+
+export type {
+  SourceControlRegistry,
+  SourceControlRegistryEntry,
+} from "./integrations/source-control-registry.js";
+export {
+  createSourceControlRegistry,
+  repoFullName,
+} from "./integrations/source-control-registry.js";

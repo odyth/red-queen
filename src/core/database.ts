@@ -38,9 +38,27 @@ export const SCHEMA_SQL = `
     prior_context TEXT,
     delegator_account_id TEXT,
     open_question_count INTEGER,
+    repo_state_version INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS pipeline_repos (
+    issue_id           TEXT NOT NULL,
+    repo               TEXT NOT NULL,
+    in_scope           INTEGER NOT NULL DEFAULT 1,
+    branch_name        TEXT,
+    pr_number          INTEGER,
+    pr_base_branch     TEXT,
+    terminal_pr_number INTEGER,
+    merge_completed    INTEGER NOT NULL DEFAULT 0,
+    worktree_path      TEXT,
+    created_at         TEXT NOT NULL,
+    updated_at         TEXT NOT NULL,
+    PRIMARY KEY (issue_id, repo)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_pipeline_repos_pr ON pipeline_repos(repo, pr_number);
 
   CREATE TABLE IF NOT EXISTS orchestrator_state (
     key TEXT PRIMARY KEY,
@@ -111,6 +129,18 @@ export class RedQueenDatabase {
   }
 
   private runMigrations(): void {
+    // Pre-workspace records remain eligible for one legacy-adoption pass.
+    // PipelineStateStore.create explicitly marks new records as version 1.
+    try {
+      this.db.exec(
+        "ALTER TABLE pipeline_state ADD COLUMN repo_state_version INTEGER NOT NULL DEFAULT 0",
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("duplicate column") === false) {
+        throw err;
+      }
+    }
     // Phase 4: worktree_path added to pipeline_state.
     // ALTER fails with a duplicate-column error on already-migrated DBs — swallow it.
     try {
@@ -221,7 +251,10 @@ export class RedQueenDatabase {
     this.db.exec(
       `UPDATE pipeline_state
        SET terminal_pr_number = pr_number
-       WHERE current_phase = 'done' AND terminal_pr_number IS NULL`,
+       WHERE current_phase = 'done' AND terminal_pr_number IS NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM pipeline_repos WHERE pipeline_repos.issue_id = pipeline_state.issue_id
+         )`,
     );
   }
 }

@@ -1,3 +1,4 @@
+import { createSourceControlRegistry } from "../../integrations/source-control-registry.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -40,7 +41,7 @@ describe("assignment-guarded orchestration", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "rq-assignment-guard-"));
     const database = new RedQueenDatabase(join(tempDir, "redqueen.db"));
     const queue = new SqliteTaskQueue(database.db);
-    const pipelineState = new PipelineStateStore(database.db);
+    const pipelineState = new PipelineStateStore(database.db, ["app"]);
     const audit = new DualWriteAuditLogger(database.db, join(tempDir, "audit.log"));
     const issueTracker = new MockIssueTracker();
     const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
@@ -53,7 +54,9 @@ describe("assignment-guarded orchestration", () => {
       orchestratorState,
       audit,
       issueTracker,
-      sourceControl: new MockSourceControl(),
+      sourceControls: createSourceControlRegistry([
+        { name: "app", fullName: "acme/app", adapter: new MockSourceControl() },
+      ]),
       workerRunner: () => Promise.reject(new Error("guarded task must not dispatch a worker")),
       installSignalHandlers: false,
     });

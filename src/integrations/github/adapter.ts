@@ -21,11 +21,16 @@ import { GitHubAuthConfigSchema } from "./auth/config.js";
 import type { GitHubClient } from "./client.js";
 import { parseGitHubWebhookEvent, validateGitHubWebhook } from "./webhook.js";
 
-export const GitHubSourceControlConfigSchema = z.object({
-  owner: z.string().min(1),
-  repo: z.string().min(1),
+// Workspace mode carries only auth + webhookSecret under sourceControl.config;
+// owner/repo come from project.repos[]. Legacy mode still has all four.
+export const GitHubSourceControlAuthSchema = z.object({
   auth: GitHubAuthConfigSchema.optional(),
   webhookSecret: z.string().optional(),
+});
+
+export const GitHubSourceControlConfigSchema = GitHubSourceControlAuthSchema.extend({
+  owner: z.string().min(1),
+  repo: z.string().min(1),
 });
 
 export type GitHubSourceControlConfig = z.infer<typeof GitHubSourceControlConfigSchema>;

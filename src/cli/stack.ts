@@ -1,3 +1,4 @@
+import { primaryRepoName } from "../core/pipeline-state.js";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -167,10 +168,11 @@ export async function executeStackSetup(io: StackSetupIo): Promise<StackSetupOut
   }
 
   if (spec === false && branch !== null) {
-    if (pipelineState.get(issueId) === null) {
-      pipelineState.create(issueId);
-    }
-    pipelineState.updateBranchInfo(issueId, { branchName: branch, worktreePath });
+    const existing = pipelineState.get(issueId) ?? pipelineState.create(issueId);
+    pipelineState.updateBranchInfo(issueId, primaryRepoName(existing, pipelineState.defaultRepo), {
+      branchName: branch,
+      worktreePath,
+    });
   }
 
   return {

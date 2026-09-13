@@ -1,3 +1,4 @@
+import { createSourceControlRegistry } from "../../integrations/source-control-registry.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -42,7 +43,6 @@ function setupHarness(
 ): Harness {
   const db = new RedQueenDatabase(dbPath);
   const queue = new SqliteTaskQueue(db.db);
-  const pipelineState = new PipelineStateStore(db.db);
   const phaseUsage = new PhaseUsageStore(db.db);
   const orchestratorState = new OrchestratorStateStore(db.db);
   const audit = new DualWriteAuditLogger(db.db, auditPath);
@@ -73,6 +73,10 @@ function setupHarness(
       skipSpecReviewIfReady: false,
     },
   });
+  const pipelineState = new PipelineStateStore(
+    db.db,
+    config.project.repos.map((repo) => repo.name),
+  );
   const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), config);
 
   const runs: WorkerOptions[] = [];
@@ -84,7 +88,9 @@ function setupHarness(
     orchestratorState,
     audit,
     issueTracker,
-    sourceControl,
+    sourceControls: createSourceControlRegistry([
+      { name: "app", fullName: "acme/app", adapter: sourceControl },
+    ]),
     workerRunner: async (opts) => {
       runs.push(opts);
       return workerImpl(opts);
@@ -113,7 +119,7 @@ function seedCodingIssue(h: Harness, issueId: string): string {
 function seedBlockerAtGate(h: Harness, issueId: string, branch: string): void {
   h.issueTracker.phases.set(issueId, "human-review");
   h.pipelineState.create(issueId, "human-review");
-  h.pipelineState.updateBranchInfo(issueId, { branchName: branch, prNumber: 42 });
+  h.pipelineState.updateBranchInfo(issueId, "app", { branchName: branch, prNumber: 42 });
 }
 
 async function runUntil(
@@ -280,7 +286,7 @@ describe("orchestrator stack gate", () => {
     h.issueTracker.issues.set("#1", makeIssue("#1", "testing"));
     h.issueTracker.phases.set("#1", "testing");
     h.pipelineState.create("#1", "testing");
-    h.pipelineState.updateBranchInfo("#1", { branchName: "feature/1", prNumber: 7 });
+    h.pipelineState.updateBranchInfo("#1", "app", { branchName: "feature/1", prNumber: 7 });
     h.queue.enqueue({ type: "testing", issueId: "#1" });
 
     const dependentPrompt = (): string | undefined =>

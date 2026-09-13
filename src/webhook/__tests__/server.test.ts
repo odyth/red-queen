@@ -1,3 +1,4 @@
+import { createSourceControlRegistry } from "../../integrations/source-control-registry.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import type BetterSqlite3 from "better-sqlite3";
@@ -55,12 +56,14 @@ async function postWebhook(path: string, body: string): Promise<Response> {
 }
 
 describe("WebhookServer", () => {
+  let runtime: RuntimeState;
+
   beforeEach(async () => {
     tempDir = mkdtempSync(join(tmpdir(), "rq-webhook-"));
     db = new Database(":memory:");
     db.exec(SCHEMA_SQL);
     queue = new SqliteTaskQueue(db);
-    pipelineState = new PipelineStateStore(db);
+    pipelineState = new PipelineStateStore(db, ["app"]);
     const orchestratorState = new OrchestratorStateStore(db);
     audit = new DualWriteAuditLogger(db, join(tempDir, "audit.log"));
     issueTracker = new MockIssueTracker();
@@ -78,10 +81,12 @@ describe("WebhookServer", () => {
       },
     );
     await dashboard.start();
-    const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
+    runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
     const webhook = new WebhookServer({
       issueTracker,
-      sourceControl,
+      sourceControls: createSourceControlRegistry([
+        { name: "app", fullName: "acme/app", adapter: sourceControl },
+      ]),
       queue,
       pipelineState,
       runtime,
@@ -135,7 +140,7 @@ describe("WebhookServer", () => {
 
   it("eagerly transitions to code-feedback and reassigns to AI when feedback lands at a human gate", async () => {
     pipelineState.create("PROJ-1", "human-review");
-    pipelineState.updatePrNumber("PROJ-1", 42);
+    pipelineState.updatePrNumber("PROJ-1", "app", 42, null);
     issueTracker.phases.set("PROJ-1", "human-review");
     sourceControl.parseResult = {
       source: "webhook",
@@ -174,7 +179,7 @@ describe("WebhookServer", () => {
 
   it("enqueues feedback without transitioning when the ticket is mid-automation (not at a human gate)", async () => {
     pipelineState.create("PROJ-1", "code-review");
-    pipelineState.updatePrNumber("PROJ-1", 42);
+    pipelineState.updatePrNumber("PROJ-1", "app", 42, null);
     issueTracker.phases.set("PROJ-1", "code-review");
     sourceControl.parseResult = {
       source: "webhook",
@@ -243,6 +248,24 @@ describe("WebhookServer", () => {
     await postWebhook("/webhook/source-control", "{}");
     await new Promise((r) => setTimeout(r, 30));
     expect(pipelineState.get("PROJ-1")?.currentPhase).toBe("done");
+    expect(pipelineState.getRepo("PROJ-1", "app")?.mergeCompleted).toBe(true);
+  });
+
+  it("does not infer scope from a merge in a one-repo workspace", async () => {
+    runtime.config.project.workspaceMode = true;
+    expect(runtime.config.project.repos).toHaveLength(1);
+    pipelineState.create("PROJ-1", "human-review");
+    sourceControl.parseResult = {
+      source: "webhook",
+      type: "pr-merged",
+      issueId: "PROJ-1",
+      timestamp: new Date().toISOString(),
+      payload: {},
+    };
+    await postWebhook("/webhook/source-control", "{}");
+    await new Promise((r) => setTimeout(r, 30));
+    expect(pipelineState.get("PROJ-1")?.currentPhase).toBe("human-review");
+    expect(pipelineState.listRepos("PROJ-1")).toEqual([]);
   });
 
   it("pr-merged with no pipeline record skips cleanup without throwing", async () => {
@@ -540,7 +563,7 @@ describe("WebhookServer pr-merged cleanup", () => {
     db3 = new Database(":memory:");
     db3.exec(SCHEMA_SQL);
     queue3 = new SqliteTaskQueue(db3);
-    pipelineState3 = new PipelineStateStore(db3);
+    pipelineState3 = new PipelineStateStore(db3, ["app"]);
     const orchestratorState3 = new OrchestratorStateStore(db3);
     audit3 = new DualWriteAuditLogger(db3, join(tempDir3, "audit.log"));
     issueTracker3 = new MockIssueTracker();
@@ -568,7 +591,9 @@ describe("WebhookServer pr-merged cleanup", () => {
     const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), config);
     const webhook = new WebhookServer({
       issueTracker: issueTracker3,
-      sourceControl: sourceControl3,
+      sourceControls: createSourceControlRegistry([
+        { name: "app", fullName: "acme/app", adapter: sourceControl3 },
+      ]),
       queue: queue3,
       pipelineState: pipelineState3,
       runtime,
@@ -589,7 +614,7 @@ describe("WebhookServer pr-merged cleanup", () => {
 
   it("removes worktree, deletes branch, and nulls branch info on pr-merged", async () => {
     pipelineState3.create("PROJ-200", "human-review");
-    pipelineState3.updateBranchInfo("PROJ-200", {
+    pipelineState3.updateBranchInfo("PROJ-200", "app", {
       branchName: "feature/PROJ-200",
       prNumber: 42,
       worktreePath: worktreeDir,
@@ -641,7 +666,7 @@ describe("WebhookServer pr-merged cleanup", () => {
 
   it("processes a numbered merge when the PR was never persisted locally", async () => {
     pipelineState3.create("PROJ-202", "coding");
-    pipelineState3.updateBranchInfo("PROJ-202", {
+    pipelineState3.updateBranchInfo("PROJ-202", "app", {
       branchName: "feature/PROJ-202",
       prBaseBranch: "main",
     });
@@ -684,7 +709,7 @@ describe("WebhookServer custom paths", () => {
     db2 = new Database(":memory:");
     db2.exec(SCHEMA_SQL);
     queue2 = new SqliteTaskQueue(db2);
-    pipelineState2 = new PipelineStateStore(db2);
+    pipelineState2 = new PipelineStateStore(db2, ["app"]);
     const orchestratorState2 = new OrchestratorStateStore(db2);
     audit2 = new DualWriteAuditLogger(db2, join(tempDir2, "audit.log"));
     issueTracker2 = new MockIssueTracker();
@@ -704,7 +729,9 @@ describe("WebhookServer custom paths", () => {
     const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
     const webhook = new WebhookServer({
       issueTracker: issueTracker2,
-      sourceControl: sourceControl2,
+      sourceControls: createSourceControlRegistry([
+        { name: "app", fullName: "acme/app", adapter: sourceControl2 },
+      ]),
       queue: queue2,
       pipelineState: pipelineState2,
       runtime,
@@ -743,7 +770,7 @@ describe("WebhookServer custom paths", () => {
 
   it("accepts source-control events on the custom path", async () => {
     pipelineState2.create("PROJ-9", "code-review");
-    pipelineState2.updatePrNumber("PROJ-9", 7);
+    pipelineState2.updatePrNumber("PROJ-9", "app", 7, null);
     sourceControl2.parseResult = {
       source: "webhook",
       type: "pr-feedback",
@@ -792,7 +819,7 @@ describe("WebhookServer pr-merged stack retarget + refresh", () => {
     db4 = new Database(":memory:");
     db4.exec(SCHEMA_SQL);
     queue4 = new SqliteTaskQueue(db4);
-    pipelineState4 = new PipelineStateStore(db4);
+    pipelineState4 = new PipelineStateStore(db4, ["app"]);
     const orchestratorState4 = new OrchestratorStateStore(db4);
     audit4 = new DualWriteAuditLogger(db4, join(tempDir4, "audit.log"));
     issueTracker4 = new MockIssueTracker();
@@ -823,7 +850,9 @@ describe("WebhookServer pr-merged stack retarget + refresh", () => {
     const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), config);
     webhook4 = new WebhookServer({
       issueTracker: issueTracker4,
-      sourceControl: sourceControl4,
+      sourceControls: createSourceControlRegistry([
+        { name: "app", fullName: "acme/app", adapter: sourceControl4 },
+      ]),
       queue: queue4,
       pipelineState: pipelineState4,
       runtime,
@@ -843,7 +872,7 @@ describe("WebhookServer pr-merged stack retarget + refresh", () => {
 
     // Merged blocker PROJ-200 (feature/PROJ-200 → main).
     pipelineState4.create("PROJ-200", "human-review");
-    pipelineState4.updateBranchInfo("PROJ-200", {
+    pipelineState4.updateBranchInfo("PROJ-200", "app", {
       branchName: "feature/PROJ-200",
       prNumber: 42,
       prBaseBranch: "main",
@@ -872,7 +901,7 @@ describe("WebhookServer pr-merged stack retarget + refresh", () => {
     recordedBase = base,
   ): void {
     pipelineState4.create(issueId, "human-review");
-    pipelineState4.updateBranchInfo(issueId, {
+    pipelineState4.updateBranchInfo(issueId, "app", {
       branchName: `feature/${issueId}`,
       prNumber,
       prBaseBranch: recordedBase,
@@ -1037,7 +1066,7 @@ describe("WebhookServer pr-merged stack retarget + refresh", () => {
   it("defers merged-issue cleanup until its working task finishes", async () => {
     const worktree = join(tempDir4, ".redqueen", "worktrees", "PROJ-200");
     mkdirSync(worktree, { recursive: true });
-    pipelineState4.updateBranchInfo("PROJ-200", { worktreePath: worktree });
+    pipelineState4.updateBranchInfo("PROJ-200", "app", { worktreePath: worktree });
     sourceControl4.prs.set(42, {
       number: 42,
       title: "PROJ-200",
@@ -1070,7 +1099,7 @@ describe("WebhookServer pr-merged stack retarget + refresh", () => {
   });
 
   it("retries a deferred merge even when neither event nor record has a PR number", async () => {
-    pipelineState4.updateBranchInfo("PROJ-200", { prNumber: null });
+    pipelineState4.updateBranchInfo("PROJ-200", "app", { prNumber: null });
     sourceControl4.parseResult = {
       source: "webhook",
       type: "pr-merged",
@@ -1115,9 +1144,9 @@ describe("WebhookServer pr-merged stack retarget + refresh", () => {
   it("sweeps branch artifacts left by a crash between merge commit and git cleanup", async () => {
     const worktree = join(tempDir4, ".redqueen", "worktrees", "PROJ-200");
     mkdirSync(worktree, { recursive: true });
-    pipelineState4.updateBranchInfo("PROJ-200", { worktreePath: worktree });
+    pipelineState4.updateBranchInfo("PROJ-200", "app", { worktreePath: worktree });
     // Simulate the crash: the DB transition committed, the git cleanup never ran.
-    expect(pipelineState4.markPrMerged("PROJ-200", 42)).toBe("processed");
+    expect(pipelineState4.markPrMerged("PROJ-200", "app", 42)).toBe("processed");
 
     await webhook4.reconcileMergedPrs();
 

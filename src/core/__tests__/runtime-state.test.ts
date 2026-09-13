@@ -1,3 +1,4 @@
+import { createSourceControlRegistry } from "../../integrations/source-control-registry.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import type BetterSqlite3 from "better-sqlite3";
@@ -56,7 +57,7 @@ describe("RuntimeState", () => {
     db = new Database(":memory:");
     db.exec(SCHEMA_SQL);
     queue = new SqliteTaskQueue(db);
-    pipelineState = new PipelineStateStore(db);
+    pipelineState = new PipelineStateStore(db, ["app"]);
     audit = new DualWriteAuditLogger(db, join(tempDir, "audit.log"));
   });
 
@@ -111,7 +112,9 @@ describe("RuntimeState", () => {
     await dashboard.start();
     const webhook = new WebhookServer({
       issueTracker,
-      sourceControl,
+      sourceControls: createSourceControlRegistry([
+        { name: "app", fullName: "acme/app", adapter: sourceControl },
+      ]),
       queue,
       pipelineState,
       runtime,

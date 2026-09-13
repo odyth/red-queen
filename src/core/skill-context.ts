@@ -9,6 +9,7 @@ import type {
   PhaseDefinition,
   PipelineRecord,
   SkillContext,
+  SkillContextRepo,
   SkillModuleContext,
   Task,
 } from "./types.js";
@@ -28,6 +29,8 @@ export interface SkillContextDeps {
   codebaseMapPath?: string | null;
   resolveModule?: ModuleResolver;
   stack?: StackResolution | null;
+  // Per-repo PR bases for stacked issues, keyed by repo name.
+  repoPrBases?: Record<string, string>;
 }
 
 export function buildSkillContext(deps: SkillContextDeps): SkillContext {
@@ -42,33 +45,58 @@ export function buildSkillContext(deps: SkillContextDeps): SkillContext {
 
   const issueId = task.issueId ?? pipelineRecord.issueId;
 
-  const scConfig = config.sourceControl.config;
-  const repoOwner = typeof scConfig.owner === "string" ? scConfig.owner : "";
-  const repoName = typeof scConfig.repo === "string" ? scConfig.repo : "";
-
   const branchPrefix = resolveBranchPrefix(config.pipeline.branchPrefixes, deps.issueType ?? null);
 
-  const modules = config.project.modules ?? [];
   const resolver = deps.resolveModule ?? defaultResolveModule;
-  const moduleContext =
-    modules.length > 0
-      ? resolver(pipelineRecord.worktreePath, config.pipeline.baseBranch, modules)
-      : null;
+  const rowsByRepo = new Map(pipelineRecord.repos.map((row) => [row.repo, row]));
+  const repoEntries = config.project.repos.map((repo): SkillContextRepo => {
+    const row = rowsByRepo.get(repo.name);
+    const moduleContext =
+      repo.modules.length > 0
+        ? resolver(row?.worktreePath ?? null, repo.baseBranch, repo.modules)
+        : null;
+    const prBase = deps.repoPrBases?.[repo.name];
+    return {
+      name: repo.name,
+      path: repo.path,
+      baseBranch: repo.baseBranch,
+      buildCommand: repo.buildCommand,
+      testCommand: repo.testCommand,
+      inScope: row?.inScope ?? false,
+      branchName: row?.branchName ?? null,
+      prNumber: row?.prNumber ?? null,
+      terminalPrNumber: row?.terminalPrNumber ?? null,
+      mergeCompleted: row?.mergeCompleted ?? false,
+      module: moduleContext,
+      ...(prBase !== undefined ? { stackPrBase: prBase } : {}),
+    };
+  });
+  // Scalars describe the first in-scope repo so single-repo skills keep working;
+  // before scope is set (spec-writing) they describe repos[0].
+  const primaryIndex = Math.max(
+    0,
+    repoEntries.findIndex((repo) => repo.inScope),
+  );
+  const primary = repoEntries[primaryIndex];
+  const primaryConfig = config.project.repos[primaryIndex];
+  if (primary === undefined || primaryConfig === undefined) {
+    throw new Error("Cannot build skill context: config.project.repos is empty");
+  }
 
   return {
     issueId,
     phaseName,
     phaseLabel: phase.label,
     skillName,
-    buildCommands: config.project.buildCommand,
-    testCommands: config.project.testCommand,
-    repoOwner,
-    repoName,
-    baseBranch: config.pipeline.baseBranch,
+    buildCommands: primary.buildCommand,
+    testCommands: primary.testCommand,
+    repoOwner: primaryConfig.owner,
+    repoName: primaryConfig.repo,
+    baseBranch: primary.baseBranch,
     branchPrefix,
-    module: moduleContext,
-    branchName: pipelineRecord.branchName,
-    prNumber: pipelineRecord.prNumber,
+    module: primary.module,
+    branchName: primary.branchName,
+    prNumber: primary.prNumber,
     specContent: pipelineRecord.specContent,
     priorContext: pipelineRecord.priorContext,
     priorPhase: pipelineRecord.priorPhase,
@@ -76,8 +104,9 @@ export function buildSkillContext(deps: SkillContextDeps): SkillContext {
     maxIterations,
     codebaseMapPath: deps.codebaseMapPath ?? null,
     projectDir: resolve(config.project.directory),
-    // Conditional spread: renderSkillPrompt YAML-dumps the whole object, so
-    // omitting the keys keeps non-stacked prompts byte-identical.
+    // Conditional spreads: renderSkillPrompt YAML-dumps the whole object, so
+    // omitting the keys keeps legacy and non-stacked prompts byte-identical.
+    ...(config.project.workspaceMode ? { repos: repoEntries } : {}),
     ...(deps.stack != null
       ? {
           stackBlockedBy: deps.stack.directBlockers.map((b) => b.id),

@@ -11,20 +11,26 @@ import type { AuditLogger } from "../core/audit.js";
 import { withTimeout } from "../core/async.js";
 import { errorMessage } from "../core/errors.js";
 import type { TaskQueue } from "../core/queue.js";
-import { classifyMergeTransition } from "../core/pipeline-state.js";
+import {
+  classifyMergeTransition,
+  classifyRepoMergeTransition,
+  firstInScopeRepo,
+  primaryRepoName,
+} from "../core/pipeline-state.js";
 import type { PipelineStateStore } from "../core/pipeline-state.js";
 import { autoTransitionRework } from "../core/rework-transition.js";
 import type { RuntimeState } from "../core/runtime-state.js";
 import type { PipelineEvent, PipelineRecord } from "../core/types.js";
 import type { IssueTracker } from "../integrations/issue-tracker.js";
 import type { PullRequest, SourceControl } from "../integrations/source-control.js";
+import type { SourceControlRegistry } from "../integrations/source-control-registry.js";
 import type { DashboardServer, RouteHandler } from "../dashboard/server.js";
 
 export type GitRunner = (args: string[], cwd: string) => Promise<void>;
 
 export interface WebhookServerDeps {
   issueTracker: IssueTracker;
-  sourceControl: SourceControl;
+  sourceControls: SourceControlRegistry;
   queue: TaskQueue;
   pipelineState: PipelineStateStore;
   runtime: RuntimeState;
@@ -97,8 +103,8 @@ export class WebhookServer {
 
   private async handleSourceControl(req: IncomingMessage, res: ServerResponse): Promise<void> {
     await this.handleAdapter(req, res, "source-control", {
-      validate: (headers, body) => this.deps.sourceControl.validateWebhook(headers, body),
-      parse: (headers, body) => this.deps.sourceControl.parseWebhookEvent(headers, body),
+      validate: (headers, body) => this.deps.sourceControls.any().validateWebhook(headers, body),
+      parse: (headers, body) => this.deps.sourceControls.any().parseWebhookEvent(headers, body),
     });
   }
 
@@ -370,8 +376,17 @@ export class WebhookServer {
           break;
         }
 
-        const transition = pipelineState.markPrMerged(event.issueId, mergedPrNumber);
-        if (transition !== "processed") {
+        // Legacy merge deliveries may predate any locally persisted PR data.
+        // A workspace must first declare scope, even when it has only one repo.
+        if (record.repos.length === 0 && this.deps.runtime.config.project.workspaceMode === false) {
+          pipelineState.setScope(event.issueId, [pipelineState.defaultRepo]);
+        }
+        const transition = pipelineState.markPrMerged(
+          event.issueId,
+          primaryRepoName(record, pipelineState.defaultRepo),
+          mergedPrNumber,
+        );
+        if (transition !== "processed" && transition !== "pending-others") {
           this.pendingMergeCleanup.delete(event.issueId);
           audit.log({
             component,
@@ -382,13 +397,14 @@ export class WebhookServer {
           break;
         }
         this.pendingMergeCleanup.delete(event.issueId);
-        const cancelledTasks = queue.cancelPendingForIssue(
-          event.issueId,
-          "Cancelled — pull request merged",
-        );
+        const cancelledTasks =
+          transition === "processed"
+            ? queue.cancelPendingForIssue(event.issueId, "Cancelled — pull request merged")
+            : 0;
 
         await this.cleanupLocalBranchArtifacts(
           event.issueId,
+          primaryRepoName(record, pipelineState.defaultRepo),
           record.worktreePath,
           record.branchName,
           component,
@@ -397,7 +413,10 @@ export class WebhookServer {
         audit.log({
           component,
           issueId: event.issueId,
-          message: "PR merged — pipeline marked done, local cleanup complete",
+          message:
+            transition === "processed"
+              ? "PR merged — pipeline marked done, local cleanup complete"
+              : "PR merged — waiting for sibling repos, local cleanup complete",
           metadata: {
             hadWorktree: record.worktreePath !== null,
             hadBranch: record.branchName !== null,
@@ -502,9 +521,17 @@ export class WebhookServer {
     await this.refreshChain;
   }
 
+  // The adapter for a record's primary row. Plan 2 replaces the single-row
+  // callers with per-row loops; until then legacy installs have exactly one row.
+  private adapterFor(record: Pick<PipelineRecord, "repos">): SourceControl {
+    return this.deps.sourceControls.get(
+      primaryRepoName(record, this.deps.pipelineState.defaultRepo),
+    );
+  }
+
   private async runMergedPrScan(): Promise<void> {
     const component = "webhook-reconcile";
-    const { pipelineState, sourceControl } = this.deps;
+    const { pipelineState } = this.deps;
     const all = pipelineState.listAll();
 
     // A crash between markPrMerged's commit and the git cleanup leaves exactly
@@ -530,6 +557,7 @@ export class WebhookServer {
       try {
         await this.cleanupLocalBranchArtifacts(
           record.issueId,
+          primaryRepoName(record, pipelineState.defaultRepo),
           record.worktreePath,
           record.branchName,
           component,
@@ -561,7 +589,7 @@ export class WebhookServer {
         }
         try {
           const pr = await withTimeout(
-            sourceControl.getPullRequest(prNumber),
+            this.adapterFor(record).getPullRequest(prNumber),
             REMOTE_LOOKUP_TIMEOUT_MS,
             `getPullRequest #${String(prNumber)}`,
           );
@@ -623,6 +651,7 @@ export class WebhookServer {
   // the leak sweep in runMergedPrScan.
   private async cleanupLocalBranchArtifacts(
     issueId: string,
+    repo: string,
     worktreePath: string | null,
     branchName: string | null,
     component: string,
@@ -653,7 +682,7 @@ export class WebhookServer {
         });
       }
     }
-    this.deps.pipelineState.updateBranchInfo(issueId, {
+    this.deps.pipelineState.updateBranchInfo(issueId, repo, {
       branchName: null,
       worktreePath: null,
     });
@@ -671,7 +700,7 @@ export class WebhookServer {
     mergedBase: string,
     component: string,
   ): Promise<void> {
-    const { pipelineState, sourceControl, queue, audit } = this.deps;
+    const { pipelineState, queue, audit } = this.deps;
     const workingIssueIds = new Set(
       queue
         .listByStatus("working")
@@ -688,7 +717,7 @@ export class WebhookServer {
       let pr;
       try {
         pr = await withTimeout(
-          sourceControl.getPullRequest(rec.prNumber),
+          this.adapterFor(rec).getPullRequest(rec.prNumber),
           REMOTE_LOOKUP_TIMEOUT_MS,
           `getPullRequest #${String(rec.prNumber)}`,
         );
@@ -707,11 +736,15 @@ export class WebhookServer {
       if (pr.baseBranch === mergedBranch) {
         try {
           await withTimeout(
-            sourceControl.updatePullRequestBase(pr.number, mergedBase),
+            this.adapterFor(rec).updatePullRequestBase(pr.number, mergedBase),
             REMOTE_MUTATION_TIMEOUT_MS,
             `updatePullRequestBase #${String(pr.number)}`,
           );
-          pipelineState.updateBranchInfo(rec.issueId, { prBaseBranch: mergedBase });
+          pipelineState.updateBranchInfo(
+            rec.issueId,
+            primaryRepoName(rec, pipelineState.defaultRepo),
+            { prBaseBranch: mergedBase },
+          );
           audit.log({
             component,
             issueId: rec.issueId,
@@ -732,7 +765,11 @@ export class WebhookServer {
         // dependent onto mergedBase within seconds. The persisted prior base
         // proves this PR actually targeted the merged branch; a tracker Blocks
         // edge alone could be only a scheduling dependency.
-        pipelineState.updateBranchInfo(rec.issueId, { prBaseBranch: mergedBase });
+        pipelineState.updateBranchInfo(
+          rec.issueId,
+          primaryRepoName(rec, pipelineState.defaultRepo),
+          { prBaseBranch: mergedBase },
+        );
         audit.log({
           component,
           issueId: rec.issueId,
@@ -771,6 +808,7 @@ export class WebhookServer {
       }
       await this.refreshDependentBranch(
         rec.issueId,
+        primaryRepoName(rec, pipelineState.defaultRepo),
         rec.branchName,
         rec.prNumber,
         mergedBase,
@@ -781,12 +819,13 @@ export class WebhookServer {
 
   private async refreshDependentBranch(
     issueId: string,
+    repo: string,
     depBranch: string,
     prNumber: number,
     mergedBase: string,
     component: string,
   ): Promise<void> {
-    const { sourceControl, audit } = this.deps;
+    const { audit } = this.deps;
     const projectDir = this.deps.runtime.config.project.directory;
     const tempWorktree = join(projectDir, ".redqueen", "worktrees", `refresh-${issueId}`);
     // Self-heal: a crash mid-refresh leaves the temp worktree registered, and
@@ -833,10 +872,12 @@ export class WebhookServer {
       });
       if (created) {
         try {
-          await sourceControl.postPrComment(
-            prNumber,
-            `stack refresh: could not cleanly fold \`${mergedBase}\` into \`${depBranch}\` (merge conflict or concurrent push) — will be resolved at next rework.`,
-          );
+          await this.deps.sourceControls
+            .get(repo)
+            .postPrComment(
+              prNumber,
+              `stack refresh: could not cleanly fold \`${mergedBase}\` into \`${depBranch}\` (merge conflict or concurrent push) — will be resolved at next rework.`,
+            );
         } catch (commentErr) {
           audit.log({
             component,
@@ -909,7 +950,11 @@ function classifyMergedPrEvent(
   mergedPrNumber: number | null,
   mergedBranch: string | null,
 ): "process" | "already-processed" | "stale" {
-  const disposition = classifyMergeTransition(record, mergedPrNumber);
+  const repo = firstInScopeRepo(record.repos);
+  const disposition =
+    repo === null
+      ? classifyMergeTransition(record, mergedPrNumber)
+      : classifyRepoMergeTransition(record.currentPhase, repo, mergedPrNumber);
   if (disposition !== "process") {
     return disposition;
   }

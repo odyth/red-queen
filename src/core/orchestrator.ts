@@ -1,5 +1,5 @@
-import { mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { safeAudit } from "./audit.js";
 import type { AuditLogger } from "./audit.js";
 import {
@@ -7,7 +7,7 @@ import {
   readAiAssignmentState,
 } from "./assignment-router.js";
 import { withTimeout } from "./async.js";
-import { buildPhaseGraph } from "./config.js";
+import { buildPhaseGraph, resolveProjectPaths } from "./config.js";
 import type { RedQueenConfig } from "./config.js";
 import type { OrchestratorStateStore, PipelineStateStore } from "./pipeline-state.js";
 import type { PhaseUsageStore } from "./phase-usage.js";
@@ -36,7 +36,7 @@ import { resolveAgentBin, resolveAgentSettings, runWorker as defaultRunWorker } 
 import type { WorkerOptions, WorkerResult } from "./worker.js";
 import { sanitizeWorkerDiagnostic } from "./worker-diagnostics.js";
 import type { AiAssignmentState, IssueTracker } from "../integrations/issue-tracker.js";
-import type { SourceControl } from "../integrations/source-control.js";
+import type { SourceControlRegistry } from "../integrations/source-control-registry.js";
 import { DashboardServer } from "../dashboard/server.js";
 import { WebhookServer } from "../webhook/server.js";
 
@@ -59,7 +59,7 @@ export interface RedQueenDeps {
   orchestratorState: OrchestratorStateStore;
   audit: AuditLogger;
   issueTracker: IssueTracker;
-  sourceControl: SourceControl;
+  sourceControls: SourceControlRegistry;
   workerRunner?: WorkerRunner;
   builtInSkillsDir?: string;
   moduleResolver?: ModuleResolver;
@@ -148,6 +148,8 @@ export class RedQueen {
     if (this.deps.installSignalHandlers === true) {
       this.installSignalHandlers();
     }
+
+    this.adoptLegacyRepoRows();
 
     const startupMergeScan = this.webhook?.reconcileMergedPrs();
     if (startupMergeScan !== undefined) {
@@ -267,6 +269,11 @@ export class RedQueen {
     // Build the new graph first so a bad config throws before any state mutates.
     const newGraph = buildPhaseGraph(newConfig.phases);
     const oldConfig = this.deps.runtime.config;
+    const configRoot =
+      this.deps.projectRoot ??
+      (this.deps.configPath === undefined ? process.cwd() : dirname(this.deps.configPath));
+    const resolvedConfig = resolveProjectPaths(newConfig, configRoot);
+    const activeProject = resolveProjectPaths(oldConfig, configRoot).project;
     const applied: string[] = [];
     const restartRequired: string[] = [];
 
@@ -289,6 +296,15 @@ export class RedQueen {
     if (JSON.stringify(oldConfig.sourceControl) !== JSON.stringify(newConfig.sourceControl)) {
       restartRequired.push("sourceControl");
     }
+    if (JSON.stringify(activeProject.repos) !== JSON.stringify(resolvedConfig.project.repos)) {
+      restartRequired.push("project.repos");
+    }
+    if (activeProject.workspaceMode !== resolvedConfig.project.workspaceMode) {
+      restartRequired.push("project.workspaceMode");
+    }
+    if (activeProject.directory !== resolvedConfig.project.directory) {
+      restartRequired.push("project.directory");
+    }
     if (JSON.stringify(oldConfig.pipeline) !== JSON.stringify(newConfig.pipeline)) {
       restartRequired.push("pipeline");
     }
@@ -305,7 +321,12 @@ export class RedQueen {
     // Order matters — mutate the graph first so any observer reading both
     // fields sees a consistent (graph, config) pair.
     this.deps.runtime.phaseGraph = newGraph;
-    this.deps.runtime.config = newConfig;
+    // The registry, store and worktree layout retain their startup configuration.
+    // Keep the active project coherent with them until the daemon restarts.
+    this.deps.runtime.config = {
+      ...resolvedConfig,
+      project: activeProject,
+    };
 
     this.deps.audit.log({
       component: "orchestrator",
@@ -1218,12 +1239,18 @@ export class RedQueen {
       });
     }
 
+    const codebaseMapPath = join(
+      this.deps.runtime.config.project.directory,
+      ".redqueen",
+      "codebase-map.md",
+    );
     const context = buildSkillContext({
       runtime: this.deps.runtime,
       task,
       pipelineRecord,
       phaseName: phase.name,
       issueType,
+      codebaseMapPath: existsSync(codebaseMapPath) ? codebaseMapPath : null,
       resolveModule: this.moduleResolver,
       stack,
     });
@@ -1561,16 +1588,18 @@ export class RedQueen {
 
     if (phase.requiresPr === true) {
       const record = this.deps.pipelineState.get(issueId);
-      const prNumber = record?.prNumber ?? null;
-      if (prNumber !== null) {
+      for (const row of record?.repos ?? []) {
+        if (row.inScope === false || row.prNumber === null) {
+          continue;
+        }
         try {
-          await this.deps.sourceControl.dismissStaleReviews(prNumber);
+          await this.deps.sourceControls.get(row.repo).dismissStaleReviews(row.prNumber);
         } catch (err) {
           this.deps.audit.log({
             component: "orchestrator",
             issueId,
             message: `dismissStaleReviews failed after ${phase.name}: ${errorMessage(err)}`,
-            metadata: { taskId: task.id, prNumber },
+            metadata: { taskId: task.id, repo: row.repo, prNumber: row.prNumber },
           });
         }
       }
@@ -1975,6 +2004,28 @@ export class RedQueen {
     }
   }
 
+  // Deterministic, idempotent, config-aware: legacy pipeline_state rows gain a
+  // pipeline_repos row for the config's first repo so every per-row reader
+  // sees in-flight tickets after an upgrade or an in-place conversion.
+  private adoptLegacyRepoRows(): void {
+    const primary = this.deps.runtime.config.project.repos[0];
+    if (primary === undefined) {
+      return;
+    }
+    const adopted = this.deps.pipelineState.adoptLegacyRows(
+      primary.name,
+      this.deps.runtime.config.project.workspaceMode === false,
+    );
+    if (adopted.length > 0) {
+      this.deps.audit.log({
+        component: "orchestrator",
+        issueId: null,
+        message: `Adopted ${String(adopted.length)} legacy pipeline record(s) into repo ${primary.name}`,
+        metadata: { repo: primary.name, issueIds: adopted },
+      });
+    }
+  }
+
   private performCrashRecovery(): void {
     const requeued = this.deps.queue.requeueAllWorking();
     for (const task of requeued) {
@@ -2065,7 +2116,7 @@ export class RedQueen {
     // deployment needs it most.
     this.webhook = new WebhookServer({
       issueTracker: this.deps.issueTracker,
-      sourceControl: this.deps.sourceControl,
+      sourceControls: this.deps.sourceControls,
       queue: this.deps.queue,
       pipelineState: this.deps.pipelineState,
       runtime: this.deps.runtime,
@@ -2313,18 +2364,18 @@ function killWorkerPid(pid: number, signal: NodeJS.Signals): void {
   }
 }
 
-// Cosmetic header label. The adapter config shape is integration-specific, so
-// read owner/repo generically off the untyped record rather than importing
-// adapter types into core.
+// Cosmetic header label: the workspace root's basename in workspace mode, the
+// single repo's owner/repo in legacy mode.
 function sourceControlRepoLabel(config: RedQueenConfig): string | undefined {
-  const sc = config.sourceControl.config;
-  const owner = sc.owner;
-  const repo = sc.repo;
-  if (typeof owner === "string" && typeof repo === "string") {
-    return `${owner}/${repo}`;
+  if (config.project.workspaceMode) {
+    return basename(config.project.directory);
   }
-  if (typeof repo === "string") {
-    return repo;
+  const repo = config.project.repos[0];
+  if (repo === undefined) {
+    return undefined;
   }
-  return undefined;
+  if (repo.owner !== "" && repo.repo !== "") {
+    return `${repo.owner}/${repo.repo}`;
+  }
+  return repo.repo !== "" ? repo.repo : undefined;
 }

@@ -9,6 +9,8 @@ import { cmdPr } from "../pr.js";
 import { cmdSpec } from "../spec.js";
 import { cmdStack } from "../stack.js";
 import { cmdSubIter } from "../sub-iter.js";
+import { loadCliContext } from "../context.js";
+import { RedQueenDatabase } from "../../core/database.js";
 
 let tmp: string;
 let originalCwd: string;
@@ -62,6 +64,28 @@ describe("cmdIssue get", () => {
 });
 
 describe("cmdPipeline update + cleanup", () => {
+  it("update writes the named repo row", async () => {
+    await cmdPipeline(["update", "ISSUE-3", "--repo", "default", "--branch", "feature/ISSUE-3"]);
+    const parsed = JSON.parse(stdoutCapture.join("")) as {
+      repos: { repo: string; branchName: string }[];
+    };
+    expect(parsed.repos).toEqual([
+      expect.objectContaining({ repo: "default", branchName: "feature/ISSUE-3" }),
+    ]);
+  });
+
+  it("update rejects an unknown --repo", async () => {
+    await expect(
+      cmdPipeline(["update", "ISSUE-4", "--repo", "nope", "--branch", "b"]),
+    ).rejects.toThrow(/unknown repo "nope"/);
+    const ctx = loadCliContext();
+    try {
+      expect(ctx.pipelineState.get("ISSUE-4")).toBeNull();
+    } finally {
+      ctx.cleanup();
+    }
+  });
+
   it("creates and updates pipeline state", async () => {
     await cmdPipeline(["update", "ISSUE-1", "--branch", "feature/ISSUE-1", "--pr", "42"]);
     const out = stdoutCapture.join("");
@@ -251,6 +275,55 @@ describe("cmdPr comments", () => {
 });
 
 describe("cmdSpec meta", () => {
+  it.each([false, true])(
+    "CLI adoption preserves the scope boundary after spec set in workspaceMode=%s",
+    async (workspaceMode) => {
+      if (workspaceMode) {
+        writeFileSync(
+          join(tmp, "redqueen.yaml"),
+          `
+issueTracker:
+  type: mock
+sourceControl:
+  type: mock
+project:
+  directory: .
+  repos:
+    - name: app
+      path: .
+      owner: acme
+      repo: app
+      buildCommand: echo
+      testCommand: echo
+`,
+        );
+      }
+      const initial = loadCliContext();
+      initial.pipelineState.create("NEW", "spec-writing");
+      initial.cleanup();
+      await cmdSpec(["set", "NEW", "--body", "new spec before scope selection"]);
+
+      const database = new RedQueenDatabase(join(tmp, ".redqueen", "redqueen.db"));
+      database.db
+        .prepare(
+          `INSERT INTO pipeline_state (issue_id, spec_content, created_at, updated_at)
+      VALUES (?, ?, ?, ?)`,
+        )
+        .run("OLD", "old legacy spec", "2026-01-01", "2026-01-01");
+      database.close();
+
+      const reloaded = loadCliContext();
+      try {
+        expect(reloaded.pipelineState.get("NEW")?.repos).toHaveLength(workspaceMode ? 0 : 1);
+        expect(reloaded.pipelineState.get("OLD")?.repos).toEqual([
+          expect.objectContaining({ repo: workspaceMode ? "app" : "default", inScope: true }),
+        ]);
+      } finally {
+        reloaded.cleanup();
+      }
+    },
+  );
+
   it("records the open-question count on the pipeline record", async () => {
     await cmdPipeline(["update", "META-1"]);
     stdoutCapture = [];

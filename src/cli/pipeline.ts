@@ -1,9 +1,11 @@
+import { primaryRepoName } from "../core/pipeline-state.js";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { loadCliContext } from "./context.js";
 import { CliError } from "./errors.js";
 import { writeJson } from "./io.js";
+import { resolveRepoArg } from "./repo-arg.js";
 
 export async function cmdPipeline(args: string[]): Promise<void> {
   const [subcommand, ...rest] = args;
@@ -25,6 +27,7 @@ function cmdPipelineUpdate(args: string[]): Promise<void> {
   const { positionals, values } = parseArgs({
     args,
     options: {
+      repo: { type: "string" },
       branch: { type: "string" },
       pr: { type: "string" },
       worktree: { type: "string" },
@@ -72,18 +75,18 @@ function cmdPipelineUpdate(args: string[]): Promise<void> {
 
   const ctx = loadCliContext();
   try {
-    const existing = ctx.pipelineState.get(issueId);
-    if (existing === null) {
+    const repo = resolveRepoArg(ctx.config, values.repo, "pipeline update");
+    if (ctx.pipelineState.get(issueId) === null) {
       ctx.pipelineState.create(issueId);
     }
-    const updated = ctx.pipelineState.updateBranchInfo(issueId, update);
+    ctx.pipelineState.updateBranchInfo(issueId, repo.name, update);
     ctx.audit.log({
       component: "helper:pipeline",
       issueId,
-      message: `Updated pipeline state: ${Object.keys(update).join(", ") || "(no-op)"}`,
-      metadata: update,
+      message: `Updated pipeline state for ${repo.name}: ${Object.keys(update).join(", ") || "(no-op)"}`,
+      metadata: { ...update, repo: repo.name },
     });
-    writeJson(updated, values.pretty === true);
+    writeJson(ctx.pipelineState.get(issueId), values.pretty === true);
   } finally {
     ctx.cleanup();
   }
@@ -148,10 +151,14 @@ function cmdPipelineCleanup(args: string[]): Promise<void> {
       }
     }
 
-    ctx.pipelineState.updateBranchInfo(issueId, {
-      worktreePath: null,
-      ...(deletedBranch ? { branchName: null } : {}),
-    });
+    ctx.pipelineState.updateBranchInfo(
+      issueId,
+      primaryRepoName(record, ctx.pipelineState.defaultRepo),
+      {
+        worktreePath: null,
+        ...(deletedBranch ? { branchName: null } : {}),
+      },
+    );
     ctx.audit.log({
       component: "helper:pipeline",
       issueId,

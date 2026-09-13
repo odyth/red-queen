@@ -169,7 +169,27 @@ export interface NewTask {
 
 // --- Pipeline state ---
 
+// One row per (issue, repo). Rows are the source of truth for branch / PR /
+// worktree state; pipeline_state's scalar columns mirror the first in-scope
+// row for display-only readers.
+export interface PipelineRepoRecord {
+  // True only after this repo actually merged in the current issue cycle.
+  // terminalPrNumber survives re-entry separately to reject stale deliveries.
+  mergeCompleted: boolean;
+  issueId: string;
+  repo: string;
+  inScope: boolean;
+  branchName: string | null;
+  prNumber: number | null;
+  prBaseBranch: string | null;
+  terminalPrNumber: number | null;
+  worktreePath: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface PipelineRecord {
+  repos: PipelineRepoRecord[];
   issueId: string;
   currentPhase: string | null;
   priorPhase: string | null;
@@ -217,6 +237,24 @@ export interface SkillModuleContext {
   testCommandFull: string | null;
 }
 
+// Workspace mode only: one entry per configured repo, in config order.
+export interface SkillContextRepo {
+  name: string;
+  path: string;
+  baseBranch: string;
+  buildCommand: string;
+  testCommand: string;
+  inScope: boolean;
+  branchName: string | null;
+  prNumber: number | null;
+  // Historical PR identity may survive reopening; completion is current-cycle only.
+  terminalPrNumber: number | null;
+  mergeCompleted: boolean;
+  module: SkillModuleContext | null;
+  // Stacked issues only: the branch this repo's PR must target.
+  stackPrBase?: string;
+}
+
 export interface SkillContext {
   issueId: string;
   phaseName: string;
@@ -238,6 +276,10 @@ export interface SkillContext {
   maxIterations: number;
   codebaseMapPath: string | null;
   projectDir: string;
+  // Workspace mode only — omitted entirely in legacy mode so single-repo
+  // prompts stay byte-identical. The scalar fields above then describe the
+  // first in-scope repo (or repos[0] before scope is set).
+  repos?: SkillContextRepo[];
   // Stacked issues only — omitted entirely for non-stacked issues so their
   // rendered prompts stay byte-identical. Direct blocker ids and the branch
   // the PR should target. Merge branches are recomputed by `stack setup` at

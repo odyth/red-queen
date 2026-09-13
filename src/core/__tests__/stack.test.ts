@@ -15,6 +15,7 @@ function record(issueId: string, overrides: Partial<PipelineRecord> = {}): Pipel
     prNumber: null,
     prBaseBranch: null,
     terminalPrNumber: null,
+    repos: [],
     worktreePath: null,
     reviewIterations: 0,
     feedbackIterations: 0,

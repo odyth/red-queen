@@ -25,7 +25,7 @@ interface StackHarness {
 function mkStackHarness(projectDir: string): StackHarness {
   db = new Database(":memory:");
   db.exec(SCHEMA_SQL);
-  const pipelineState = new PipelineStateStore(db);
+  const pipelineState = new PipelineStateStore(db, ["app"]);
   const issueTracker = new MockIssueTracker();
   issueTracker.issues.set("#2", { ...makeIssue("#2", "coding"), issueType: "feature" });
   const config = makeTestConfig({
@@ -43,7 +43,7 @@ function satisfyBlockerAtGate(h: StackHarness, id: string, branch: string): void
   h.issueTracker.blockedBy.set("#2", [{ id, closed: false }]);
   h.issueTracker.phases.set(id, "human-review");
   h.pipelineState.create(id, "human-review");
-  h.pipelineState.updateBranchInfo(id, { branchName: branch, prNumber: 5 });
+  h.pipelineState.updateBranchInfo(id, "app", { branchName: branch, prNumber: 5 });
 }
 
 // Records every git invocation; per-prefix overrides supply output or throw.
@@ -112,7 +112,7 @@ describe("executeStackSetup (fake git)", () => {
     const h = mkStackHarness(tmp);
     satisfyBlockerAtGate(h, "#1", "feature/#1");
     h.pipelineState.create("#2", "coding");
-    h.pipelineState.updateBranchInfo("#2", { branchName: "feature/#2" });
+    h.pipelineState.updateBranchInfo("#2", "app", { branchName: "feature/#2" });
     mkdirSync(join(tmp, ".redqueen", "worktrees", "#2"), { recursive: true });
     const git = fakeGit([["ls-remote", "sha\trefs/heads/feature/#2\n"]]);
 
@@ -137,7 +137,7 @@ describe("executeStackSetup (fake git)", () => {
   it("reuse (unstacked): merges base after own remote branch", async () => {
     const h = mkStackHarness(tmp);
     h.pipelineState.create("#2", "coding");
-    h.pipelineState.updateBranchInfo("#2", { branchName: "feature/#2" });
+    h.pipelineState.updateBranchInfo("#2", "app", { branchName: "feature/#2" });
     mkdirSync(join(tmp, ".redqueen", "worktrees", "#2"), { recursive: true });
     const git = fakeGit([["ls-remote", "sha\trefs/heads/feature/#2\n"]]);
 

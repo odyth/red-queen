@@ -1,15 +1,11 @@
 import { readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
+import type { RepoConfig } from "../core/config.js";
 import type { IssueTracker } from "../integrations/issue-tracker.js";
-import type { SourceControl } from "../integrations/source-control.js";
 import {
   GitHubIssuesAdapter,
   GitHubIssuesConfigSchema,
 } from "../integrations/github-issues/adapter.js";
-import {
-  GitHubSourceControlAdapter,
-  GitHubSourceControlConfigSchema,
-} from "../integrations/github/adapter.js";
 import type { GitHubAuthConfig } from "../integrations/github/auth/config.js";
 import { ByoAppAuthStrategy } from "../integrations/github/auth/byo-app-strategy.js";
 import { PatAuthStrategy } from "../integrations/github/auth/pat-strategy.js";
@@ -19,10 +15,26 @@ import { JiraIssueTrackerAdapter, JiraConfigSchema } from "../integrations/jira/
 import { JiraClient } from "../integrations/jira/client.js";
 import { CliError } from "./errors.js";
 import { MockIssueTrackerAdapter, MockSourceControlAdapter } from "./mock-adapter.js";
+import {
+  GitHubSourceControlAdapter,
+  GitHubSourceControlAuthSchema,
+  GitHubSourceControlConfigSchema,
+} from "../integrations/github/adapter.js";
+import {
+  createSourceControlRegistry,
+  repoFullName,
+} from "../integrations/source-control-registry.js";
+import type { SourceControlRegistry } from "../integrations/source-control-registry.js";
+
+export interface BuildAdaptersOptions {
+  /** Base directory for resolving relative paths (e.g. `auth.privateKeyPath`). */
+  configDir?: string;
+  audit?: (message: string, metadata: Record<string, unknown>) => void;
+}
 
 export interface AdapterPair {
   issueTracker: IssueTracker;
-  sourceControl: SourceControl;
+  sourceControls: SourceControlRegistry;
   warmup: () => Promise<void>;
 }
 
@@ -31,40 +43,40 @@ export interface BuildAdaptersInput {
   issueTrackerConfig: Record<string, unknown>;
   sourceControlType: string;
   sourceControlConfig: Record<string, unknown>;
-}
-
-export interface BuildAdaptersOptions {
-  /** Base directory for resolving relative paths (e.g. `auth.privateKeyPath`). */
-  configDir?: string;
-  audit?: (message: string, metadata: Record<string, unknown>) => void;
+  repos: readonly RepoConfig[];
+  workspaceMode: boolean;
 }
 
 /**
- * Builds both adapters together, sharing one GitHub client when both are GitHub.
+ * Builds the tracker and one source-control adapter per repo. Both GitHub:
+ * share one client + strategy across the tracker and every repo adapter.
  */
 export function buildAdapterPair(
   input: BuildAdaptersInput,
   options: BuildAdaptersOptions = {},
 ): AdapterPair {
-  // Both GitHub: share one client + strategy.
   if (input.issueTrackerType === "github-issues" && input.sourceControlType === "github") {
     const githubIssues = GitHubIssuesConfigSchema.parse(input.issueTrackerConfig);
-    const githubSc = GitHubSourceControlConfigSchema.parse(input.sourceControlConfig);
-    if (githubIssues.owner !== githubSc.owner || githubIssues.repo !== githubSc.repo) {
-      throw new CliError(
-        "github-issues and github source control must use the same owner/repo — they're paired.",
-      );
+    const githubSc = GitHubSourceControlAuthSchema.parse(input.sourceControlConfig);
+    if (input.workspaceMode === false) {
+      // Legacy pairing rule: the single repo is the issue repo. Workspace mode
+      // drops this — the issue repo need not appear in repos[].
+      const legacySc = GitHubSourceControlConfigSchema.parse(input.sourceControlConfig);
+      if (githubIssues.owner !== legacySc.owner || githubIssues.repo !== legacySc.repo) {
+        throw new CliError(
+          "github-issues and github source control must use the same owner/repo — they're paired.",
+        );
+      }
     }
     const effectiveAuth = pickPairedAuth(githubIssues.auth, githubSc.auth);
+    validateAppOwners(effectiveAuth, [
+      githubIssues.owner,
+      ...input.repos.map((repo) => repo.owner),
+    ]);
     const strategy: GitHubAuthStrategy = buildAuthStrategy(effectiveAuth, options.configDir);
     const client = new GitHubClient({ auth: strategy });
 
-    const sourceControl = new GitHubSourceControlAdapter({
-      client,
-      owner: githubSc.owner,
-      repo: githubSc.repo,
-      webhookSecret: githubSc.webhookSecret ?? null,
-    });
+    const sourceControls = buildGitHubRegistry(client, input.repos, githubSc.webhookSecret ?? null);
     const issueTracker = new GitHubIssuesAdapter({
       client,
       owner: githubIssues.owner,
@@ -74,9 +86,9 @@ export function buildAdapterPair(
     });
     return {
       issueTracker,
-      sourceControl,
+      sourceControls,
       warmup: async () => {
-        await Promise.all([sourceControl.warmIdentity(), issueTracker.warmIdentity()]);
+        await Promise.all([warmRegistry(sourceControls), issueTracker.warmIdentity()]);
       },
     };
   }
@@ -86,27 +98,91 @@ export function buildAdapterPair(
     input.issueTrackerConfig,
     options,
   );
-  const sourceControl = constructSourceControl(
+  const sourceControls = constructSourceControls(
     input.sourceControlType,
     input.sourceControlConfig,
+    input.repos,
     options,
   );
 
   const warmup = async (): Promise<void> => {
-    const warmers: Promise<unknown>[] = [];
+    const warmers: Promise<unknown>[] = [warmRegistry(sourceControls)];
     if (issueTracker instanceof JiraIssueTrackerAdapter) {
       warmers.push(issueTracker.warmIdentity());
     }
     if (issueTracker instanceof GitHubIssuesAdapter) {
       warmers.push(issueTracker.warmIdentity());
     }
-    if (sourceControl instanceof GitHubSourceControlAdapter) {
-      warmers.push(sourceControl.warmIdentity());
-    }
     await Promise.all(warmers);
   };
 
-  return { issueTracker, sourceControl, warmup };
+  return { issueTracker, sourceControls, warmup };
+}
+
+export function constructSourceControls(
+  type: string,
+  config: Record<string, unknown>,
+  repos: readonly RepoConfig[],
+  options: BuildAdaptersOptions = {},
+): SourceControlRegistry {
+  if (type === "mock") {
+    return createSourceControlRegistry(
+      repos.map((repo) => ({
+        name: repo.name,
+        fullName: repoFullName(repo),
+        adapter: new MockSourceControlAdapter(),
+      })),
+    );
+  }
+  if (type === "github") {
+    const parsed = GitHubSourceControlAuthSchema.parse(config);
+    validateAppOwners(
+      parsed.auth,
+      repos.map((repo) => repo.owner),
+    );
+    const strategy = buildAuthStrategy(parsed.auth, options.configDir);
+    const client = new GitHubClient({ auth: strategy });
+    return buildGitHubRegistry(client, repos, parsed.webhookSecret ?? null);
+  }
+  throw new CliError(`Unknown sourceControl type: ${type}`);
+}
+
+function buildGitHubRegistry(
+  client: GitHubClient,
+  repos: readonly RepoConfig[],
+  webhookSecret: string | null,
+): SourceControlRegistry {
+  return createSourceControlRegistry(
+    repos.map((repo) => ({
+      name: repo.name,
+      fullName: repoFullName(repo),
+      adapter: new GitHubSourceControlAdapter({
+        client,
+        owner: repo.owner,
+        repo: repo.repo,
+        webhookSecret,
+      }),
+    })),
+  );
+}
+
+function validateAppOwners(auth: GitHubAuthConfig | undefined, owners: string[]): void {
+  if (auth?.type === "byo-app" && new Set(owners.map((owner) => owner.toLowerCase())).size > 1) {
+    throw new CliError(
+      `GitHub byo-app auth requires the same owner for project.repos[] and the paired tracker; configured owners: ${[...new Set(owners)].join(", ")}`,
+    );
+  }
+}
+
+async function warmRegistry(registry: SourceControlRegistry): Promise<void> {
+  const warmers: Promise<unknown>[] = [];
+  for (const name of registry.names()) {
+    const adapter = registry.get(name);
+    if (adapter instanceof GitHubSourceControlAdapter) {
+      warmers.push(adapter.warmIdentity());
+    }
+  }
+  await Promise.all(warmers);
 }
 
 export function constructIssueTracker(
@@ -139,28 +215,6 @@ export function constructIssueTracker(
     });
   }
   throw new CliError(`Unknown issueTracker type: ${type}`);
-}
-
-export function constructSourceControl(
-  type: string,
-  config: Record<string, unknown>,
-  options: BuildAdaptersOptions = {},
-): SourceControl {
-  if (type === "mock") {
-    return new MockSourceControlAdapter();
-  }
-  if (type === "github") {
-    const parsed = GitHubSourceControlConfigSchema.parse(config);
-    const strategy = buildAuthStrategy(parsed.auth, options.configDir);
-    const client = new GitHubClient({ auth: strategy });
-    return new GitHubSourceControlAdapter({
-      client,
-      owner: parsed.owner,
-      repo: parsed.repo,
-      webhookSecret: parsed.webhookSecret ?? null,
-    });
-  }
-  throw new CliError(`Unknown sourceControl type: ${type}`);
 }
 
 function buildAuthStrategy(

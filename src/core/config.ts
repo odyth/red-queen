@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { levenshtein } from "./strings.js";
 import { PhaseGraph } from "./types.js";
@@ -7,6 +8,8 @@ import type { PhaseDefinition, ValidationResult } from "./types.js";
 import { DEFAULT_PHASES } from "./defaults.js";
 
 // --- Zod schemas ---
+
+export const REPO_NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
 
 const SKILL_NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
 const EFFORT_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -107,6 +110,30 @@ const CostSchema = z
   })
   .default({ enabled: false, pricing: {} });
 
+const ProjectModuleSchema = z.object({
+  name: z.string().min(1),
+  paths: z.array(z.string().min(1)).min(1),
+  buildCommand: z.string().min(1),
+  testCommandTargeted: z.string().min(1).nullable().default(null),
+  testCommandFull: z.string().min(1).optional(),
+});
+
+const RepoSchema = z.object({
+  name: z
+    .string()
+    .regex(
+      REPO_NAME_RE,
+      "repos[].name must be lowercase alphanumeric with hyphens and start with a letter or digit",
+    ),
+  path: z.string().min(1),
+  owner: z.string().min(1),
+  repo: z.string().min(1),
+  baseBranch: z.string().min(1).optional(),
+  buildCommand: z.string(),
+  testCommand: z.string(),
+  modules: z.array(ProjectModuleSchema).optional(),
+});
+
 const ConfigSchema = z
   .object({
     issueTracker: z.object({
@@ -118,20 +145,11 @@ const ConfigSchema = z
       config: z.record(z.string(), z.unknown()).default({}),
     }),
     project: z.object({
-      buildCommand: z.string(),
-      testCommand: z.string(),
+      buildCommand: z.string().optional(),
+      testCommand: z.string().optional(),
       directory: z.string().default("."),
-      modules: z
-        .array(
-          z.object({
-            name: z.string().min(1),
-            paths: z.array(z.string().min(1)).min(1),
-            buildCommand: z.string().min(1),
-            testCommandTargeted: z.string().min(1).nullable().default(null),
-            testCommandFull: z.string().min(1).optional(),
-          }),
-        )
-        .optional(),
+      modules: z.array(ProjectModuleSchema).optional(),
+      repos: z.array(RepoSchema).min(1, "project.repos must list at least one repo").optional(),
     }),
     // Zod v4 requires explicit outer .default() values for nested objects — the field-level
     // defaults only apply when the parent key is present. The duplication is intentional.
@@ -230,40 +248,118 @@ const ConfigSchema = z
       }),
   })
   .superRefine((config, ctx) => {
-    if (config.pipeline.webhooks.enabled === false) {
-      return;
+    refineRepos(config, ctx);
+    refineWebhooks(config, ctx);
+  });
+
+type RawConfig = z.infer<typeof ConfigSchema>;
+
+function refineWebhooks(config: RawConfig, ctx: z.RefinementCtx): void {
+  if (config.pipeline.webhooks.enabled === false) {
+    return;
+  }
+  // Webhooks rely on HMAC signature validation. If enabled, every adapter that exposes
+  // a webhook surface must carry a non-empty secret — empty strings from unset env vars
+  // would otherwise silently fall through to adapters that accept unsigned payloads.
+  const adapterConfigs: { path: string; config: Record<string, unknown> }[] = [
+    { path: "issueTracker", config: config.issueTracker.config },
+    { path: "sourceControl", config: config.sourceControl.config },
+  ];
+  for (const { path, config: adapterConfig } of adapterConfigs) {
+    const secret = adapterConfig.webhookSecret;
+    if (typeof secret !== "string" || secret.length === 0) {
+      ctx.addIssue({
+        code: "custom",
+        path: [path, "config", "webhookSecret"],
+        message: `pipeline.webhooks.enabled is true but ${path}.config.webhookSecret is empty — set the corresponding env var or disable webhooks`,
+      });
     }
-    // Webhooks rely on HMAC signature validation. If enabled, every adapter that exposes
-    // a webhook surface must carry a non-empty secret — empty strings from unset env vars
-    // would otherwise silently fall through to adapters that accept unsigned payloads.
-    const adapterConfigs: { path: string; config: Record<string, unknown> }[] = [
-      { path: "issueTracker", config: config.issueTracker.config },
-      { path: "sourceControl", config: config.sourceControl.config },
-    ];
-    for (const { path, config: adapterConfig } of adapterConfigs) {
-      const secret = adapterConfig.webhookSecret;
-      if (typeof secret !== "string" || secret.length === 0) {
+  }
+  if (
+    config.pipeline.webhooks.paths.issueTracker === config.pipeline.webhooks.paths.sourceControl
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["pipeline", "webhooks", "paths"],
+      message: `issueTracker and sourceControl webhook paths collide ("${config.pipeline.webhooks.paths.issueTracker}")`,
+    });
+  }
+}
+
+function refineRepos(config: RawConfig, ctx: z.RefinementCtx): void {
+  const repos = config.project.repos;
+  if (repos === undefined) {
+    for (const key of ["buildCommand", "testCommand"] as const) {
+      if (config.project[key] === undefined) {
         ctx.addIssue({
           code: "custom",
-          path: [path, "config", "webhookSecret"],
-          message: `pipeline.webhooks.enabled is true but ${path}.config.webhookSecret is empty — set the corresponding env var or disable webhooks`,
+          path: ["project", key],
+          message: `project.${key} is required (or declare project.repos[] for workspace mode)`,
         });
       }
     }
-    if (
-      config.pipeline.webhooks.paths.issueTracker === config.pipeline.webhooks.paths.sourceControl
-    ) {
+    return;
+  }
+  const rejected: [string[], unknown][] = [
+    [["project", "buildCommand"], config.project.buildCommand],
+    [["project", "testCommand"], config.project.testCommand],
+    [["project", "modules"], config.project.modules],
+    [["sourceControl", "config", "owner"], config.sourceControl.config.owner],
+    [["sourceControl", "config", "repo"], config.sourceControl.config.repo],
+  ];
+  for (const [path, value] of rejected) {
+    if (value !== undefined) {
       ctx.addIssue({
         code: "custom",
-        path: ["pipeline", "webhooks", "paths"],
-        message: `issueTracker and sourceControl webhook paths collide ("${config.pipeline.webhooks.paths.issueTracker}")`,
+        path,
+        message: `${path.join(".")} is not allowed in workspace mode — move it into project.repos[]`,
       });
     }
+  }
+  const seen = new Set<string>();
+  repos.forEach((repo, index) => {
+    if (seen.has(repo.name)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["project", "repos", index, "name"],
+        message: `Duplicate repo name "${repo.name}"`,
+      });
+    }
+    seen.add(repo.name);
   });
+  const auth = config.sourceControl.config.auth;
+  const authType =
+    typeof auth === "object" && auth !== null ? (auth as { type?: unknown }).type : undefined;
+  if (authType === "byo-app") {
+    const owners = [...new Set(repos.map((r) => r.owner))];
+    if (new Set(owners.map((owner) => owner.toLowerCase())).size > 1) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["project", "repos"],
+        message: `GitHub App auth is scoped to one owner, but repos[] spans owners ${owners.join(", ")} — use token auth or split the workspace`,
+      });
+    }
+  }
+}
 
-export type RedQueenConfig = z.infer<typeof ConfigSchema>;
+export type ProjectModule = z.infer<typeof ProjectModuleSchema>;
 
-export type ProjectModule = NonNullable<RedQueenConfig["project"]["modules"]>[number];
+export interface RepoConfig {
+  name: string;
+  path: string;
+  owner: string;
+  repo: string;
+  baseBranch: string;
+  buildCommand: string;
+  testCommand: string;
+  modules: ProjectModule[];
+}
+
+// The resolved shape every consumer reads: repos is always populated (declared
+// in workspace mode, synthesized in legacy mode) and workspaceMode records which.
+export type RedQueenConfig = Omit<RawConfig, "project"> & {
+  project: Omit<RawConfig["project"], "repos"> & { repos: RepoConfig[]; workspaceMode: boolean };
+};
 
 // --- Config loading ---
 
@@ -272,6 +368,22 @@ export class ConfigError extends Error {
     super(message);
     this.name = "ConfigError";
   }
+}
+
+// The one rule for every derived repo name (legacy synthesis, `migrate`,
+// `init --add-repo`). Hand-written repos[].name values are never transformed.
+export function deriveRepoName(repo: string): string {
+  const derived = repo
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+/, "")
+    .replace(/-+$/, "");
+  if (derived === "") {
+    throw new ConfigError(
+      `Cannot derive a repo name from "${repo}" — it contains no [a-z0-9] characters. Set repos[].name explicitly.`,
+    );
+  }
+  return derived;
 }
 
 const ENV_VAR_RE = /\$\{([A-Z_][A-Z0-9_]*)\}/g;
@@ -299,24 +411,109 @@ export function interpolateEnv(
   return replaced;
 }
 
-export function loadConfig(filePath: string): RedQueenConfig {
-  const raw = readFileSync(filePath, "utf-8");
-  const interpolated = interpolateEnv(raw);
-  const parsed: unknown = parseYaml(interpolated);
-  const config = ConfigSchema.parse(parsed);
-  checkDisabledSkills(config);
-  return config;
+export interface LegacyRepoInput {
+  directory: string;
+  buildCommand: string;
+  testCommand: string;
+  modules: ProjectModule[];
+  sourceControlType: string;
+  sourceControlConfig: Record<string, unknown>;
+  baseBranch: string;
+}
+
+// Legacy mode synthesizes exactly one repo from today's top-level fields.
+// Shared with the test fixture so every RedQueenConfig literal agrees on the shape.
+export function legacyRepoConfig(input: LegacyRepoInput): RepoConfig {
+  const owner =
+    typeof input.sourceControlConfig.owner === "string" ? input.sourceControlConfig.owner : "";
+  const repo =
+    typeof input.sourceControlConfig.repo === "string" ? input.sourceControlConfig.repo : "";
+  const name = input.sourceControlType === "mock" || repo === "" ? "default" : deriveRepoName(repo);
+  return {
+    name,
+    path: input.directory,
+    owner,
+    repo,
+    baseBranch: input.baseBranch,
+    buildCommand: input.buildCommand,
+    testCommand: input.testCommand,
+    modules: input.modules,
+  };
+}
+
+function resolveRepos(raw: RawConfig): RedQueenConfig {
+  const { repos: declared, ...project } = raw.project;
+  if (declared !== undefined) {
+    const repos = declared.map(
+      (r): RepoConfig => ({
+        name: r.name,
+        path: r.path,
+        owner: r.owner,
+        repo: r.repo,
+        baseBranch: r.baseBranch ?? raw.pipeline.baseBranch,
+        buildCommand: r.buildCommand,
+        testCommand: r.testCommand,
+        modules: r.modules ?? [],
+      }),
+    );
+    return { ...raw, project: { ...project, repos, workspaceMode: true } };
+  }
+  const repos = [
+    legacyRepoConfig({
+      directory: project.directory,
+      buildCommand: project.buildCommand ?? "",
+      testCommand: project.testCommand ?? "",
+      modules: project.modules ?? [],
+      sourceControlType: raw.sourceControl.type,
+      sourceControlConfig: raw.sourceControl.config,
+      baseBranch: raw.pipeline.baseBranch,
+    }),
+  ];
+  return { ...raw, project: { ...project, repos, workspaceMode: false } };
 }
 
 export function parseConfig(yamlContent: string): RedQueenConfig {
   const interpolated = interpolateEnv(yamlContent);
   const parsed: unknown = parseYaml(interpolated);
-  const config = ConfigSchema.parse(parsed);
-  checkDisabledSkills(config);
-  return config;
+  const raw = ConfigSchema.parse(parsed);
+  checkDisabledSkills(raw);
+  return resolveRepos(raw);
 }
 
-function checkDisabledSkills(config: RedQueenConfig): void {
+// parseConfig plus the filesystem checks that must stay out of the pure parser:
+// every declared repo path must be a git work tree root. The synthesized legacy
+// repo is exempt (project.directory may legitimately be a subdirectory today).
+export function loadConfig(filePath: string): RedQueenConfig {
+  const config = parseConfig(readFileSync(filePath, "utf-8"));
+  if (config.project.workspaceMode === false) {
+    return config;
+  }
+  const projectDir = resolve(dirname(filePath), config.project.directory);
+  const repos = config.project.repos.map((repo) => {
+    const path = resolve(projectDir, repo.path);
+    if (existsSync(join(path, ".git")) === false) {
+      throw new ConfigError(
+        `project.repos[${repo.name}].path "${repo.path}" resolves to ${path}, which is not a git work tree root (no .git entry)`,
+      );
+    }
+    return { ...repo, path };
+  });
+  return { ...config, project: { ...config.project, repos } };
+}
+
+// CLI entry points resolve project.directory relative to the config file; repo
+// Workspace repo paths follow project.directory; synthesized legacy paths
+// already contain project.directory and resolve directly from the config root.
+export function resolveProjectPaths(config: RedQueenConfig, projectRoot: string): RedQueenConfig {
+  const directory = resolve(projectRoot, config.project.directory);
+  const repos = config.project.repos.map((repo) => ({
+    ...repo,
+    path: resolve(config.project.workspaceMode ? directory : projectRoot, repo.path),
+  }));
+  return { ...config, project: { ...config.project, directory, repos } };
+}
+
+function checkDisabledSkills(config: RawConfig): void {
   const disabled = new Set(config.skills.disabled);
   for (const phase of config.phases) {
     if (phase.skill !== undefined && disabled.has(phase.skill)) {
