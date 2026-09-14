@@ -1,5 +1,6 @@
 import { api } from "../api.js";
 import { escapeHtml, qs } from "../dom.js";
+import { setPipelines } from "../pipelines.js";
 import { setStartedAt } from "../uptime.js";
 import type {
   AuditEntryWire,
@@ -129,16 +130,18 @@ function setLog(entries: AuditEntryWire[] | null): void {
 
 export async function refresh(): Promise<void> {
   try {
-    const [status, queue, logs] = await Promise.all([
+    const [status, queue, logs, pipelines] = await Promise.all([
       api.getStatus(),
       api.getQueue(),
       api.getLogs(),
+      api.getPipelines(),
     ]);
     setStartedAt(status.startedAt);
     setStats(status);
     setWorker(status.currentTask);
     setQueue(queue);
     setLog(logs);
+    setPipelines(pipelines);
   } catch (err) {
     const el = qs("#status-line");
     if (el) {

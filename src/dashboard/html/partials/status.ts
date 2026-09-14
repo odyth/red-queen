@@ -1,3 +1,5 @@
+import { renderPipelinesPartial } from "./pipelines.js";
+
 export function renderStatusPartial(): string {
   return `<section>
     <h2>Worker</h2>
@@ -25,6 +27,7 @@ export function renderStatusPartial(): string {
     <h2>Queue (ready + deferred)</h2>
     <ul id="queue"><li class="empty">(empty)</li></ul>
   </section>
+  ${renderPipelinesPartial()}
   <section class="span2">
     <h2>Recent Log</h2>
     <ul id="log" class="log"><li class="empty">(no entries)</li></ul>

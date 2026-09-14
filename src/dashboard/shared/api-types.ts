@@ -41,6 +41,24 @@ export interface StatusPayload {
   currentTask: TaskSummary | null;
 }
 
+// --- Pipelines (per-issue repo rows) ---
+
+export interface PipelineRepoWire {
+  repo: string;
+  inScope: boolean;
+  branchName: string | null;
+  prNumber: number | null;
+  // Descoped by a later spec revision but still holding a PR for a human to close.
+  orphaned: boolean;
+}
+
+export interface PipelineWire {
+  issueId: string;
+  currentPhase: string | null;
+  updatedAt: string;
+  repos: PipelineRepoWire[];
+}
+
 // --- Logs ---
 
 export interface AuditEntryWire {

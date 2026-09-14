@@ -1,4 +1,5 @@
 import { api } from "../api.js";
+import { refreshPipelines } from "../pipelines.js";
 import { escapeHtml, qs, qsa } from "../dom.js";
 import type {
   PhaseDefinition,
@@ -200,6 +201,7 @@ export function refreshQueueCount(): void {
   if (qs("#wf-ready") === null) {
     return;
   }
+  void refreshPipelines();
   api
     .getStatus()
     .then((s) => {

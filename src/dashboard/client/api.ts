@@ -6,6 +6,7 @@ import type {
   CostBreakdownPayload,
   CostSummaryPayload,
   PhaseDefinition,
+  PipelineWire,
   SkillEntry,
   SkillGetResponse,
   SkillMutateFail,
@@ -57,6 +58,7 @@ async function sendText<T>(
 export const api = {
   getStatus: () => getJson<StatusPayload>("/api/status"),
   getQueue: () => getJson<TaskSummary[]>("/api/queue"),
+  getPipelines: () => getJson<PipelineWire[]>("/api/pipelines"),
   getLogs: () => getJson<AuditEntryWire[]>("/api/logs"),
 
   getConfig: () => getJson<ConfigGetResponse>("/api/config"),

@@ -2097,6 +2097,7 @@ export class RedQueen {
       {
         queue: this.deps.queue,
         orchestratorState: this.deps.orchestratorState,
+        pipelineState: this.deps.pipelineState,
         audit: this.deps.audit,
         service: serviceDeps,
         editor: editorDeps,

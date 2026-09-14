@@ -154,6 +154,9 @@ const STYLES = `
   .empty { color: var(--muted); font-style: italic; }
   .log { font-size: 12px; max-height: 360px; overflow-y: auto; }
   .log li { white-space: pre-wrap; word-break: break-word; }
+  .pipelines-panel { min-width: 0; }
+  #pipelines { overflow-wrap: anywhere; }
+  .pipeline-repos { padding-left: 12px; }
   .btn-row {
     display: flex;
     gap: 8px;
