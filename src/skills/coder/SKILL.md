@@ -59,6 +59,28 @@ Read the YAML context block. Fields you rely on:
   (Step 3) and the PR base comes from `stackPrBase` (Step 8).
 - `stackPrBase` — present only with `stackBlockedBy`: the branch the PR must
   target (the nearest unmerged blocker's branch, or the base branch).
+- `repos` — **present only in workspace mode**: every configured repo as
+  `{name, path, baseBranch, buildCommand, testCommand, inScope, branchName,
+prNumber, terminalPrNumber, mergeCompleted, module, stackPrBase?}`. Work only
+  on entries with `inScope: true` and `mergeCompleted: false`. `module` is
+  that repo's resolved module or null; `stackPrBase` is its stacked PR base.
+  `mergeCompleted: true` means this repo already merged in the current cycle:
+  never recreate its branch, worktree, or PR, or modify, test, push, comment,
+  review, or update pipeline metadata for it. Include it in the summary using
+  `prNumber ?? terminalPrNumber`, labeled merged. `terminalPrNumber` alone is
+  historical identity and does not prove current-cycle completion. Report
+  `inScope: false` entries with a non-null `prNumber` as **ORPHANED**, for a
+  human to close or merge; do not change them.
+  When `repos` is present, `projectDir` is the workspace root, **not** a git
+  repository. Top-level `baseBranch`, `buildCommands`, `testCommands`,
+  `module`, `branchName`, `prNumber`, and `stackPrBase` describe only the first
+  in-scope repo (or the first configured repo before scope is recorded); use
+  each entry's fields instead. The workspace instructions below replace the
+  corresponding single-repo instructions, including the rework assumption
+  that every PR already exists. Every workspace `redqueen pr` subcommand and
+  `redqueen pipeline update` call must pass `--repo <name>`. Run raw git with
+  `-C <repo.path>` or inside that repo's worktree. When `repos` is absent,
+  follow the legacy flow unchanged.
 
 ## Setup
 
@@ -74,9 +96,22 @@ Read the YAML context block. Fields you rely on:
    Use screenshots to clarify UI behavior the spec under-describes before
    implementing.
 
+**Workspace mode (`repos` present):** use the workspace map for orientation.
+Read each unfinished in-scope repo's `CLAUDE.md` and `AGENTS.md` from its
+`path` when present, about 200 lines each. Workspace references remain under
+`projectDir`; implementation and build/test commands run in repo worktrees.
+
 ## Execution
 
 ### Step 0: Determine mode
+
+**Workspace mode (`repos` present):** before choosing any mode, apply Step 1's
+spec and scope checks, including on review-rework and test-rework. If scope
+is non-empty but every in-scope entry has `mergeCompleted: true`, report the
+completed PR set and any orphaned PRs, then exit 0 without worktree setup or
+any repo/PR/pipeline mutation. Otherwise resolve Step 2's per-repo variables
+and run the selected mode only for unfinished in-scope entries, in `repos`
+order. Never infer scope from files, keywords, or the top-level scalar fields.
 
 Read `priorPhase` and `iterationCount` from the context block.
 
@@ -110,6 +145,12 @@ Exit 0 on success. Audit log only — do not post a tracker comment. The
 orchestrator will respect the phase change and re-run the prompt-writer
 to regenerate the spec. Humans don't need to see transient auto-recovery.
 
+**Workspace mode (`repos` present):** use the same routing command, exit-code
+handling, and audit-only rule when no entry has `inScope: true`, or when
+`specContent` has no **Repos in Scope** section. This check also runs before
+rework through Step 0. Never guess which repos a ticket touches: only the
+prompt-writer decides scope and records it with `redqueen spec meta --repos`.
+
 ### Step 2: Resolve names
 
 Compute:
@@ -119,7 +160,100 @@ Compute:
   `main` when `baseBranch` is `origin/main`).
 - `worktree_path = "${projectDir}/.redqueen/worktrees/${issueId}"`.
 
+**Workspace mode (`repos` present):** generate the same default
+`branch_name = "${branchPrefix}${issueId}"` for new branches, but preserve
+each entry's non-null recorded `branchName`, including on retry or rework
+after the configured prefix changes. For each unfinished in-scope entry
+(called `r` in prose), bind these shell variables from its context values
+before using the workspace command examples:
+
+- `repo_name` = `r.name`; `repo_path` = `r.path`.
+- `repo_base` = `r.baseBranch`; `repo_bare_base` = that value with the
+  `origin/` prefix removed.
+- `repo_branch` = `r.branchName` when non-null, otherwise `branch_name`.
+- `repo_worktree` = `"${projectDir}/.redqueen/worktrees/${issueId}/${repo_name}"`.
+- `repo_pr_number` = `r.prNumber`; use PR-number commands only when non-null.
+- `repo_pr_base` = `r.stackPrBase` when present, otherwise `repo_bare_base`.
+
+Rebind for each row; never carry a sibling's branch, PR number, or module
+commands into the next iteration. Keep newly returned PR numbers and URLs
+with their repo names for Step 8's final change-set comments.
+
 ### Step 3: Create or reuse the worktree
+
+**Workspace mode (`repos` present):** use this setup in place of the legacy
+setup below, both on fresh write and rework. Only unfinished in-scope repos
+receive worktrees.
+
+For stacked issues, run `redqueen stack setup "${issueId}"` **once for the
+whole set**, outside the per-repo loop. It loops unfinished scoped repos and
+returns their setup under `repos`. On exit 0, use each matching repo result's
+`worktree`, `branch`, and `prBase` for `repo_worktree`, `repo_branch`, and
+`repo_pr_base`; pipeline state is already recorded. On exit 2, the JSON names
+the conflicting `repo`; bind that entry's variables, resolve only its named
+conflicted files, stage them explicitly with `git -C "${repo_worktree}" add`,
+and run:
+
+```
+git -C "${repo_worktree}" merge --continue
+redqueen stack setup "${issueId}"
+```
+
+Repeat only after resolving each reported conflict, until exit 0. The
+conflict response's `repos` lists earlier successes; later repos may not be
+ready yet. Do not start implementation until setup succeeds for the set.
+On exit 3 (unsatisfied blockers) or exit 1 (unexpected error), exit non-zero
+with the JSON reason in the summary so the orchestrator re-queues. Never
+rebase a stacked worktree or fall back to raw worktree creation for it.
+
+For non-stacked issues, repeat setup per unfinished in-scope repo:
+
+```
+git -C "${repo_path}" fetch origin \
+  "+refs/heads/${repo_bare_base}:refs/remotes/origin/${repo_bare_base}"
+```
+
+If the worktree is absent and the recorded branch exists locally, reuse it:
+
+```
+git -C "${repo_path}" worktree add "${repo_worktree}" "${repo_branch}"
+```
+
+If the branch exists only on origin, fetch it explicitly to
+`refs/remotes/origin/${repo_branch}` before creating the worktree from
+`origin/${repo_branch}` using the same `repo_branch`:
+
+```
+git -C "${repo_path}" fetch origin \
+  "+refs/heads/${repo_branch}:refs/remotes/origin/${repo_branch}"
+git -C "${repo_path}" worktree add "${repo_worktree}" -b "${repo_branch}" "origin/${repo_branch}"
+```
+
+Create a branch from `repo_base` only when neither a local nor a remote
+branch exists:
+
+```
+git -C "${repo_path}" worktree add "${repo_worktree}" -b "${repo_branch}" "${repo_base}"
+```
+
+For an existing or recovered worktree, verify it is on `repo_branch` before
+editing; preserve existing work and resolve any mismatch before continuing.
+Refresh it with these **non-stacked-only** commands:
+
+```
+git -C "${repo_worktree}" fetch origin \
+  "+refs/heads/${repo_bare_base}:refs/remotes/origin/${repo_bare_base}"
+git -C "${repo_worktree}" rebase "${repo_base}"
+```
+
+Record that repo's branch and worktree so retries preserve their identity:
+
+```
+redqueen pipeline update "${issueId}" --repo "${repo_name}" \
+  --branch "${repo_branch}" --worktree "${repo_worktree}"
+```
+
+The following single-repo setup applies when `repos` is absent.
 
 **Stacked issue (`stackBlockedBy` present in the context):** do not run raw
 git here. Assemble the worktree deterministically:
@@ -181,6 +315,12 @@ Working inside the worktree directory:
 3. Create or modify only the files the spec names. Do not expand scope.
 4. Write or update tests as the spec's **Test Plan** requires.
 
+**Workspace mode (`repos` present):** implement each unfinished in-scope
+repo's part from its `### <repo.name>` group under **Files to Change**, inside
+`repo_worktree`. Honor every cross-repo contract the spec names: matching
+endpoint shapes, event names, and template names on both sides. Completed
+siblings are already landed; do not modify them to satisfy a remaining repo.
+
 ### Step 5: Build and test
 
 Choose commands based on `module`:
@@ -195,6 +335,14 @@ Run the build first. If it fails:
    a PR, and exit. The orchestrator will re-queue.
 
 Run the targeted tests. Same rule: fix and retry, or exit for re-queue.
+
+**Workspace mode (`repos` present):** build and run targeted tests in every
+unfinished in-scope repo's worktree. Choose build from `r.module.buildCommand`
+when `r.module` is non-null, otherwise `r.buildCommand`. Choose targeted tests
+from `r.module.testCommandTargeted ?? r.testCommand` when the module exists,
+otherwise `r.testCommand`. Apply the retry rule per repo; if any repo remains
+broken, exit non-zero for re-queue and report the per-repo results. Do not
+report set-wide success or test completed siblings' removed worktrees.
 
 ### Step 6: Commit
 
@@ -218,13 +366,90 @@ Refs: <issueId>
 - `chore` for tasks.
 - `refactor` for refactors.
 
+**Workspace mode (`repos` present):** stage named files and commit separately
+inside each unfinished in-scope `repo_worktree`, using that repo's change
+summary and the shared issue reference. Never stage across sibling repos.
+
 ### Step 7: Push
 
 ```
 git -C "${worktree_path}" push -u origin "${branch_name}"
 ```
 
+**Workspace mode (`repos` present):** replace that push with this command for
+each unfinished in-scope worktree, using its actual branch:
+
+```
+git -C "${repo_worktree}" push -u origin "${repo_branch}"
+```
+
 ### Step 8: Create the PR
+
+**Workspace mode (`repos` present):** use this PR flow instead of the
+single-PR flow below. In `repos` order, create one PR for each unfinished
+in-scope repo whose `prNumber` is null. Reuse every existing PR, including
+on fresh-write retries; a push updates it. Never create a PR for a completed
+or descoped entry. Target `repo_pr_base` (the repo's stack base when present,
+otherwise its bare base).
+
+Every new PR body must contain a **Change-set** section listing every
+in-scope repo and its actual branch and PR number/URL when known. Name any
+sibling awaiting creation and point to the final change-set comment for
+its link. Include completed siblings as merged using
+`prNumber ?? terminalPrNumber`, and include every orphaned PR by repo and
+number with a human close-or-merge notice. Preserve known URLs from the
+prior handoff or existing change-set comments; capture each `pr create`
+result's `number` and `url`. Never invent links or use historical terminal
+numbers as active PRs. Fill in the template's literal placeholders before
+running it; the quoted heredoc does not interpolate shell variables:
+
+```
+cat <<'EOF' | redqueen pr create \
+  --repo "${repo_name}" \
+  --issue "${issueId}" \
+  --head "${repo_branch}" \
+  --base "${repo_pr_base}" \
+  --title "<type>(<issueId>): <summary> [<repo name>]"
+## Summary
+<this repo's part of the spec>
+
+## Change-set
+Part of the change for <issueId>.
+- <repo>: branch <actual branch>, PR #<number> <URL>, or awaiting creation — see final change-set comment.
+- <completed sibling, if any>: PR #<number> <known URL> — merged in this cycle.
+- ORPHANED: <repo> PR #<number> <known URL> — removed from scope; a human should close or merge it.
+
+## Changes
+- <changes in this repo>
+
+## Test Plan
+<this repo's test plan and results>
+
+## Refs
+<issueId>
+EOF
+```
+
+After the last missing PR is created, post one final change-set comment on
+**every unfinished in-scope PR**, including reused PRs. List all current PRs
+by repo, number, and URL, plus completed siblings and orphan notices. Obtain
+existing links from the handoff or previous change-set comments with
+`redqueen pr comments "${repo_pr_number}" --repo "${repo_name}"` when needed;
+if a historical link is unavailable, keep its repo and number and say so.
+Completed and orphaned PRs are listed for context, never comment targets.
+This also runs after rework, so new-scope or previously failed repos become
+reachable from every remaining PR. Use the supported comment helper:
+
+```
+cat <<'EOF' | redqueen pr comment "${repo_pr_number}" --repo "${repo_name}"
+## Change-set for <issueId>
+- <repo>: #<number> <URL> — <branch and status>.
+- <completed sibling, if any>: #<number> <known URL> — merged in this cycle.
+- ORPHANED: <repo> #<number> <known URL> — removed from scope; a human should close or merge it.
+EOF
+```
+
+When `repos` is absent, create the single PR exactly as follows.
 
 Compute `pr_base` first: the context's `stackPrBase` when present (stacked
 issue), otherwise `bare_base`.
@@ -257,6 +482,13 @@ and PR number atomically.
 One line: branch, PR number, file count, build + test status. This becomes
 `priorContext` for the reviewer.
 
+**Workspace mode (`repos` present):** list every PR in the set as
+`<repo>: #<number> <URL>`, with its actual branch, file count, and per-repo
+build + test results. Label completed siblings merged (verification skipped)
+and unfinished null-PR rows pending or failed. Name every **ORPHANED** PR by
+repo and number with the human close-or-merge notice. Include these set-wide
+details on rework and failure exits as well as successful fresh writes.
+
 ## Rework modes
 
 Step 0 routes here instead of Steps 1–9 when the coder is re-entered after a
@@ -264,6 +496,43 @@ failed review or test. The branch, worktree, and PR from the original coding
 round already exist — refresh and reuse them. **Never open a new PR**; pushing
 to the existing branch updates the open PR. `worktree_path` and `bare_base` are
 computed exactly as in Step 2.
+
+**Workspace mode (`repos` present):** this overrides the introduction's
+single-existing-PR assumption and the single-repo commands below. Step 0's
+spec/scope guard applies before both rework modes. Loop only entries with
+`inScope: true` and `mergeCompleted: false`; preserve each row's recorded
+`branchName` using Step 2's variables. Refresh or recover their worktrees
+through workspace Step 3: stacked setup runs once for the entire set, with
+per-conflict retries; non-stacked refresh runs in each repo's worktree.
+
+For review-rework, fetch a review only when that row's `prNumber` is non-null:
+
+```
+redqueen pr reviews "${repo_pr_number}" --repo "${repo_name}" --latest
+```
+
+Address the blockers using the rules below, including cross-repo contracts.
+Post a pushback response only on the affected unfinished repo's existing PR:
+
+```
+cat <<'EOF' | redqueen pr comment "${repo_pr_number}" --repo "${repo_name}"
+## Rework response
+Addressed: <blockers fixed>.
+Pushed back: <blocker> — <why>.
+EOF
+```
+
+For test-rework, reproduce and fix failures separately in each unfinished
+repo's worktree using workspace Step 5's module/command fallback. For either
+mode, an unfinished row with `prNumber: null` may be newly scoped or may have
+failed before its first PR: implement/finish its spec portion, build and test,
+commit and push, then create its missing PR through workspace Step 8. Skip
+review/comment calls until it has a PR number. Reuse every non-null active
+PR; never use `terminalPrNumber` as a substitute for it.
+
+Build, test, commit, and push per unfinished repo using workspace Steps 5–7.
+Finish with Step 8's full change-set comments and Step 9's per-repo summary.
+Completed and descoped siblings remain untouched throughout both modes.
 
 ### Review-rework (`priorPhase` is `code-review`)
 
@@ -360,6 +629,13 @@ Steps:
 
 2. If a PR exists, also `redqueen pr review <prNumber> --verdict request-changes`
    with the same text so the human sees it from either place.
+   **Workspace mode (`repos` present):** replace that single-PR action with
+   one review per unfinished in-scope entry whose `prNumber` is non-null,
+   passing `--repo "${repo_name}"` and its own `repo_pr_number`. Pipe the
+   same block reason into
+   `redqueen pr review "${repo_pr_number}" --repo "${repo_name}" --verdict request-changes`.
+   Include the affected repo, completed work, and the full PR set/orphan
+   notices in the blocked summary; never review completed or orphaned PRs.
 3. Move the issue into the Blocked human-gate so the orchestrator stops
    advancing the pipeline and assigns the reporter. Exit non-zero on
    failure so the orchestrator doesn't advance normally:

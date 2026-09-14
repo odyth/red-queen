@@ -36,6 +36,27 @@ Read the YAML context block. Fields you rely on:
   last iteration, your decision is final.
 - `projectDir` — project root.
 - `codebaseMapPath` — read it for context.
+- `repos` — **present only in workspace mode**: each repo supplies `name`,
+  `path`, `inScope`, `prNumber`, `terminalPrNumber`, and `mergeCompleted`.
+  Review every entry with `inScope: true`, `mergeCompleted: false`, and a
+  non-null `prNumber`. Any unfinished in-scope entry without a PR fails the
+  whole set, even when siblings have PRs. `mergeCompleted: true` means that
+  repo already merged in the current cycle: skip its review, CI checks, and
+  all branch/worktree/PR/pipeline mutations. Include it in the summary using
+  `prNumber ?? terminalPrNumber`, labeled merged. `terminalPrNumber` alone
+  is historical identity and does not prove completion. Report entries with
+  `inScope: false` and non-null `prNumber` as **ORPHANED**, for a human to
+  close or merge; do not review or change them. Never infer scope from paths
+  or keywords.
+  The top-level `prNumber` describes only the first in-scope repo (or the
+  first configured repo before scope is recorded); use each entry instead.
+  The workspace instructions below replace the corresponding single-PR
+  instructions, including input checks and exit decisions. Every workspace
+  `redqueen pr` subcommand and `redqueen pipeline update` call must pass
+  `--repo <name>`. `projectDir` is the workspace root, **not** a git repo:
+  run raw git with `-C <repo.path>` or inside that repo's worktree. Never
+  rebase a stacked worktree. When `repos` is absent, follow the legacy flow
+  unchanged.
 
 ## Setup
 
@@ -57,6 +78,24 @@ Read the YAML context block. Fields you rely on:
 
 ### Step 1: Verify inputs
 
+**Workspace mode (`repos` present):** replace the scalar `prNumber` check
+below with these checks before fetching diffs or posting any reviews:
+
+- If no entry has `inScope: true`, print "no PR in scope" and exit 1.
+- If any in-scope entry has `mergeCompleted: false` and a null `prNumber`,
+  name every missing repo and exit 1 so coding can finish the PR set. If
+  none of the unfinished entries has a PR, include "no PR in scope" in the
+  error summary. Never substitute a `terminalPrNumber` for an active PR.
+- Still require `specContent` as below. If the in-scope set is non-empty
+  and every entry has `mergeCompleted: true`, report the completed PR set
+  and any orphaned PRs, then exit 0 without review, CI, or mutations.
+
+For each unfinished in-scope entry (called `r` in prose), bind `repo_name`
+from `r.name`, `repo_path` from `r.path`, and `repo_pr_number` from its
+non-null `r.prNumber` before using the workspace shell examples. Rebind
+these variables for each entry; keep its diff, CI result, and report keyed
+by repo name and PR number so siblings cannot overwrite one another.
+
 If `prNumber` is null, print an error summary and exit — the orchestrator
 will see the failure and re-queue coding.
 
@@ -71,6 +110,19 @@ redqueen pr diff <prNumber>
 
 Read the output. Review every change against the spec. Always review the
 code first, regardless of CI status.
+
+**Workspace mode (`repos` present):** fetch every unfinished in-scope PR's
+diff before reviewing any of them, using the bound variables for each repo:
+
+```
+redqueen pr diff "${repo_pr_number}" --repo "${repo_name}"
+```
+
+Keep all diffs available together: cross-repo contracts require both sides
+in view. If any diff cannot be fetched, report the affected repo and exit
+non-zero; do not approve a partially inspected set. For completed siblings,
+read landed code or history from their `path` when needed for contract
+checks. Do not require their removed worktrees or review historical PRs.
 
 ### Step 3: Review categories
 
@@ -112,6 +164,14 @@ high severity) or an **IMPROVEMENT** (non-blocking suggestion).
 - Tests exist as the spec's Test Plan specifies.
 - If the ticket has UI attachments, verify the implementation matches
   what the screenshots depict — a visual mismatch is a blocker.
+- Workspace mode (`repos` present): every cross-repo contract the spec
+  spells out (endpoint shape, event name, template name, config key) must
+  be implemented on **every** side. A contract implemented in one repo
+  only is a blocker on the unfinished PR missing its side. Use landed code
+  for completed sides. A mismatch involving a completed or out-of-scope
+  side still blocks the set: record the missing side and scope/completion
+  limitation in the affected unfinished PR's report without changing scope
+  or mutating/reviewing the completed or orphaned PR.
 
 #### Style
 
@@ -125,6 +185,24 @@ redqueen pr checks <prNumber>
 
 If any check's `conclusion` is `null` or `"pending"`, poll with
 `--wait 300` (up to 5 minutes). Record the final status.
+
+**Workspace mode (`repos` present):** check each unfinished in-scope PR and
+record its result separately:
+
+```
+redqueen pr checks "${repo_pr_number}" --repo "${repo_name}"
+```
+
+For pending checks, use the same timeout per PR:
+
+```
+redqueen pr checks "${repo_pr_number}" --repo "${repo_name}" --wait 300
+```
+
+Pending after this timeout remains pending, not CI-green. The existing
+approve-with-a-note path still applies; the tester re-verifies CI. A check
+fetch error is not pending or success: report it and exit non-zero instead
+of advancing with an unknown CI result.
 
 ### Step 5: Compose the review report
 
@@ -158,6 +236,14 @@ block listing each finding with severity + location + recommendation.>
 that cannot be verified from the diff, state them explicitly.>
 ```
 
+**Workspace mode (`repos` present):** write one report per unfinished
+in-scope PR, scoped to that repo's changes and its contract obligations.
+Add a short **Change-set** line at the top naming every sibling repo and PR,
+including completed siblings labeled merged. List any orphaned PRs
+separately as **ORPHANED — human disposition required**. Do not post reports
+to completed or orphaned PRs. Carry cross-repo blockers into each affected
+unfinished PR's report, and keep each PR's CI result with that report.
+
 ### Step 6: Decide
 
 Combine code quality and CI status. **Your exit code routes the PR:** exit
@@ -165,6 +251,37 @@ non-zero to send it back for rework, exit zero to advance it. Posting the
 verdict alone does not route — you must also exit with the matching code. The
 one exception is the Blocked path below, which routes by setting the phase to
 `blocked` and then exiting zero.
+
+**Workspace mode (`repos` present):** finish the whole review set before
+exiting. The single-PR decisions below determine each report's verdict;
+they must not cause an early exit after the first PR. Pipe each report into
+the matching command, using `request-changes` for PRs with blockers
+(including CI failures caused by their changes) and `approve` for clean PRs:
+
+```
+redqueen pr review "${repo_pr_number}" --repo "${repo_name}" --verdict request-changes
+redqueen pr review "${repo_pr_number}" --repo "${repo_name}" --verdict approve
+```
+
+Choose exactly one command per PR and supply that PR's report on stdin.
+Include infrastructure and pending-timeout notes on the affected reports.
+Confirm every review was posted successfully before a successful exit.
+The **exit code is for the set**:
+
+- If any PR has a blocker, or any cross-repo contract is incomplete, exit 1
+  after posting all reports. The coder reworks the unfinished in-scope
+  repos; iteration limits and escalation apply to the whole set. Record
+  infrastructure failures too, but this rework path takes precedence while
+  coder-fixable blockers remain.
+- If no blockers remain but any PR's CI fails due to infrastructure, use
+  the workspace Blocked path below once for the issue.
+- Otherwise exit 0 only after every unfinished in-scope PR is approved and
+  CI-green **or still pending after the timeout with an explicit note**.
+  This pending exception matches the legacy flow; the tester re-verifies
+  those checks. A failed diff/check fetch or review post never qualifies.
+
+Print a set-wide summary naming each repo/PR and its verdict and CI result,
+any completed siblings, orphaned PRs, and the overall routing decision.
 
 **Blockers exist, iterations remaining:**
 Pipe the report into `redqueen pr review <prNumber> --verdict request-changes`,
@@ -195,6 +312,16 @@ fix infra.
 Approve with a note, then `exit 0`. The tester phase will re-verify CI.
 
 ## Blocked path
+
+**Workspace mode (`repos` present):** this path applies once to the whole
+set when there are no code/PR-caused CI blockers and at least one unfinished
+PR is blocked by infrastructure. Step 6 posts each review with
+`--repo "${repo_name}"`, adding **BLOCKED BY INFRA** to the affected reports;
+do not post duplicate approvals in step 1 below. Combine all infrastructure
+causes and their repo/PR identities into one tracker comment, then perform
+steps 2–4 once for the issue. The issue phase command remains issue-wide.
+Do not comment on or update completed or orphaned PRs. A phase-change
+failure still exits 1; successful routing to `blocked` exits 0 for the set.
 
 When CI fails for reasons outside the coder's control:
 
