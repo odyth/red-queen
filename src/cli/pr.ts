@@ -76,20 +76,20 @@ async function cmdPrCreate(args: string[]): Promise<void> {
     // recompute the base fresh; the coder's --base is the fallback.
     let resolvedBase = base;
     try {
-      const resolution = await resolveStack(
-        issueId,
-        bareBaseBranch(ctx.config.pipeline.baseBranch),
-        {
-          getBlockedBy: (id) => ctx.issueTracker.getBlockedBy(id),
-          getPipelineRecord: (id) => ctx.pipelineState.get(id),
-          getTrackerPhase: (id) => ctx.issueTracker.getPhase(id),
-          terminalGates: terminalGateNames(buildPhaseGraph(ctx.config.phases)),
-        },
-      );
+      const resolution = await resolveStack(issueId, bareBaseBranch(repo.baseBranch), {
+        getBlockedBy: (id) => ctx.issueTracker.getBlockedBy(id),
+        getPipelineRecord: (id) => ctx.pipelineState.get(id),
+        getTrackerPhase: (id) => ctx.issueTracker.getPhase(id),
+        terminalGates: terminalGateNames(buildPhaseGraph(ctx.config.phases)),
+        repos: ctx.config.project.repos.map((target) => ({
+          name: target.name,
+          bareBase: bareBaseBranch(target.baseBranch),
+        })),
+      });
       // Only stacked issues get overridden — a non-stacked --base (possibly a
       // deliberate custom target) passes through untouched.
       if (resolution.ok && resolution.directBlockers.length > 0) {
-        resolvedBase = resolution.prBase;
+        resolvedBase = resolution.repos[repo.name]?.prBase ?? resolution.prBase;
       }
     } catch (err) {
       ctx.audit.log({

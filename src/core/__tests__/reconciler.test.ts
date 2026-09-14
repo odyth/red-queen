@@ -235,7 +235,9 @@ describe("reconcile", () => {
     const issueTracker = new MockIssueTracker();
     issueTracker.listByPhaseResults.set("coding", [makeIssue("PROJ-1", "coding")]);
     pipelineState.create("PROJ-1", "coding");
-    pipelineState.markDone("PROJ-1");
+    pipelineState.setScope("PROJ-1", ["default"]);
+    pipelineState.updatePrNumber("PROJ-1", "default", 1, "main");
+    expect(pipelineState.markPrMerged("PROJ-1", "default", 1)).toBe("processed");
 
     const result = await reconcile({ issueTracker, queue, runtime, pipelineState, audit });
 
@@ -249,12 +251,107 @@ describe("reconcile", () => {
     const issueTracker = new MockIssueTracker();
     issueTracker.listByPhaseResults.set("code-review", [makeIssue("PROJ-1", "code-review")]);
     pipelineState.create("PROJ-1", "coding");
-    pipelineState.markDone("PROJ-1");
+    pipelineState.setScope("PROJ-1", ["default"]);
+    pipelineState.updatePrNumber("PROJ-1", "default", 1, "main");
+    expect(pipelineState.markPrMerged("PROJ-1", "default", 1)).toBe("processed");
 
     const result = await reconcile({ issueTracker, queue, runtime, pipelineState, audit });
 
     expect(result.tasksCreated).toBe(1);
     expect(queue.hasOpenTask("PROJ-1", "code-review")).toBe(true);
+  });
+
+  it.each([null, 2])(
+    "does not treat an unfinished scoped sibling with PR %s as merged",
+    async (siblingPrNumber) => {
+      const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
+      const issueTracker = new MockIssueTracker();
+      issueTracker.listByPhaseResults.set("testing", [makeIssue("PROJ-9", "testing")]);
+      const store = new PipelineStateStore(db, ["api", "web"]);
+      store.create("PROJ-9", "testing");
+      store.setScope("PROJ-9", ["api", "web"]);
+      store.updatePrNumber("PROJ-9", "api", 1, "main");
+      if (siblingPrNumber !== null) {
+        store.updatePrNumber("PROJ-9", "web", siblingPrNumber, "main");
+      }
+      expect(store.markPrMerged("PROJ-9", "api", 1)).toBe("pending-others");
+      store.markDone("PROJ-9");
+
+      const result = await reconcile({ issueTracker, queue, runtime, pipelineState: store, audit });
+
+      expect(result.tasksCreated).toBe(1);
+      expect(result.skipped).toBe(0);
+      expect(queue.hasOpenTask("PROJ-9", "testing")).toBe(true);
+    },
+  );
+
+  it("skips a completed scope even when a descoped repository still has an active PR", async () => {
+    const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
+    const issueTracker = new MockIssueTracker();
+    issueTracker.listByPhaseResults.set("testing", [makeIssue("PROJ-9", "testing")]);
+    const store = new PipelineStateStore(db, ["api", "web", "docs"]);
+    store.create("PROJ-9", "testing");
+    store.setScope("PROJ-9", ["api", "web", "docs"]);
+    store.updatePrNumber("PROJ-9", "api", 1, "main");
+    store.updatePrNumber("PROJ-9", "web", 2, "main");
+    store.updatePrNumber("PROJ-9", "docs", 3, "main");
+    store.setScope("PROJ-9", ["api", "web"]);
+    expect(store.markPrMerged("PROJ-9", "api", 1)).toBe("pending-others");
+
+    const partial = await reconcile({ issueTracker, queue, runtime, pipelineState: store, audit });
+    expect(partial.tasksCreated).toBe(1);
+    queue.cancelPendingForIssue("PROJ-9", "test");
+    expect(store.markPrMerged("PROJ-9", "web", 2)).toBe("processed");
+
+    const result = await reconcile({ issueTracker, queue, runtime, pipelineState: store, audit });
+
+    expect(result.tasksCreated).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(queue.hasOpenTask("PROJ-9", "testing")).toBe(false);
+    expect(store.getRepo("PROJ-9", "docs")).toMatchObject({ inScope: false, prNumber: 3 });
+  });
+
+  it("does not treat an empty scope as a completed merge", async () => {
+    const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
+    const issueTracker = new MockIssueTracker();
+    issueTracker.listByPhaseResults.set("testing", [makeIssue("PROJ-9", "testing")]);
+    const store = new PipelineStateStore(db, ["api", "web"]);
+    store.create("PROJ-9", "testing");
+    store.markDone("PROJ-9");
+
+    const result = await reconcile({ issueTracker, queue, runtime, pipelineState: store, audit });
+
+    expect(result.tasksCreated).toBe(1);
+    expect(result.skipped).toBe(0);
+    expect(queue.hasOpenTask("PROJ-9", "testing")).toBe(true);
+  });
+
+  it("does not count a sibling's historical merge toward a reopened issue cycle", async () => {
+    const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
+    const issueTracker = new MockIssueTracker();
+    issueTracker.listByPhaseResults.set("testing", [makeIssue("PROJ-9", "testing")]);
+    const store = new PipelineStateStore(db, ["api", "web"]);
+    store.create("PROJ-9", "testing");
+    store.setScope("PROJ-9", ["api", "web"]);
+    store.updatePrNumber("PROJ-9", "api", 1, "main");
+    store.updatePrNumber("PROJ-9", "web", 2, "main");
+    store.markPrMerged("PROJ-9", "api", 1);
+    expect(store.markPrMerged("PROJ-9", "web", 2)).toBe("processed");
+    store.updatePhase("PROJ-9", "testing");
+    store.updatePrNumber("PROJ-9", "api", 3, "main");
+    expect(store.markPrMerged("PROJ-9", "api", 3)).toBe("pending-others");
+    store.markDone("PROJ-9");
+    expect(store.getRepo("PROJ-9", "web")).toMatchObject({
+      prNumber: null,
+      terminalPrNumber: 2,
+      mergeCompleted: false,
+    });
+
+    const result = await reconcile({ issueTracker, queue, runtime, pipelineState: store, audit });
+
+    expect(result.tasksCreated).toBe(1);
+    expect(result.skipped).toBe(0);
+    expect(queue.hasOpenTask("PROJ-9", "testing")).toBe(true);
   });
 
   it("does not query human-gate phases", async () => {

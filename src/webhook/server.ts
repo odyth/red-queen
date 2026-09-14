@@ -1,6 +1,5 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -14,15 +13,15 @@ import type { TaskQueue } from "../core/queue.js";
 import {
   classifyMergeTransition,
   classifyRepoMergeTransition,
-  firstInScopeRepo,
   primaryRepoName,
 } from "../core/pipeline-state.js";
 import type { PipelineStateStore } from "../core/pipeline-state.js";
 import { autoTransitionRework } from "../core/rework-transition.js";
 import type { RuntimeState } from "../core/runtime-state.js";
-import type { PipelineEvent, PipelineRecord } from "../core/types.js";
+import { gitCwdFor, worktreePathFor } from "../core/worktree-layout.js";
+import type { PipelineEvent, PipelineRecord, PipelineRepoRecord } from "../core/types.js";
 import type { IssueTracker } from "../integrations/issue-tracker.js";
-import type { PullRequest, SourceControl } from "../integrations/source-control.js";
+import type { PullRequest } from "../integrations/source-control.js";
 import type { SourceControlRegistry } from "../integrations/source-control-registry.js";
 import type { DashboardServer, RouteHandler } from "../dashboard/server.js";
 
@@ -57,11 +56,17 @@ const MERGE_LOOKUP_CONCURRENCY = 5;
 
 interface MergedPrCandidate {
   record: PipelineRecord;
+  row: PipelineRepoRecord;
   pr: PullRequest;
+}
+
+function pendingKey(issueId: string, repo: string): string {
+  return `${issueId}\u0000${repo}`;
 }
 
 interface PendingMergeCleanup {
   event: PipelineEvent;
+  repo: string;
   expectedPrNumber: number | null;
 }
 
@@ -75,6 +80,10 @@ export class WebhookServer {
   private refreshChain: Promise<void> = Promise.resolve();
   private mergeScanPromise: Promise<void> | null = null;
   private readonly pendingMergeCleanup = new Map<string, PendingMergeCleanup>();
+  // Feedback mutates the tracker before committing locally. Serialize events
+  // for one resolved issue so a merge records the final feedback phase as its
+  // prior phase, which lets reconciliation distinguish replay from re-entry.
+  private readonly eventChains = new Map<string, Promise<void>>();
 
   constructor(deps: WebhookServerDeps) {
     this.deps = deps;
@@ -179,7 +188,46 @@ export class WebhookServer {
   }
 
   private async dispatchEvent(event: PipelineEvent, component: string): Promise<void> {
+    // PR issue_comment may initially identify #PR rather than its tracker
+    // ticket. Choose the serialization key only after resolving that identity.
+    if (event.type === "pr-feedback") {
+      const routed = this.resolveFeedbackEvent(event, component);
+      if (routed === null) {
+        return;
+      }
+      event = routed;
+    }
+    const previous = this.eventChains.get(event.issueId) ?? Promise.resolve();
+    const run = previous.then(() => this.applyEvent(event, component));
+    const tracked = run
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.eventChains.get(event.issueId) === tracked) {
+          this.eventChains.delete(event.issueId);
+        }
+      });
+    this.eventChains.set(event.issueId, tracked);
+    await run;
+  }
+
+  private async applyEvent(event: PipelineEvent, component: string): Promise<void> {
     const { issueTracker, queue, runtime, pipelineState, audit } = this.deps;
+
+    if (
+      (event.type === "phase-change" || event.type === "assignment-change") &&
+      extractString(event.payload, "repo") !== null &&
+      this.isTrackerEventRepo(event, component) === false
+    ) {
+      return;
+    }
+
+    if (event.type === "pr-feedback") {
+      const routed = this.resolveFeedbackEvent(event, component);
+      if (routed === null) {
+        return;
+      }
+      event = routed;
+    }
 
     switch (event.type) {
       case "phase-change": {
@@ -246,7 +294,7 @@ export class WebhookServer {
       }
       case "pr-feedback": {
         const record = pipelineState.get(event.issueId);
-        const hasPr = record !== null && record.prNumber !== null;
+        const hasPr = record?.repos.some((row) => row.inScope && row.prNumber !== null) ?? false;
         // Find the rework phase whose requiresPr matches current PR state.
         // Restrict to "-feedback" phases so we don't accidentally pick an
         // automated review phase that also declares requiresPr.
@@ -285,9 +333,20 @@ export class WebhookServer {
             metadata: { taskType },
           });
         }
+        // The remote phase read may outlive a PR replacement, merge or scope
+        // change. Recheck before handing the ticket back to automation.
+        if (this.resolveFeedbackEvent(event, component) === null) {
+          break;
+        }
         if (currentPhase !== null) {
           await autoTransitionRework(
-            { issueTracker, pipelineState, phaseGraph: runtime.phaseGraph, audit },
+            {
+              issueTracker,
+              pipelineState,
+              phaseGraph: runtime.phaseGraph,
+              audit,
+              isCurrent: () => this.resolveFeedbackEvent(event, component) !== null,
+            },
             event.issueId,
             currentPhase,
             taskType,
@@ -295,7 +354,10 @@ export class WebhookServer {
             { source: "pr-feedback" },
           );
         }
-        if (queue.hasOpenTask(event.issueId, taskType)) {
+        if (
+          this.resolveFeedbackEvent(event, component) === null ||
+          queue.hasOpenTask(event.issueId, taskType)
+        ) {
           break;
         }
         queue.enqueue({
@@ -314,10 +376,7 @@ export class WebhookServer {
       case "pr-merged": {
         const record = pipelineState.get(event.issueId);
         const mergedPrNumber = extractNumber(event.payload, "prNumber");
-        const mergedBranch = extractString(event.payload, "branch") ?? record?.branchName ?? null;
-        const mergedBase = extractString(event.payload, "base") ?? record?.prBaseBranch ?? null;
         if (record === null) {
-          this.pendingMergeCleanup.delete(event.issueId);
           audit.log({
             component,
             issueId: event.issueId,
@@ -326,22 +385,54 @@ export class WebhookServer {
           });
           break;
         }
-        const disposition = classifyMergedPrEvent(record, mergedPrNumber, mergedBranch);
+        const repoName = this.resolveEventRepo(event, record, component);
+        if (repoName === null) {
+          break;
+        }
+        let row = record.repos.find((r) => r.repo === repoName) ?? null;
+        // Legacy deliveries may predate all local PR data. Workspaces must
+        // declare scope explicitly, including a workspace with just one repo.
+        if (
+          row === null &&
+          record.repos.length === 0 &&
+          runtime.config.project.workspaceMode === false &&
+          classifyMergeTransition(record, mergedPrNumber) === "process"
+        ) {
+          pipelineState.setScope(event.issueId, [repoName]);
+          row = pipelineState.getRepo(event.issueId, repoName);
+        }
+        if (row === null) {
+          audit.log({
+            component,
+            issueId: event.issueId,
+            message: `PR merged in ${repoName}, but the issue has no row for that repo — ignoring`,
+            metadata: { repo: repoName, mergedPrNumber },
+          });
+          break;
+        }
+        const mergedBranch = extractString(event.payload, "branch") ?? row.branchName;
+        const mergedBase = extractString(event.payload, "base") ?? row.prBaseBranch;
+        const disposition = classifyMergedPrEvent(
+          record.currentPhase,
+          row,
+          mergedPrNumber,
+          mergedBranch,
+        );
         if (disposition !== "process") {
-          this.pendingMergeCleanup.delete(event.issueId);
           audit.log({
             component,
             issueId: event.issueId,
             message:
               disposition === "already-processed"
-                ? `PR #${String(mergedPrNumber)} merge cleanup was already processed — ignoring duplicate delivery`
-                : `PR #${String(mergedPrNumber)} merged, but it belongs to an earlier pipeline run — ignoring stale cleanup`,
+                ? `PR #${String(mergedPrNumber)} (${repoName}) merge cleanup was already processed — ignoring duplicate delivery`
+                : `PR #${String(mergedPrNumber)} (${repoName}) merged, but it belongs to an earlier pipeline run — ignoring stale cleanup`,
             metadata: {
+              repo: repoName,
               mergedPrNumber,
-              currentPrNumber: record.prNumber,
-              terminalPrNumber: record.terminalPrNumber,
+              currentPrNumber: row.prNumber,
+              terminalPrNumber: row.terminalPrNumber,
               mergedBranch,
-              currentBranch: record.branchName,
+              currentBranch: row.branchName,
             },
           });
           break;
@@ -350,13 +441,15 @@ export class WebhookServer {
           .listByStatus("working")
           .some((task) => task.issueId === event.issueId);
         if (working) {
-          const expectedPrNumber = mergedPrNumber ?? record.prNumber;
-          this.pendingMergeCleanup.set(event.issueId, {
+          const expectedPrNumber = mergedPrNumber ?? row.prNumber;
+          this.pendingMergeCleanup.set(pendingKey(event.issueId, repoName), {
+            repo: repoName,
             expectedPrNumber,
             event: {
               ...event,
               payload: {
                 ...event.payload,
+                repoName,
                 ...(expectedPrNumber === null ? {} : { prNumber: expectedPrNumber }),
                 ...(mergedBranch === null ? {} : { branch: mergedBranch }),
                 ...(mergedBase === null ? {} : { base: mergedBase }),
@@ -366,37 +459,28 @@ export class WebhookServer {
           audit.log({
             component,
             issueId: event.issueId,
-            message: "PR merged — cleanup deferred because the issue has a working task",
+            message: `PR merged (${repoName}) — cleanup deferred because the issue has a working task`,
             metadata: {
-              prNumber: record.prNumber,
-              worktreePath: record.worktreePath,
-              branchName: record.branchName,
+              repo: repoName,
+              prNumber: row.prNumber,
+              worktreePath: row.worktreePath,
+              branchName: row.branchName,
             },
           });
           break;
         }
 
-        // Legacy merge deliveries may predate any locally persisted PR data.
-        // A workspace must first declare scope, even when it has only one repo.
-        if (record.repos.length === 0 && this.deps.runtime.config.project.workspaceMode === false) {
-          pipelineState.setScope(event.issueId, [pipelineState.defaultRepo]);
-        }
-        const transition = pipelineState.markPrMerged(
-          event.issueId,
-          primaryRepoName(record, pipelineState.defaultRepo),
-          mergedPrNumber,
-        );
+        const transition = pipelineState.markPrMerged(event.issueId, repoName, mergedPrNumber);
+        this.pendingMergeCleanup.delete(pendingKey(event.issueId, repoName));
         if (transition !== "processed" && transition !== "pending-others") {
-          this.pendingMergeCleanup.delete(event.issueId);
           audit.log({
             component,
             issueId: event.issueId,
             message: `PR merge cleanup skipped after state recheck: ${transition}`,
-            metadata: { mergedPrNumber },
+            metadata: { repo: repoName, mergedPrNumber },
           });
           break;
         }
-        this.pendingMergeCleanup.delete(event.issueId);
         const cancelledTasks =
           transition === "processed"
             ? queue.cancelPendingForIssue(event.issueId, "Cancelled — pull request merged")
@@ -404,37 +488,62 @@ export class WebhookServer {
 
         await this.cleanupLocalBranchArtifacts(
           event.issueId,
-          primaryRepoName(record, pipelineState.defaultRepo),
-          record.worktreePath,
-          record.branchName,
+          repoName,
+          row.worktreePath,
+          row.branchName,
           component,
           "pr-merged cleanup",
         );
+        const remaining = pipelineState
+          .listRepos(event.issueId)
+          .filter((r) => r.inScope && r.mergeCompleted === false).length;
+        const cleanedRow = pipelineState.getRepo(event.issueId, repoName);
+        const cleanupPending =
+          cleanedRow !== null &&
+          (cleanedRow.branchName !== null || cleanedRow.worktreePath !== null);
         audit.log({
           component,
           issueId: event.issueId,
           message:
             transition === "processed"
-              ? "PR merged — pipeline marked done, local cleanup complete"
-              : "PR merged — waiting for sibling repos, local cleanup complete",
+              ? `PR merged (${repoName}) — every in-scope PR merged; local cleanup ${cleanupPending ? "pending" : "complete"}`
+              : `PR merged (${repoName}) — ${String(remaining)} in-scope repo(s) still awaiting merge; local cleanup ${cleanupPending ? "pending" : "complete"}`,
           metadata: {
-            hadWorktree: record.worktreePath !== null,
-            hadBranch: record.branchName !== null,
+            repo: repoName,
+            hadWorktree: row.worktreePath !== null,
+            hadBranch: row.branchName !== null,
             cancelledTasks,
+            inScope: row.inScope,
+            remainingRepos: remaining,
+            cleanupPending,
           },
         });
 
-        // Stacked dependents: retarget their PRs off the merged branch and
-        // deterministically fold the merged base into their branches.
-        if (mergedBranch !== null && mergedBase !== null) {
+        // Stacked dependents in the same repo: retarget their PRs off the merged
+        // branch and deterministically fold the merged base into their branches.
+        if (
+          mergedBranch !== null &&
+          mergedBase !== null &&
+          cleanedRow?.mergeCompleted === true &&
+          cleanedRow.prNumber === null &&
+          cleanedRow.terminalPrNumber === (mergedPrNumber ?? row.prNumber)
+        ) {
           const run = this.refreshChain.then(() =>
-            this.retargetAndRefreshDependents(event.issueId, mergedBranch, mergedBase, component),
+            this.retargetAndRefreshDependents(
+              event.issueId,
+              repoName,
+              mergedBranch,
+              mergedBase,
+              component,
+            ),
           );
           this.refreshChain = run.catch(() => undefined);
           await run;
         }
 
-        queue.releaseDeferred();
+        if (transition === "processed") {
+          queue.releaseDeferred();
+        }
         break;
       }
       case "assignment-change": {
@@ -487,46 +596,186 @@ export class WebhookServer {
   }
 
   async retryPendingMergeCleanup(issueId: string): Promise<void> {
-    const pending = this.pendingMergeCleanup.get(issueId);
-    if (pending === undefined) {
-      return;
+    for (const [key, pending] of [...this.pendingMergeCleanup.entries()]) {
+      if (pending.event.issueId !== issueId) {
+        continue;
+      }
+      const record = this.deps.pipelineState.get(issueId);
+      const row = record?.repos.find((r) => r.repo === pending.repo) ?? null;
+      const prChanged =
+        row !== null &&
+        (pending.expectedPrNumber === null
+          ? row.prNumber !== null
+          : row.prNumber !== null && row.prNumber !== pending.expectedPrNumber);
+      if (record === null || row === null || prChanged) {
+        this.pendingMergeCleanup.delete(key);
+        safeAudit(this.deps.audit, {
+          component: "webhook-reconcile",
+          issueId,
+          message: "Deferred merged-PR cleanup discarded because the row now has a different PR",
+          metadata: {
+            repo: pending.repo,
+            expectedPrNumber: pending.expectedPrNumber,
+            currentPrNumber: row?.prNumber ?? null,
+          },
+        });
+        continue;
+      }
+      // Consume this exact deferred event before replay. Dispatch reinserts it
+      // if a worker still owns the issue; stale/duplicate events stay retired.
+      this.pendingMergeCleanup.delete(key);
+      await this.dispatchEvent(pending.event, "webhook-reconcile");
     }
-    const record = this.deps.pipelineState.get(issueId);
-    const prChanged =
-      record !== null &&
-      (pending.expectedPrNumber === null
-        ? record.prNumber !== null
-        : record.prNumber !== null && record.prNumber !== pending.expectedPrNumber);
-    if (record === null || prChanged) {
-      this.pendingMergeCleanup.delete(issueId);
-      safeAudit(this.deps.audit, {
-        component: "webhook-reconcile",
-        issueId,
-        message: "Deferred merged-PR cleanup discarded because the pipeline now has a different PR",
-        metadata: {
-          expectedPrNumber: pending.expectedPrNumber,
-          currentPrNumber: record?.prNumber ?? null,
-        },
-      });
-      return;
-    }
-    await this.dispatchEvent(pending.event, "webhook-reconcile");
   }
 
   async drain(): Promise<void> {
-    const scan = this.mergeScanPromise;
-    if (scan !== null) {
-      await scan;
-    }
-    await this.refreshChain;
+    do {
+      await Promise.all([
+        ...this.eventChains.values(),
+        this.refreshChain,
+        ...(this.mergeScanPromise === null ? [] : [this.mergeScanPromise]),
+      ]);
+    } while (this.eventChains.size > 0 || this.mergeScanPromise !== null);
   }
 
-  // The adapter for a record's primary row. Plan 2 replaces the single-row
-  // callers with per-row loops; until then legacy installs have exactly one row.
-  private adapterFor(record: Pick<PipelineRecord, "repos">): SourceControl {
-    return this.deps.sourceControls.get(
-      primaryRepoName(record, this.deps.pipelineState.defaultRepo),
-    );
+  private hasWorkingTask(issueId: string): boolean {
+    return this.deps.queue.listByStatus("working").some((task) => task.issueId === issueId);
+  }
+
+  private resolveEventRepo(
+    event: PipelineEvent,
+    record: PipelineRecord | null,
+    component: string,
+  ): string | null {
+    const named = extractString(event.payload, "repoName");
+    const fullName = extractString(event.payload, "repo");
+    const { sourceControls, pipelineState, audit } = this.deps;
+    if (fullName !== null) {
+      const entry = sourceControls.byFullName(fullName);
+      if (entry === null || (named !== null && named !== entry.name)) {
+        audit.log({
+          component,
+          issueId: event.issueId,
+          message: `${event.type} for unknown repo ${fullName} or mismatched repo name — dropped (configured: ${sourceControls.names().join(", ")})`,
+          metadata: { repo: fullName, repoName: named },
+        });
+        return null;
+      }
+      return entry.name;
+    }
+    if (named !== null) {
+      if (sourceControls.names().includes(named) === false) {
+        audit.log({
+          component,
+          issueId: event.issueId,
+          message: `${event.type} for unknown repo ${named} — dropped (configured: ${sourceControls.names().join(", ")})`,
+          metadata: { repoName: named },
+        });
+        return null;
+      }
+      return named;
+    }
+    // Legacy adapters and mock events may omit repository identity. Selecting
+    // the primary row never creates scope in a workspace.
+    return record === null
+      ? pipelineState.defaultRepo
+      : primaryRepoName(record, pipelineState.defaultRepo);
+  }
+
+  private resolveFeedbackEvent(event: PipelineEvent, component: string): PipelineEvent | null {
+    const { pipelineState, audit } = this.deps;
+    const target = extractString(event.payload, "feedbackTarget");
+    if (target === "issue") {
+      // GitHub issue_comment covers both issues and PRs. Ordinary tracker
+      // comments use tracker issue numbers, never a source-control PR lookup.
+      return this.isTrackerEventRepo(event, component) ? event : null;
+    }
+    const number = extractNumber(event.payload, "prNumber");
+    const branch = extractString(event.payload, "branch");
+    const isPrFeedback =
+      target === "pull-request" ||
+      number !== null ||
+      branch !== null ||
+      extractString(event.payload, "repo") !== null ||
+      extractString(event.payload, "repoName") !== null;
+    // Existing tracker adapters emit issue-level feedback without PR fields.
+    if (isPrFeedback === false) {
+      return event;
+    }
+    const originalRecord = pipelineState.get(event.issueId);
+    const repoName = this.resolveEventRepo(event, originalRecord, component);
+    if (repoName === null) {
+      return null;
+    }
+    const record = number === null ? originalRecord : pipelineState.findByPr(repoName, number);
+    const row = record?.repos.find((entry) => entry.repo === repoName) ?? null;
+    if (
+      record === null ||
+      record.currentPhase === "done" ||
+      row === null ||
+      row.inScope === false ||
+      row.mergeCompleted ||
+      row.prNumber === null ||
+      row.prNumber === row.terminalPrNumber ||
+      (branch !== null && row.branchName !== null && branch !== row.branchName)
+    ) {
+      audit.log({
+        component,
+        issueId: record?.issueId ?? event.issueId,
+        message: `PR feedback for ${repoName}#${String(number)} is not an in-scope current PR — dropped`,
+        metadata: { repo: repoName, prNumber: number, branch },
+      });
+      return null;
+    }
+    return {
+      ...event,
+      issueId: record.issueId,
+      payload: { ...event.payload, repoName, prNumber: row.prNumber },
+    };
+  }
+
+  private isTrackerEventRepo(event: PipelineEvent, component: string): boolean {
+    const tracker = this.deps.runtime.config.issueTracker;
+    const owner = extractString(tracker.config, "owner");
+    const repo = extractString(tracker.config, "repo");
+    const fullName = extractString(event.payload, "repo");
+    if (
+      tracker.type === "github-issues" &&
+      owner !== null &&
+      repo !== null &&
+      fullName?.toLowerCase() === `${owner}/${repo}`.toLowerCase()
+    ) {
+      return true;
+    }
+    this.deps.audit.log({
+      component,
+      issueId: event.issueId,
+      message: `${event.type} outside the configured tracker repository — dropped`,
+      metadata: { repo: fullName },
+    });
+    return false;
+  }
+
+  // Remote lookups and mutations can outlive a scope/PR replacement. Only
+  // continue the dependent operation while the snapshot still names its row.
+  private currentDependentRow(expected: PipelineRepoRecord): PipelineRepoRecord | null {
+    const record = this.deps.pipelineState.get(expected.issueId);
+    const row = record?.repos.find((entry) => entry.repo === expected.repo);
+    if (
+      record === null ||
+      record.currentPhase === "done" ||
+      row === undefined ||
+      row.inScope === false ||
+      row.mergeCompleted ||
+      row.prNumber === null ||
+      row.prNumber === row.terminalPrNumber ||
+      row.prNumber !== expected.prNumber ||
+      row.branchName !== expected.branchName ||
+      row.prBaseBranch !== expected.prBaseBranch
+    ) {
+      return null;
+    }
+    return row;
   }
 
   private async runMergedPrScan(): Promise<void> {
@@ -534,75 +783,86 @@ export class WebhookServer {
     const { pipelineState } = this.deps;
     const all = pipelineState.listAll();
 
-    // A crash between markPrMerged's commit and the git cleanup leaves exactly
-    // this signature — done, pr_number nulled, terminal PR recorded, branch
-    // info still set. No other path produces it (markDone keeps pr_number),
-    // and the replay filter below can never see it again, so finish the
-    // cleanup from local state alone.
+    // Completion is per row: a crash after a partial merge leaves artifacts
+    // while the issue still waits for siblings. Historical terminal identities
+    // on reopened issues are not evidence that their current work is merged.
     for (const record of all) {
-      const leaked =
-        record.currentPhase === "done" &&
-        record.prNumber === null &&
-        record.terminalPrNumber !== null &&
-        (record.branchName !== null || record.worktreePath !== null);
-      if (leaked === false) {
+      if (this.hasWorkingTask(record.issueId)) {
         continue;
       }
-      safeAudit(this.deps.audit, {
-        component,
-        issueId: record.issueId,
-        message: `PR #${String(record.terminalPrNumber)} merge cleanup never finished — sweeping leftover branch artifacts`,
-        metadata: { branchName: record.branchName, worktreePath: record.worktreePath },
-      });
-      try {
-        await this.cleanupLocalBranchArtifacts(
-          record.issueId,
-          primaryRepoName(record, pipelineState.defaultRepo),
-          record.worktreePath,
-          record.branchName,
-          component,
-          "merge cleanup sweep",
-        );
-      } catch (err) {
+      for (const row of record.repos) {
+        const leaked =
+          row.prNumber === null &&
+          row.mergeCompleted &&
+          (row.branchName !== null || row.worktreePath !== null);
+        if (leaked === false) {
+          continue;
+        }
         safeAudit(this.deps.audit, {
           component,
           issueId: record.issueId,
-          message: `merge cleanup sweep failed: ${errorMessage(err)}`,
-          metadata: {},
+          message: `PR #${String(row.terminalPrNumber)} (${row.repo}) merge cleanup never finished — sweeping leftover branch artifacts`,
+          metadata: { repo: row.repo, branchName: row.branchName, worktreePath: row.worktreePath },
         });
+        try {
+          await this.cleanupLocalBranchArtifacts(
+            record.issueId,
+            row.repo,
+            row.worktreePath,
+            row.branchName,
+            component,
+            "merge cleanup sweep",
+          );
+        } catch (err) {
+          safeAudit(this.deps.audit, {
+            component,
+            issueId: record.issueId,
+            message: `merge cleanup sweep failed: ${errorMessage(err)}`,
+            metadata: { repo: row.repo },
+          });
+        }
       }
     }
 
-    const records = all.filter(
-      (record) =>
-        record.prNumber !== null &&
-        record.currentPhase !== "done" &&
-        record.terminalPrNumber !== record.prNumber,
-    );
+    const openRows: { record: PipelineRecord; row: PipelineRepoRecord }[] = [];
+    for (const record of all) {
+      if (record.currentPhase === "done") {
+        continue;
+      }
+      for (const row of record.repos) {
+        if (
+          row.prNumber !== null &&
+          row.mergeCompleted === false &&
+          row.terminalPrNumber !== row.prNumber
+        ) {
+          openRows.push({ record, row });
+        }
+      }
+    }
     const candidates = await mapWithConcurrency(
-      records,
+      openRows,
       MERGE_LOOKUP_CONCURRENCY,
-      async (record): Promise<MergedPrCandidate | null> => {
-        const prNumber = record.prNumber;
+      async ({ record, row }): Promise<MergedPrCandidate | null> => {
+        const prNumber = row.prNumber;
         if (prNumber === null) {
           return null;
         }
         try {
           const pr = await withTimeout(
-            this.adapterFor(record).getPullRequest(prNumber),
+            this.deps.sourceControls.get(row.repo).getPullRequest(prNumber),
             REMOTE_LOOKUP_TIMEOUT_MS,
-            `getPullRequest #${String(prNumber)}`,
+            `getPullRequest ${row.repo}#${String(prNumber)}`,
           );
           if (pr === null || pr.merged === false) {
             return null;
           }
-          return { record, pr };
+          return { record, row, pr };
         } catch (err) {
           safeAudit(this.deps.audit, {
             component,
             issueId: record.issueId,
-            message: `merged-PR lookup failed for #${String(prNumber)}: ${errorMessage(err)}`,
-            metadata: { prNumber },
+            message: `merged-PR lookup failed for ${row.repo}#${String(prNumber)}: ${errorMessage(err)}`,
+            metadata: { repo: row.repo, prNumber },
           });
           return null;
         }
@@ -613,13 +873,13 @@ export class WebhookServer {
       if (candidate === null) {
         continue;
       }
-      const { record, pr } = candidate;
+      const { record, row, pr } = candidate;
       try {
         safeAudit(this.deps.audit, {
           component,
           issueId: record.issueId,
-          message: `PR #${String(record.prNumber)} is merged but no pr-merged event was processed — replaying (check the source-control webhook)`,
-          metadata: { prNumber: record.prNumber, phase: record.currentPhase },
+          message: `PR ${row.repo}#${String(row.prNumber)} is merged but no pr-merged event was processed — replaying (check the source-control webhook on that repo)`,
+          metadata: { repo: row.repo, prNumber: row.prNumber, phase: record.currentPhase },
         });
         await this.dispatchEvent(
           {
@@ -631,6 +891,7 @@ export class WebhookServer {
               branch: pr.headBranch,
               base: pr.baseBranch,
               prNumber: pr.number,
+              repoName: row.repo,
             },
           },
           component,
@@ -639,8 +900,8 @@ export class WebhookServer {
         safeAudit(this.deps.audit, {
           component,
           issueId: record.issueId,
-          message: `merged-PR reconcile failed for #${String(record.prNumber)}: ${errorMessage(err)}`,
-          metadata: { prNumber: record.prNumber },
+          message: `merged-PR reconcile failed for ${row.repo}#${String(row.prNumber)}: ${errorMessage(err)}`,
+          metadata: { repo: row.repo, prNumber: row.prNumber },
         });
       }
     }
@@ -657,35 +918,81 @@ export class WebhookServer {
     component: string,
     context: string,
   ): Promise<void> {
-    const projectDir = this.deps.runtime.config.project.directory;
+    const cwd = gitCwdFor(this.deps.runtime.config, repo);
+    const expected = this.deps.pipelineState.getRepo(issueId, repo);
+    if (
+      expected?.worktreePath !== worktreePath ||
+      expected.branchName !== branchName ||
+      this.isCurrentMergeCleanup(expected) === false
+    ) {
+      return;
+    }
+    let worktreeRemoved = true;
     if (worktreePath !== null && existsSync(worktreePath)) {
       try {
-        await this.gitRunner(["worktree", "remove", "--force", "--", worktreePath], projectDir);
+        await this.gitRunner(["worktree", "remove", "--force", "--", worktreePath], cwd);
       } catch (err) {
+        worktreeRemoved = existsSync(worktreePath) === false;
         safeAudit(this.deps.audit, {
           component,
           issueId,
           message: `${context}: git worktree remove failed: ${errorMessage(err)}`,
-          metadata: { worktreePath },
+          metadata: { repo, worktreePath },
         });
       }
     }
-    if (branchName !== null) {
+    if (this.isCurrentMergeCleanup(expected) === false) {
+      return;
+    }
+    let branchRemoved = branchName === null;
+    if (branchName !== null && worktreeRemoved) {
       try {
-        await this.gitRunner(["branch", "-D", "--", branchName], projectDir);
+        await this.gitRunner(["branch", "-D", "--", branchName], cwd);
+        branchRemoved = true;
       } catch (err) {
-        safeAudit(this.deps.audit, {
-          component,
-          issueId,
-          message: `${context}: git branch -D failed: ${errorMessage(err)}`,
-          metadata: { branchName },
-        });
+        // A prior attempt may already have deleted the branch before crashing.
+        // show-ref exits 1 only when this ref is absent; other errors retain
+        // retry evidence instead of treating every deletion failure as success.
+        try {
+          await this.gitRunner(
+            ["show-ref", "--verify", "--quiet", `refs/heads/${branchName}`],
+            cwd,
+          );
+        } catch (lookupError) {
+          branchRemoved =
+            typeof lookupError === "object" &&
+            lookupError !== null &&
+            "code" in lookupError &&
+            lookupError.code === 1;
+        }
+        if (branchRemoved === false) {
+          safeAudit(this.deps.audit, {
+            component,
+            issueId,
+            message: `${context}: git branch -D failed: ${errorMessage(err)}`,
+            metadata: { repo, branchName },
+          });
+        }
       }
     }
-    this.deps.pipelineState.updateBranchInfo(issueId, repo, {
-      branchName: null,
-      worktreePath: null,
-    });
+    if (this.isCurrentMergeCleanup(expected)) {
+      this.deps.pipelineState.updateBranchInfo(issueId, repo, {
+        ...(branchRemoved ? { branchName: null } : {}),
+        ...(worktreeRemoved ? { worktreePath: null } : {}),
+      });
+    }
+  }
+
+  private isCurrentMergeCleanup(expected: PipelineRepoRecord): boolean {
+    const row = this.deps.pipelineState.getRepo(expected.issueId, expected.repo);
+    return (
+      row !== null &&
+      row.mergeCompleted &&
+      row.prNumber === null &&
+      row.terminalPrNumber === expected.terminalPrNumber &&
+      row.branchName === expected.branchName &&
+      row.worktreePath === expected.worktreePath
+    );
   }
 
   // A blocker's PR just merged into mergedBase. Every open dependent PR that
@@ -696,99 +1003,98 @@ export class WebhookServer {
   // rework resolves them.
   private async retargetAndRefreshDependents(
     mergedIssueId: string,
+    mergedRepo: string,
     mergedBranch: string,
     mergedBase: string,
     component: string,
   ): Promise<void> {
-    const { pipelineState, queue, audit } = this.deps;
-    const workingIssueIds = new Set(
-      queue
-        .listByStatus("working")
-        .map((task) => task.issueId)
-        .filter((issueId): issueId is string => issueId !== null),
-    );
+    const { pipelineState, audit } = this.deps;
     for (const rec of pipelineState.listAll()) {
       // Done records can keep a stale prNumber (non-webhook completion paths
       // never null it) — skip them so the scan doesn't grow one API call per
       // completed issue forever.
-      if (rec.issueId === mergedIssueId || rec.prNumber === null || rec.currentPhase === "done") {
+      if (rec.issueId === mergedIssueId || rec.currentPhase === "done") {
         continue;
       }
+      const row = rec.repos.find((r) => r.repo === mergedRepo);
+      if (row === undefined || this.currentDependentRow(row) === null) {
+        continue;
+      }
+      const prNumber = row.prNumber;
+      if (prNumber === null) {
+        continue;
+      }
+      const adapter = this.deps.sourceControls.get(mergedRepo);
       let pr;
       try {
         pr = await withTimeout(
-          this.adapterFor(rec).getPullRequest(rec.prNumber),
+          adapter.getPullRequest(prNumber),
           REMOTE_LOOKUP_TIMEOUT_MS,
-          `getPullRequest #${String(rec.prNumber)}`,
+          `getPullRequest #${String(prNumber)}`,
         );
       } catch (err) {
         audit.log({
           component,
           issueId: rec.issueId,
-          message: `stack retarget: getPullRequest #${String(rec.prNumber)} failed: ${errorMessage(err)}`,
-          metadata: { prNumber: rec.prNumber },
+          message: `stack retarget: getPullRequest #${String(prNumber)} failed: ${errorMessage(err)}`,
+          metadata: { repo: mergedRepo, prNumber: prNumber },
         });
         continue;
       }
-      if (pr?.state !== "open") {
+      if (pr?.state !== "open" || this.currentDependentRow(row) === null) {
         continue;
       }
       if (pr.baseBranch === mergedBranch) {
         try {
           await withTimeout(
-            this.adapterFor(rec).updatePullRequestBase(pr.number, mergedBase),
+            adapter.updatePullRequestBase(pr.number, mergedBase),
             REMOTE_MUTATION_TIMEOUT_MS,
             `updatePullRequestBase #${String(pr.number)}`,
           );
-          pipelineState.updateBranchInfo(
-            rec.issueId,
-            primaryRepoName(rec, pipelineState.defaultRepo),
-            { prBaseBranch: mergedBase },
-          );
+          if (this.currentDependentRow(row) === null) {
+            continue;
+          }
+          pipelineState.updateBranchInfo(rec.issueId, mergedRepo, { prBaseBranch: mergedBase });
           audit.log({
             component,
             issueId: rec.issueId,
             message: `stack retarget: PR #${String(pr.number)} base ${mergedBranch} → ${mergedBase}`,
-            metadata: { prNumber: pr.number, mergedBase },
+            metadata: { repo: mergedRepo, prNumber: pr.number, mergedBase },
           });
         } catch (err) {
           audit.log({
             component,
             issueId: rec.issueId,
             message: `stack retarget: updatePullRequestBase failed: ${errorMessage(err)}`,
-            metadata: { prNumber: pr.number },
+            metadata: { repo: mergedRepo, prNumber: pr.number },
           });
           continue;
         }
-      } else if (pr.baseBranch === mergedBase && rec.prBaseBranch === mergedBranch) {
+      } else if (pr.baseBranch === mergedBase && row.prBaseBranch === mergedBranch) {
         // Auto-retarget race: with head-branch auto-delete GitHub moves the
         // dependent onto mergedBase within seconds. The persisted prior base
         // proves this PR actually targeted the merged branch; a tracker Blocks
         // edge alone could be only a scheduling dependency.
-        pipelineState.updateBranchInfo(
-          rec.issueId,
-          primaryRepoName(rec, pipelineState.defaultRepo),
-          { prBaseBranch: mergedBase },
-        );
+        pipelineState.updateBranchInfo(rec.issueId, mergedRepo, { prBaseBranch: mergedBase });
         audit.log({
           component,
           issueId: rec.issueId,
           message: `stack retarget: PR #${String(pr.number)} already retargeted to ${mergedBase} by GitHub — refreshing anyway`,
-          metadata: { prNumber: pr.number, mergedBase },
+          metadata: { repo: mergedRepo, prNumber: pr.number, mergedBase },
         });
-      } else if (pr.baseBranch === mergedBase && rec.prBaseBranch === null) {
+      } else if (pr.baseBranch === mergedBase && row.prBaseBranch === null) {
         audit.log({
           component,
           issueId: rec.issueId,
           message: `stack retarget: PR #${String(pr.number)} already targets ${mergedBase}, but its prior base was not recorded — skipping refresh`,
-          metadata: { prNumber: pr.number, mergedBranch, mergedBase },
+          metadata: { repo: mergedRepo, prNumber: pr.number, mergedBranch, mergedBase },
         });
         continue;
       } else {
         continue;
       }
 
-      if (rec.branchName === null) {
+      if (row.branchName === null) {
         continue;
       }
       // Race guard: single worker, one scan — a dependent mid-run owns its
@@ -796,21 +1102,21 @@ export class WebhookServer {
       // a snapshot, not a lock: a worker starting mid-refresh can race the
       // push below. Worst case is a rejected non-fast-forward push that
       // degrades to the could-not-fold PR comment — tolerated.
-      const working = workingIssueIds.has(rec.issueId);
+      const working = this.hasWorkingTask(rec.issueId);
       if (working) {
         audit.log({
           component,
           issueId: rec.issueId,
           message: "stack refresh: skipped — issue has a working task",
-          metadata: { branch: rec.branchName },
+          metadata: { repo: mergedRepo, branch: row.branchName },
         });
         continue;
       }
       await this.refreshDependentBranch(
         rec.issueId,
-        primaryRepoName(rec, pipelineState.defaultRepo),
-        rec.branchName,
-        rec.prNumber,
+        mergedRepo,
+        row.branchName,
+        prNumber,
         mergedBase,
         component,
       );
@@ -826,12 +1132,21 @@ export class WebhookServer {
     component: string,
   ): Promise<void> {
     const { audit } = this.deps;
-    const projectDir = this.deps.runtime.config.project.directory;
-    const tempWorktree = join(projectDir, ".redqueen", "worktrees", `refresh-${issueId}`);
+    const expected = this.deps.pipelineState.getRepo(issueId, repo);
+    if (
+      expected?.prNumber !== prNumber ||
+      expected.branchName !== depBranch ||
+      this.currentDependentRow(expected) === null ||
+      this.hasWorkingTask(issueId)
+    ) {
+      return;
+    }
+    const cwd = gitCwdFor(this.deps.runtime.config, repo);
+    const tempWorktree = worktreePathFor(this.deps.runtime.config, issueId, repo, "refresh");
     // Self-heal: a crash mid-refresh leaves the temp worktree registered, and
     // every later add for this issue would fail before reaching the comment.
     try {
-      await this.gitRunner(["worktree", "remove", "--force", "--", tempWorktree], projectDir);
+      await this.gitRunner(["worktree", "remove", "--force", "--", tempWorktree], cwd);
     } catch {
       // nothing stale to remove — the normal case
     }
@@ -848,29 +1163,35 @@ export class WebhookServer {
           `+refs/heads/${mergedBase}:refs/remotes/origin/${mergedBase}`,
           `+refs/heads/${depBranch}:refs/remotes/origin/${depBranch}`,
         ],
-        projectDir,
+        cwd,
       );
+      if (this.currentDependentRow(expected) === null || this.hasWorkingTask(issueId)) {
+        return;
+      }
       await this.gitRunner(
         ["worktree", "add", "--detach", tempWorktree, `origin/${depBranch}`],
-        projectDir,
+        cwd,
       );
       created = true;
       await this.gitRunner(["merge", "--no-edit", `origin/${mergedBase}`], tempWorktree);
+      if (this.currentDependentRow(expected) === null || this.hasWorkingTask(issueId)) {
+        return;
+      }
       await this.gitRunner(["push", "origin", `HEAD:${depBranch}`], tempWorktree);
       audit.log({
         component,
         issueId,
         message: `stack refresh: merged ${mergedBase} into ${depBranch} and pushed`,
-        metadata: { branch: depBranch, mergedBase },
+        metadata: { repo, branch: depBranch, mergedBase },
       });
     } catch (err) {
       audit.log({
         component,
         issueId,
         message: `stack refresh: could not cleanly fold ${mergedBase} into ${depBranch}: ${errorMessage(err)}`,
-        metadata: { branch: depBranch, mergedBase },
+        metadata: { repo, branch: depBranch, mergedBase },
       });
-      if (created) {
+      if (created && this.currentDependentRow(expected) !== null) {
         try {
           await this.deps.sourceControls
             .get(repo)
@@ -883,20 +1204,20 @@ export class WebhookServer {
             component,
             issueId,
             message: `stack refresh: conflict comment failed: ${errorMessage(commentErr)}`,
-            metadata: { prNumber },
+            metadata: { repo, prNumber },
           });
         }
       }
     } finally {
       if (created) {
         try {
-          await this.gitRunner(["worktree", "remove", "--force", "--", tempWorktree], projectDir);
+          await this.gitRunner(["worktree", "remove", "--force", "--", tempWorktree], cwd);
         } catch (err) {
           audit.log({
             component,
             issueId,
             message: `stack refresh: temp worktree removal failed: ${errorMessage(err)}`,
-            metadata: { tempWorktree },
+            metadata: { repo, tempWorktree },
           });
         }
       }
@@ -946,25 +1267,22 @@ function extractNumber(record: Record<string, unknown>, key: string): number | n
 }
 
 function classifyMergedPrEvent(
-  record: PipelineRecord,
+  currentPhase: string | null,
+  row: PipelineRepoRecord,
   mergedPrNumber: number | null,
   mergedBranch: string | null,
 ): "process" | "already-processed" | "stale" {
-  const repo = firstInScopeRepo(record.repos);
-  const disposition =
-    repo === null
-      ? classifyMergeTransition(record, mergedPrNumber)
-      : classifyRepoMergeTransition(record.currentPhase, repo, mergedPrNumber);
+  const disposition = classifyRepoMergeTransition(currentPhase, row, mergedPrNumber);
   if (disposition !== "process") {
     return disposition;
   }
   // Webhook-only layer: with no PR number to match on, a branch mismatch is
   // the remaining signal that the event belongs to an earlier pipeline run.
   if (
-    record.prNumber === null &&
-    record.branchName !== null &&
+    (mergedPrNumber === null || row.prNumber === null) &&
+    row.branchName !== null &&
     mergedBranch !== null &&
-    record.branchName !== mergedBranch
+    row.branchName !== mergedBranch
   ) {
     return "stale";
   }

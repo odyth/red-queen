@@ -508,16 +508,21 @@ export class RedQueen {
       return { action: "proceed", stack: null };
     }
 
+    const repoTargets = this.deps.runtime.config.project.repos.map((repo) => ({
+      name: repo.name,
+      bareBase: bareBaseBranch(repo.baseBranch),
+    }));
     let resolution: StackResolution;
     try {
       resolution = await resolveStack(
         issueId,
-        bareBaseBranch(this.deps.runtime.config.pipeline.baseBranch),
+        repoTargets[0]?.bareBase ?? bareBaseBranch(this.deps.runtime.config.pipeline.baseBranch),
         {
           getBlockedBy: (id) => this.deps.issueTracker.getBlockedBy(id),
           getPipelineRecord: (id) => this.deps.pipelineState.get(id),
           getTrackerPhase: (id) => this.deps.issueTracker.getPhase(id),
           terminalGates: terminalGateNames(this.deps.runtime.phaseGraph),
+          repos: repoTargets,
         },
       );
     } catch (err) {
@@ -560,14 +565,19 @@ export class RedQueen {
     if (resolution.ok) {
       // All blockers merged/closed with nothing to assemble → behave exactly
       // like a non-stacked issue (branch from base, no stack context).
-      if (resolution.mergeBranches.length === 0) {
+      if (Object.values(resolution.repos).every((repo) => repo.mergeBranches.length === 0)) {
         return { action: "proceed", stack: null };
       }
       this.deps.audit.log({
         component: "orchestrator",
         issueId,
-        message: `Stack resolved: merging [${resolution.mergeBranches.join(", ")}], PR base ${resolution.prBase}`,
-        metadata: { taskId: task.id, phase: phase.name },
+        message: `Stack resolved: ${Object.entries(resolution.repos)
+          .map(
+            ([name, repo]) =>
+              `${name}: merge [${repo.mergeBranches.join(", ")}] → base ${repo.prBase}`,
+          )
+          .join("; ")}`,
+        metadata: { taskId: task.id, phase: phase.name, repos: resolution.repos },
       });
       return { action: "proceed", stack: resolution };
     }
@@ -1253,6 +1263,12 @@ export class RedQueen {
       codebaseMapPath: existsSync(codebaseMapPath) ? codebaseMapPath : null,
       resolveModule: this.moduleResolver,
       stack,
+      repoPrBases:
+        stack === null
+          ? undefined
+          : Object.fromEntries(
+              Object.entries(stack.repos).map(([name, repo]) => [name, repo.prBase]),
+            ),
     });
     const promptBody = renderSkillPrompt(context, skillMarkdown);
 

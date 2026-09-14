@@ -154,6 +154,114 @@ describe("parseGitHubWebhookEvent", () => {
     });
   });
 
+  it.each(["pull_request_review", "pull_request_review_comment"])(
+    "carries repo and PR identity for %s",
+    (eventType) => {
+      const event = parseGitHubWebhookEvent(
+        { identity },
+        { "x-github-event": eventType },
+        JSON.stringify({
+          action: eventType === "pull_request_review" ? "submitted" : "created",
+          sender: { id: 2, login: "human" },
+          repository: { full_name: "Acme/Web" },
+          pull_request: { number: 77, head: { ref: "feature/PROJ-1" } },
+        }),
+      );
+      expect(event).toMatchObject({
+        type: "pr-feedback",
+        issueId: "PROJ-1",
+        payload: {
+          repo: "Acme/Web",
+          prNumber: 77,
+          branch: "feature/PROJ-1",
+          feedbackTarget: "pull-request",
+        },
+      });
+    },
+  );
+
+  it("carries PR issue_comment identity when GitHub omits its head branch", () => {
+    const event = parseGitHubWebhookEvent(
+      { identity },
+      { "x-github-event": "issue_comment" },
+      JSON.stringify({
+        action: "created",
+        sender: { id: 2 },
+        repository: { full_name: "acme/api" },
+        issue: {
+          number: 77,
+          pull_request: { url: "https://api.github.com/repos/acme/api/pulls/77" },
+        },
+      }),
+    );
+    expect(event?.payload).toEqual({
+      repo: "acme/api",
+      prNumber: 77,
+      branch: null,
+      feedbackTarget: "pull-request",
+    });
+  });
+
+  it("distinguishes ordinary tracker comments from PR feedback", () => {
+    const event = parseGitHubWebhookEvent(
+      { identity },
+      { "x-github-event": "issue_comment" },
+      JSON.stringify({
+        action: "created",
+        sender: { id: 2 },
+        repository: { full_name: "acme/tickets" },
+        issue: { number: 77 },
+      }),
+    );
+    expect(event).toMatchObject({
+      issueId: "#77",
+      payload: { repo: "acme/tickets", branch: null, feedbackTarget: "issue" },
+    });
+    expect(event?.payload).not.toHaveProperty("prNumber");
+  });
+
+  it("carries repository identity on merges", () => {
+    const event = parseGitHubWebhookEvent(
+      { identity },
+      { "x-github-event": "pull_request" },
+      JSON.stringify({
+        action: "closed",
+        sender: { id: 2 },
+        repository: { full_name: "acme/api" },
+        pull_request: {
+          number: 77,
+          merged: true,
+          head: { ref: "feature/PROJ-1" },
+          base: { ref: "main" },
+        },
+      }),
+    );
+    expect(event?.payload).toEqual({
+      repo: "acme/api",
+      prNumber: 77,
+      branch: "feature/PROJ-1",
+      base: "main",
+    });
+  });
+
+  it.each(["rq:active", "rq:phase:coding"])(
+    "carries repository identity on issue label %s",
+    (label) => {
+      const event = parseGitHubWebhookEvent(
+        { identity },
+        { "x-github-event": "issues" },
+        JSON.stringify({
+          action: "labeled",
+          sender: { id: 2 },
+          repository: { full_name: "acme/tickets" },
+          issue: { number: 77 },
+          label: { name: label },
+        }),
+      );
+      expect(event?.payload.repo).toBe("acme/tickets");
+    },
+  );
+
   it("returns phase-change on label add", () => {
     const payload = JSON.stringify({
       action: "labeled",

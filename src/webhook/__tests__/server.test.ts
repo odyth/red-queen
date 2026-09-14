@@ -177,6 +177,71 @@ describe("WebhookServer", () => {
     expect(issueTracker.calls).toContain("assignToAi:PROJ-1");
   });
 
+  it.each([
+    { webInScope: true, currentPhase: "human-review", targetPhase: "code-feedback" },
+    { webInScope: false, currentPhase: "spec-review", targetPhase: "spec-feedback" },
+  ])(
+    "routes workspace feedback to $targetPhase when only web has a PR and webInScope=$webInScope",
+    async ({ webInScope, currentPhase, targetPhase }) => {
+      const workspaceState = new PipelineStateStore(db, ["api", "web"]);
+      const config = makeTestConfig({
+        project: {
+          repos: ["api", "web"].map((name) => ({
+            name,
+            path: join(tempDir, name),
+            owner: "acme",
+            repo: name,
+            baseBranch: "main",
+            buildCommand: "npm run build",
+            testCommand: "npm test",
+            modules: [],
+          })),
+        },
+      });
+      const webhook = new WebhookServer({
+        issueTracker,
+        sourceControls: createSourceControlRegistry(
+          config.project.repos.map((repo) => ({
+            name: repo.name,
+            fullName: `${repo.owner}/${repo.repo}`,
+            adapter: new MockSourceControl(),
+          })),
+        ),
+        queue,
+        pipelineState: workspaceState,
+        runtime: new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), config),
+        audit,
+      });
+      webhook.register(dashboard, {
+        issueTracker: "/webhook/workspace-tracker",
+        sourceControl: "/webhook/workspace-source-control",
+      });
+      workspaceState.create("PROJ-1", currentPhase);
+      workspaceState.setScope("PROJ-1", ["api", "web"]);
+      workspaceState.updatePrNumber("PROJ-1", "web", 42, "main");
+      if (webInScope === false) {
+        workspaceState.setScope("PROJ-1", ["api"]);
+      }
+      expect(workspaceState.get("PROJ-1")?.prNumber).toBeNull();
+      issueTracker.phases.set("PROJ-1", currentPhase);
+      issueTracker.parseResult = {
+        source: "webhook",
+        type: "pr-feedback",
+        issueId: "PROJ-1",
+        timestamp: new Date().toISOString(),
+        payload: {},
+      };
+
+      await postWebhook("/webhook/workspace-tracker", "{}");
+
+      await expect.poll(() => queue.hasOpenTask("PROJ-1", targetPhase)).toBe(true);
+      expect(queue.listByStatus("ready").map((task) => task.type)).toEqual([targetPhase]);
+      expect(issueTracker.calls).toContain(`setPhase:PROJ-1:${targetPhase}`);
+      expect(issueTracker.calls).toContain("assignToAi:PROJ-1");
+      expect(workspaceState.get("PROJ-1")?.currentPhase).toBe(targetPhase);
+    },
+  );
+
   it("enqueues feedback without transitioning when the ticket is mid-automation (not at a human gate)", async () => {
     pipelineState.create("PROJ-1", "code-review");
     pipelineState.updatePrNumber("PROJ-1", "app", 42, null);

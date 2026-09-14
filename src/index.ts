@@ -133,3 +133,5 @@ export {
   createSourceControlRegistry,
   repoFullName,
 } from "./integrations/source-control-registry.js";
+export { worktreePathFor, repoConfigOf, gitCwdFor } from "./core/worktree-layout.js";
+export type { WorktreeKind } from "./core/worktree-layout.js";

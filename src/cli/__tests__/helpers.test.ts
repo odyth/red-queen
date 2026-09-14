@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import { execSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cmdIssue } from "../issue.js";
@@ -16,6 +16,29 @@ let tmp: string;
 let originalCwd: string;
 let originalWrite: typeof process.stdout.write;
 let stdoutCapture: string[];
+
+function writeWorkspaceConfig(names = ["api", "web"]): void {
+  for (const name of names) {
+    mkdirSync(join(tmp, name), { recursive: true });
+    execSync("git init -q", { cwd: join(tmp, name) });
+  }
+  writeFileSync(
+    join(tmp, "redqueen.yaml"),
+    [
+      "issueTracker:",
+      "  type: mock",
+      "sourceControl:",
+      "  type: mock",
+      "project:",
+      "  repos:",
+      ...names.map(
+        (name) =>
+          `    - { name: ${name}, path: ./${name}, owner: o, repo: ${name}, buildCommand: echo, testCommand: echo }`,
+      ),
+      "",
+    ].join("\n"),
+  );
+}
 
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), "rq-helpers-"));
@@ -275,6 +298,111 @@ describe("cmdPr comments", () => {
 });
 
 describe("cmdSpec meta", () => {
+  it.each(["whatever", "", ", ,"])("legacy mode ignores --repos=%j", async (repos) => {
+    await cmdPipeline(["update", "META-LEGACY", "--branch", "b"]);
+    stdoutCapture = [];
+    await cmdSpec(["meta", "META-LEGACY", "--open-questions", "0", "--repos", repos]);
+    const parsed = JSON.parse(stdoutCapture.join("")) as {
+      openQuestionCount: number;
+      repos: { repo: string }[];
+    };
+    expect(parsed.openQuestionCount).toBe(0);
+    expect(parsed.repos.map((r) => r.repo)).toEqual(["default"]);
+  });
+
+  it("records workspace scope, deduplicates names, and preserves descoped branch data", async () => {
+    writeWorkspaceConfig();
+    await cmdPipeline(["update", "META-WORKSPACE", "--repo", "api", "--branch", "b"]);
+    stdoutCapture = [];
+    await cmdSpec(["meta", "META-WORKSPACE", "--open-questions", "1", "--repos", " web, web, "]);
+    const parsed = JSON.parse(stdoutCapture.join("")) as {
+      issueId: string;
+      openQuestionCount: number;
+      repos: { repo: string; inScope: boolean }[];
+    };
+    expect(parsed.issueId).toBe("META-WORKSPACE");
+    expect(parsed.openQuestionCount).toBe(1);
+    expect(parsed.repos).toEqual([
+      expect.objectContaining({ repo: "api", inScope: false, branchName: "b" }),
+      expect.objectContaining({ repo: "web", inScope: true }),
+    ]);
+    const ctx = loadCliContext();
+    try {
+      expect(ctx.pipelineState.get("META-WORKSPACE")).toMatchObject(parsed);
+    } finally {
+      ctx.cleanup();
+    }
+  });
+
+  it.each([
+    { args: [], error: /--repos is required.*api, web/ },
+    { args: ["--repos", ""], error: /--repos is required.*api, web/ },
+    { args: ["--repos", ", ,"], error: /at least one repo.*api, web/ },
+    { args: ["--repos", "web,nope"], error: /unknown repo "nope".*api, web/ },
+  ])("invalid workspace scope $args leaves count and scope unchanged", async ({ args, error }) => {
+    writeWorkspaceConfig();
+    const initial = loadCliContext();
+    initial.pipelineState.create("META-INVALID", "spec-review");
+    initial.pipelineState.setScope("META-INVALID", ["api"]);
+    initial.pipelineState.setOpenQuestionCount("META-INVALID", 3);
+    const before = initial.pipelineState.get("META-INVALID");
+    initial.cleanup();
+
+    await expect(
+      cmdSpec(["meta", "META-INVALID", "--open-questions", "0", ...args]),
+    ).rejects.toThrow(error);
+    const after = loadCliContext();
+    try {
+      expect(after.pipelineState.get("META-INVALID")).toEqual(before);
+    } finally {
+      after.cleanup();
+    }
+  });
+
+  it("requires --repos even in a one-repo workspace before adopting legacy scope", async () => {
+    writeWorkspaceConfig(["api"]);
+    const database = new RedQueenDatabase(join(tmp, ".redqueen", "redqueen.db"));
+    try {
+      database.db
+        .prepare(
+          `INSERT INTO pipeline_state (issue_id, spec_content, open_question_count, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?)`,
+        )
+        .run("META-OLD", "old legacy spec", 3, "2026-01-01", "2026-01-01");
+      await expect(cmdSpec(["meta", "META-OLD", "--open-questions", "0"])).rejects.toThrow(
+        /--repos is required.*api/,
+      );
+      expect(database.db.prepare("SELECT * FROM pipeline_repos").all()).toEqual([]);
+      expect(database.db.prepare("SELECT open_question_count FROM pipeline_state").get()).toEqual({
+        open_question_count: 3,
+      });
+    } finally {
+      database.close();
+    }
+  });
+
+  it.each(["abc", "1.5", "-1", "9007199254740992"])(
+    "invalid count %s leaves workspace scope unchanged",
+    async (count) => {
+      writeWorkspaceConfig();
+      const initial = loadCliContext();
+      initial.pipelineState.create("META-COUNT");
+      initial.pipelineState.setScope("META-COUNT", ["api"]);
+      initial.pipelineState.setOpenQuestionCount("META-COUNT", 3);
+      const before = initial.pipelineState.get("META-COUNT");
+      initial.cleanup();
+      await expect(
+        cmdSpec(["meta", "META-COUNT", `--open-questions=${count}`, "--repos", "web"]),
+      ).rejects.toThrow(/non-negative integer/);
+      const after = loadCliContext();
+      try {
+        expect(after.pipelineState.get("META-COUNT")).toEqual(before);
+      } finally {
+        after.cleanup();
+      }
+    },
+  );
+
   it.each([false, true])(
     "CLI adoption preserves the scope boundary after spec set in workspaceMode=%s",
     async (workspaceMode) => {

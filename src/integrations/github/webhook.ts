@@ -102,6 +102,7 @@ export function parseGitHubWebhookEvent(
             branch,
             ...(typeof baseRef === "string" ? { base: baseRef } : {}),
             ...(typeof prNumber === "number" ? { prNumber } : {}),
+            ...repoField(payload),
           },
         };
       }
@@ -126,7 +127,7 @@ export function parseGitHubWebhookEvent(
           type: "assignment-change",
           issueId: `#${String(issueNumber)}`,
           timestamp: nowIso,
-          payload: {},
+          payload: { ...repoField(payload) },
         };
       }
       if (labelName.startsWith(PHASE_LABEL_PREFIX) === false) {
@@ -138,7 +139,7 @@ export function parseGitHubWebhookEvent(
         type: "phase-change" as PipelineEventType,
         issueId: `#${String(issueNumber)}`,
         timestamp: nowIso,
-        payload: { phase },
+        payload: { phase, ...repoField(payload) },
       };
     }
     default:
@@ -151,6 +152,13 @@ function buildFeedbackEvent(
   resolver: (branch: string) => string | null,
   nowIso: string,
 ): PipelineEvent | null {
+  const isPullRequest =
+    extractNested(payload, ["pull_request"]) !== undefined ||
+    extractNested(payload, ["issue", "pull_request"]) !== undefined;
+  const number = isPullRequest
+    ? (extractNested(payload, ["pull_request", "number"]) ??
+      extractNested(payload, ["issue", "number"]))
+    : extractNested(payload, ["issue", "number"]);
   const headRef =
     extractNested(payload, ["pull_request", "head", "ref"]) ??
     extractNested(payload, ["issue", "pull_request", "head", "ref"]);
@@ -160,7 +168,6 @@ function buildFeedbackEvent(
     issueId = resolver(branch);
   }
   if (issueId === null) {
-    const number = extractNested(payload, ["issue", "number"]);
     if (typeof number === "number") {
       issueId = `#${String(number)}`;
     }
@@ -173,8 +180,18 @@ function buildFeedbackEvent(
     type: "pr-feedback",
     issueId,
     timestamp: nowIso,
-    payload: { branch },
+    payload: {
+      branch,
+      feedbackTarget: isPullRequest ? "pull-request" : "issue",
+      ...(isPullRequest && typeof number === "number" ? { prNumber: number } : {}),
+      ...repoField(payload),
+    },
   };
+}
+
+function repoField(payload: Record<string, unknown>): { repo?: string } {
+  const fullName = extractNested(payload, ["repository", "full_name"]);
+  return typeof fullName === "string" ? { repo: fullName } : {};
 }
 
 const BRANCH_JIRA_RE = /^(?:[a-z][a-z0-9-]*)\/([A-Z][A-Z0-9]+-\d+)$/;

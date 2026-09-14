@@ -546,6 +546,20 @@ export class PipelineStateStore {
     return result.changes > 0;
   }
 
+  // Spec scope and its gate metadata must become visible together. Omitting
+  // repoNames preserves the existing scope for legacy single-repo callers.
+  setSpecMetadata(
+    issueId: string,
+    count: number,
+    repoNames?: readonly string[],
+  ): PipelineRepoRecord[] {
+    return this.db.transaction((): PipelineRepoRecord[] => {
+      this.assertRecord(issueId);
+      this.setOpenQuestionCount(issueId, count);
+      return repoNames === undefined ? this.listRepos(issueId) : this.setScope(issueId, repoNames);
+    })();
+  }
+
   delete(issueId: string): boolean {
     return this.db.transaction((): boolean => {
       this.db.prepare("DELETE FROM pipeline_repos WHERE issue_id = ?").run(issueId);

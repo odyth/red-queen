@@ -202,6 +202,36 @@ describe("PR repository routing", () => {
     expect(auditLog.mock.calls.at(-1)?.[0].metadata).toMatchObject({ repo: "web", prNumber: 1 });
   });
 
+  it.each([false, true])(
+    "create recomputes the selected repo's base when it has an ancestor branch=%s",
+    async (webContributes) => {
+      ctx.config.project.repos = [repo("api"), { ...repo("web"), baseBranch: "origin/develop" }];
+      ctx.pipelineState.create("BLOCKER-1", "human-review");
+      ctx.pipelineState.setScope("BLOCKER-1", webContributes ? ["api", "web"] : ["api"]);
+      ctx.pipelineState.updateBranchInfo("BLOCKER-1", "api", {
+        branchName: "feature/api-blocker",
+        prNumber: 10,
+      });
+      if (webContributes) {
+        ctx.pipelineState.updateBranchInfo("BLOCKER-1", "web", {
+          branchName: "feature/web-blocker",
+          prNumber: 11,
+        });
+      }
+      vi.spyOn(ctx.issueTracker, "getBlockedBy").mockImplementation((id) =>
+        Promise.resolve(id === "ISSUE-1" ? [{ id: "BLOCKER-1", closed: false }] : []),
+      );
+      vi.spyOn(ctx.issueTracker, "getPhase").mockResolvedValue("human-review");
+      const create = vi.spyOn(web, "createPullRequest");
+
+      await cmdPr([...createArgs, "--repo", "web"]);
+
+      const expectedBase = webContributes ? "feature/web-blocker" : "develop";
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({ base: expectedBase }));
+      expect(ctx.pipelineState.getRepo("ISSUE-1", "web")?.prBaseBranch).toBe(expectedBase);
+    },
+  );
+
   it("releases the context if the selected adapter fails", async () => {
     vi.spyOn(web, "getPullRequestDiff").mockRejectedValue(new Error("diff failed"));
     await expect(cmdPr(["diff", "1", "--repo", "web"])).rejects.toThrow("diff failed");

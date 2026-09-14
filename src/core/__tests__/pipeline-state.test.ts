@@ -366,6 +366,48 @@ describe("PipelineStateStore", () => {
     expect(store.setOpenQuestionCount("nope", 0)).toBe(false);
   });
 
+  it("setSpecMetadata records count and replaces scope together", () => {
+    store.create("PROJ-1");
+    store.setScope("PROJ-1", ["app"]);
+    const repos = store.setSpecMetadata("PROJ-1", 3, ["web"]);
+    expect(store.get("PROJ-1")?.openQuestionCount).toBe(3);
+    expect(repos.map((repo) => [repo.repo, repo.inScope])).toEqual([
+      ["app", false],
+      ["web", true],
+    ]);
+  });
+
+  it("setSpecMetadata preserves scope when repo names are omitted", () => {
+    store.create("PROJ-1");
+    const before = store.setScope("PROJ-1", ["app"]);
+    expect(store.setSpecMetadata("PROJ-1", 0)).toEqual(before);
+    expect(store.get("PROJ-1")?.openQuestionCount).toBe(0);
+  });
+
+  it("setSpecMetadata rolls back count and repo writes if scope persistence fails", () => {
+    store.create("PROJ-1");
+    store.setScope("PROJ-1", ["app"]);
+    store.setOpenQuestionCount("PROJ-1", 3);
+    const before = store.get("PROJ-1");
+    db.exec(`
+      CREATE TRIGGER reject_web_scope BEFORE INSERT ON pipeline_repos
+      WHEN NEW.repo = 'web'
+      BEGIN
+        SELECT RAISE(ABORT, 'scope write rejected');
+      END;
+    `);
+
+    expect(() => store.setSpecMetadata("PROJ-1", 0, ["app", "web"])).toThrow(
+      /scope write rejected/,
+    );
+    expect(store.get("PROJ-1")).toEqual(before);
+  });
+
+  it("setSpecMetadata rejects a missing issue without creating scope", () => {
+    expect(() => store.setSpecMetadata("nope", 0, ["app"])).toThrow(/no pipeline record/);
+    expect(store.listRepos("nope")).toEqual([]);
+  });
+
   it("resetIterations also clears openQuestionCount", () => {
     store.create("PROJ-1");
     store.setOpenQuestionCount("PROJ-1", 0);

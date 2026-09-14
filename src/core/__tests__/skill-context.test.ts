@@ -273,6 +273,7 @@ describe("buildSkillContext", () => {
         directBlockers: [{ id: "PROJ-9", closed: false }],
         mergeBranches: ["feature/PROJ-9"],
         prBase: "feature/PROJ-9",
+        repos: { app: { mergeBranches: ["feature/PROJ-9"], prBase: "feature/PROJ-9" } },
         unsatisfied: [],
         cycle: null,
         problems: [],
