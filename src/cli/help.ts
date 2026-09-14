@@ -6,7 +6,8 @@ Usage:
   redqueen <command> [options]
 
 Top-level commands:
-  init                        Scaffold a new Red Queen project in the current directory
+  init                        Scaffold a project in a git repo or a folder of git repos (workspace)
+  migrate                     Move a single-repo install up into a workspace (--dry-run, --yes)
   start                       Start the orchestrator (foreground)
   stop                        Stop a running orchestrator
   status                      Show orchestrator status
@@ -49,11 +50,21 @@ Run 'redqueen <command> --help' for command-specific help.
 `;
 
 const COMMAND_HELP: Record<string, string> = {
-  init: `redqueen init — Scaffold a new project
+  migrate: `redqueen migrate — Move a single-repo install up one directory into a workspace
+Run at the git root containing redqueen.yaml, with project.directory resolving there.
+Stop the orchestrator/service first. The parent must have no redqueen.yaml, .redqueen, or .env.
+Requires git >= 2.17. Registered worktrees are moved through Git, including dirty work.
+An installed enabled service is reinstalled and started after migration; a disabled one is uninstalled.
 Options:
-  -y, --yes        Accept all defaults (non-interactive)
-  --force          Overwrite existing redqueen.yaml
-  --map-only       Regenerate .redqueen/codebase-map.md only
+  --dry-run         Print and validate the migration without changing files or services
+  -y, --yes         Migrate without the confirmation prompt
+`,
+  init: `redqueen init — Scaffold a project in a git repo or a folder of git repos (workspace)
+Options:
+  -y, --yes          Accept all defaults and include every discovered repo (non-interactive)
+  --force            Overwrite existing redqueen.yaml
+  --map-only         Regenerate .redqueen/codebase-map.md, preserving edit-me blocks
+  --add-repo <path>   Append a repo to an existing workspace (or convert a single-repo install in place)
 `,
   start: `redqueen start — Run the orchestrator in the foreground
 Options:
