@@ -47,6 +47,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   under `project.commands`. Changing a repo's `name`, `path`, `owner`, `repo`,
   or `baseBranch`, or `project.directory`, needs a restart and holds every
   other `project` edit back until then.
+- Renaming or removing a `project.repos[]` entry while issues that use it are
+  unfinished stops `redqueen start` and the skill helpers, naming each issue
+  and repo; restore the entry until those issues finish. Legacy installs
+  follow a changed `sourceControl.config.repo` on their own.
 
 ### Fixed
 
