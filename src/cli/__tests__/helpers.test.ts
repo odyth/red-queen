@@ -312,6 +312,10 @@ describe("cmdSpec meta", () => {
 
   it("records workspace scope, deduplicates names, and preserves descoped branch data", async () => {
     writeWorkspaceConfig();
+    const initial = loadCliContext();
+    initial.pipelineState.create("META-WORKSPACE", "spec-writing");
+    initial.pipelineState.setScope("META-WORKSPACE", ["api"]);
+    initial.cleanup();
     await cmdPipeline(["update", "META-WORKSPACE", "--repo", "api", "--branch", "b"]);
     stdoutCapture = [];
     await cmdSpec(["meta", "META-WORKSPACE", "--open-questions", "1", "--repos", " web, web, "]);

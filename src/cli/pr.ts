@@ -5,7 +5,7 @@ import type { Review } from "../integrations/source-control.js";
 import { loadCliContext } from "./context.js";
 import { CliError } from "./errors.js";
 import { readBodyFromStdinOrFlag, writeJson, writeText } from "./io.js";
-import { resolveRepoArg } from "./repo-arg.js";
+import { resolveRepoArg, resolveScopedRepoArg } from "./repo-arg.js";
 
 export async function cmdPr(args: string[]): Promise<void> {
   const [subcommand, ...rest] = args;
@@ -69,7 +69,13 @@ async function cmdPrCreate(args: string[]): Promise<void> {
 
   const ctx = loadCliContext();
   try {
-    const repo = resolveRepoArg(ctx.config, values.repo, "pr create");
+    const repo = resolveScopedRepoArg(
+      ctx.config,
+      ctx.pipelineState,
+      issueId,
+      values.repo,
+      "pr create",
+    );
     const sourceControl = ctx.sourceControls.get(repo.name);
     // Stacked issues target the nearest unmerged blocker's branch, and the
     // stack may have shifted since dispatch (a blocker merged mid-run) — so

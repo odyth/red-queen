@@ -5,7 +5,7 @@ import { gitCwdFor } from "../core/worktree-layout.js";
 import { loadCliContext } from "./context.js";
 import { CliError } from "./errors.js";
 import { writeJson } from "./io.js";
-import { resolveRepoArg } from "./repo-arg.js";
+import { resolveScopedRepoArg } from "./repo-arg.js";
 
 export async function cmdPipeline(args: string[]): Promise<void> {
   const [subcommand, ...rest] = args;
@@ -75,7 +75,13 @@ function cmdPipelineUpdate(args: string[]): Promise<void> {
 
   const ctx = loadCliContext();
   try {
-    const repo = resolveRepoArg(ctx.config, values.repo, "pipeline update");
+    const repo = resolveScopedRepoArg(
+      ctx.config,
+      ctx.pipelineState,
+      issueId,
+      values.repo,
+      "pipeline update",
+    );
     if (ctx.pipelineState.get(issueId) === null) {
       ctx.pipelineState.create(issueId);
     }

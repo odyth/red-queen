@@ -142,6 +142,8 @@ afterEach(() => {
 
 describe("PR repository routing", () => {
   it.each(routes)("$label targets the selected adapter", async ({ args, method, expected }) => {
+    ctx.pipelineState.create("ISSUE-1", "coding");
+    ctx.pipelineState.setScope("ISSUE-1", ["api", "web"]);
     const primaryCall = vi.spyOn(api, method);
     const selectedCall = vi.spyOn(web, method);
     await cmdPr([...args, "--repo", "web"]);
@@ -179,6 +181,7 @@ describe("PR repository routing", () => {
 
   it("create stores colliding PR numbers on separate rows and audits the selected repo", async () => {
     ctx.pipelineState.create("ISSUE-1");
+    ctx.pipelineState.setScope("ISSUE-1", ["api", "web"]);
     ctx.pipelineState.updateBranchInfo("ISSUE-1", "api", {
       branchName: "feature/api",
       prNumber: 1,
@@ -206,6 +209,8 @@ describe("PR repository routing", () => {
     "create recomputes the selected repo's base when it has an ancestor branch=%s",
     async (webContributes) => {
       ctx.config.project.repos = [repo("api"), { ...repo("web"), baseBranch: "origin/develop" }];
+      ctx.pipelineState.create("ISSUE-1", "coding");
+      ctx.pipelineState.setScope("ISSUE-1", ["web"]);
       ctx.pipelineState.create("BLOCKER-1", "human-review");
       ctx.pipelineState.setScope("BLOCKER-1", webContributes ? ["api", "web"] : ["api"]);
       ctx.pipelineState.updateBranchInfo("BLOCKER-1", "api", {
@@ -232,6 +237,29 @@ describe("PR repository routing", () => {
     },
   );
 
+  it.each(["unscoped", "descoped", "unrecorded"])(
+    "create refuses a repo that is %s for the issue before opening a PR",
+    async (state) => {
+      if (state !== "unrecorded") {
+        ctx.pipelineState.create("ISSUE-1", "coding");
+        ctx.pipelineState.setScope("ISSUE-1", state === "descoped" ? ["api", "web"] : ["api"]);
+        ctx.pipelineState.setScope("ISSUE-1", ["api"]);
+      }
+      const before = ctx.pipelineState.get("ISSUE-1");
+      const create = vi.spyOn(web, "createPullRequest");
+
+      await expect(cmdPr([...createArgs, "--repo", "web"])).rejects.toThrow(
+        state === "unrecorded"
+          ? /"web" is not in scope for ISSUE-1.*spec meta/
+          : /"web" is not in scope for ISSUE-1 \(in scope: api\)/,
+      );
+
+      expect(create).not.toHaveBeenCalled();
+      expect(ctx.pipelineState.get("ISSUE-1")).toEqual(before);
+      expect(ctx.cleanup).toHaveBeenCalledOnce();
+    },
+  );
+
   it("releases the context if the selected adapter fails", async () => {
     vi.spyOn(web, "getPullRequestDiff").mockRejectedValue(new Error("diff failed"));
     await expect(cmdPr(["diff", "1", "--repo", "web"])).rejects.toThrow("diff failed");
@@ -242,6 +270,7 @@ describe("PR repository routing", () => {
 describe("pipeline update repository routing", () => {
   it("applies branch, PR, worktree and clear flags only to the selected row", async () => {
     ctx.pipelineState.create("ISSUE-1");
+    ctx.pipelineState.setScope("ISSUE-1", ["api", "web"]);
     for (const name of ["api", "web"]) {
       ctx.pipelineState.updateBranchInfo("ISSUE-1", name, {
         branchName: `feature/${name}`,
@@ -291,6 +320,23 @@ describe("pipeline update repository routing", () => {
       prBaseBranch: null,
       worktreePath: null,
     });
+  });
+
+  it("refuses a repo outside the issue's scope, so a sibling merge still completes it", async () => {
+    ctx.pipelineState.create("ISSUE-1", "coding");
+    ctx.pipelineState.setScope("ISSUE-1", ["api"]);
+    ctx.pipelineState.updateBranchInfo("ISSUE-1", "api", {
+      branchName: "feature/api",
+      prNumber: 5,
+    });
+
+    await expect(
+      cmdPipeline(["update", "ISSUE-1", "--repo", "web", "--branch", "feature/web"]),
+    ).rejects.toThrow(/"web" is not in scope for ISSUE-1 \(in scope: api\)/);
+
+    expect(ctx.pipelineState.getRepo("ISSUE-1", "web")).toBeNull();
+    expect(ctx.pipelineState.markPrMerged("ISSUE-1", "api", 5)).toBe("processed");
+    expect(auditLog).not.toHaveBeenCalled();
   });
 
   it("requires a repo even for a one-repo workspace and leaves state untouched", async () => {
