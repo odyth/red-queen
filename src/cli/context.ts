@@ -40,15 +40,10 @@ export function loadCliContext(options: ICliContextOptions = {}): CliContext {
   const pipelineState = new PipelineStateStore(database.db, repoNames);
   const subIteration = new SubIterationStore(database.db);
   const audit = new DualWriteAuditLogger(database.db, auditPath);
-  // Helpers may run before the first `start` on an upgraded install; adopt
-  // legacy rows here too so per-row reads see them. Idempotent.
-  const primary = repoNames[0];
-  if (primary !== undefined) {
-    pipelineState.adoptLegacyRows(primary, config.project.workspaceMode === false);
-  }
   // Helpers enforce the state/config agreement the daemon does at start, but
   // only the daemon may re-key: this config can be ahead of a running one.
   // Legacy rows under another name are never orphans, so they always wait.
+  // Checked before adoption so a refused helper writes nothing.
   const legacyMode = config.project.workspaceMode === false;
   if (legacyMode || options.allowUnconfiguredRepos !== true) {
     try {
@@ -57,6 +52,12 @@ export function loadCliContext(options: ICliContextOptions = {}): CliContext {
       database.close();
       throw err;
     }
+  }
+  // Helpers may run before the first `start` on an upgraded install; adopt
+  // legacy rows here too so per-row reads see them. Idempotent.
+  const primary = repoNames[0];
+  if (primary !== undefined) {
+    pipelineState.adoptLegacyRows(primary, legacyMode);
   }
 
   const pair = buildAdapterPair(

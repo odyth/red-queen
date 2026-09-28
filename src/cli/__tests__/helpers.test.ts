@@ -471,6 +471,38 @@ project:
     }
   });
 
+  it("a refused helper leaves pre-upgrade records unadopted", () => {
+    const initial = loadCliContext();
+    initial.pipelineState.create("RENAMED", "coding");
+    initial.pipelineState.updateBranch("RENAMED", "old-name", "feature/RENAMED");
+    initial.pipelineState.create("LEGACY", "coding");
+    initial.cleanup();
+    const dbPath = join(tmp, ".redqueen", "redqueen.db");
+    const seeded = new RedQueenDatabase(dbPath);
+    seeded.db
+      .prepare(
+        "UPDATE pipeline_state SET branch_name = 'feature/LEGACY', repo_state_version = 0 WHERE issue_id = 'LEGACY'",
+      )
+      .run();
+    seeded.close();
+
+    expect(() => loadCliContext()).toThrow(/Restart Red Queen/);
+
+    const database = new RedQueenDatabase(dbPath);
+    try {
+      expect(
+        database.db.prepare("SELECT repo FROM pipeline_repos WHERE issue_id = 'LEGACY'").all(),
+      ).toEqual([]);
+      expect(
+        database.db
+          .prepare("SELECT repo_state_version AS v FROM pipeline_state WHERE issue_id = 'LEGACY'")
+          .get(),
+      ).toEqual({ v: 0 });
+    } finally {
+      database.close();
+    }
+  });
+
   it("CLI helpers refuse a workspace whose unfinished issues name an unconfigured repo", () => {
     writeWorkspaceConfig();
     const initial = loadCliContext();
