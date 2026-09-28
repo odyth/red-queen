@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SCHEMA_SQL } from "../../core/database.js";
 import { SqliteTaskQueue } from "../../core/queue.js";
-import { OrchestratorStateStore } from "../../core/pipeline-state.js";
+import { OrchestratorStateStore, PipelineStateStore } from "../../core/pipeline-state.js";
 import { DualWriteAuditLogger } from "../../core/audit.js";
 import { buildPhaseGraph } from "../../core/config.js";
 import { DEFAULT_PHASES } from "../../core/defaults.js";
@@ -15,6 +15,7 @@ import { RuntimeState } from "../../core/runtime-state.js";
 import { makeTestConfig } from "../../core/__tests__/fixtures/test-config.js";
 import { DashboardServer } from "../server.js";
 import type { DashboardEditorDeps } from "../server.js";
+import type { PipelineWire } from "../shared/api-types.js";
 
 let db: BetterSqlite3.Database;
 let tempDir: string;
@@ -95,6 +96,27 @@ function makeEditorDeps(): DashboardEditorDeps {
   };
 }
 
+async function restartWithPipelines(pipelineState: PipelineStateStore): Promise<void> {
+  await server.stop();
+  port = await getFreePort();
+  server = new DashboardServer(
+    {
+      queue: new SqliteTaskQueue(db),
+      orchestratorState: new OrchestratorStateStore(db),
+      audit: new DualWriteAuditLogger(db, join(tempDir, "audit.log")),
+      pipelineState,
+    },
+    {
+      host: "127.0.0.1",
+      port,
+      enableDashboardUi: true,
+      allowNonLoopback: false,
+      allowedHosts: [],
+    },
+  );
+  await server.start();
+}
+
 describe("DashboardServer", () => {
   beforeEach(async () => {
     tempDir = mkdtempSync(join(tmpdir(), "rq-dash-"));
@@ -144,6 +166,124 @@ describe("DashboardServer", () => {
     const logs = await fetchJson("/api/logs");
     expect(logs.status).toBe(200);
     expect(Array.isArray(logs.body)).toBe(true);
+  });
+
+  it("GET /api/pipelines returns [] without a pipelineState dep", async () => {
+    const { status, text } = await fetchText("/api/pipelines");
+    expect(status).toBe(200);
+    expect(JSON.parse(text)).toEqual([]);
+  });
+
+  it("GET /api/pipelines preserves config order, unknown rows, and exact orphan flags", async () => {
+    const pipelineState = new PipelineStateStore(db, ["web", "api"]);
+    pipelineState.create("PROJ-1", "human-review");
+    pipelineState.setScope("PROJ-1", ["z-retired", "api", "a-retired", "web"]);
+    pipelineState.updateBranchInfo("PROJ-1", "api", {
+      branchName: "feature/PROJ-1",
+      prNumber: 4,
+    });
+    pipelineState.updateBranchInfo("PROJ-1", "web", {
+      branchName: "feature/PROJ-1",
+      prNumber: 5,
+    });
+    pipelineState.updateBranchInfo("PROJ-1", "z-retired", { prNumber: 6 });
+    pipelineState.setScope("PROJ-1", ["api"]);
+    pipelineState.create("PROJ-2", "spec-writing");
+    const before = pipelineState.listAll();
+    await restartWithPipelines(pipelineState);
+
+    const { status, body } = await fetchJson("/api/pipelines");
+    expect(status).toBe(200);
+    expect(body).toEqual([
+      {
+        issueId: "PROJ-1",
+        currentPhase: "human-review",
+        updatedAt: pipelineState.get("PROJ-1")?.updatedAt,
+        repos: [
+          {
+            repo: "web",
+            inScope: false,
+            branchName: "feature/PROJ-1",
+            prNumber: 5,
+            orphaned: true,
+          },
+          {
+            repo: "api",
+            inScope: true,
+            branchName: "feature/PROJ-1",
+            prNumber: 4,
+            orphaned: false,
+          },
+          {
+            repo: "a-retired",
+            inScope: false,
+            branchName: null,
+            prNumber: null,
+            orphaned: false,
+          },
+          { repo: "z-retired", inScope: false, branchName: null, prNumber: 6, orphaned: true },
+        ],
+      },
+    ]);
+    expect(pipelineState.listAll()).toEqual(before);
+  });
+
+  it("GET /api/pipelines includes all-descoped rows and ignores terminal PR history", async () => {
+    const pipelineState = new PipelineStateStore(db, ["api", "web", "idle"]);
+    pipelineState.create("PROJ-1");
+    pipelineState.setScope("PROJ-1", ["api", "web", "idle"]);
+    pipelineState.updateBranchInfo("PROJ-1", "api", { prNumber: 7 });
+    pipelineState.updateBranchInfo("PROJ-1", "web", { prNumber: 8 });
+    pipelineState.updateBranchInfo("PROJ-1", "idle", { branchName: "branch-only" });
+    pipelineState.markPrMerged("PROJ-1", "api", 7);
+    pipelineState.setScope("PROJ-1", []);
+    await restartWithPipelines(pipelineState);
+
+    const { status, body } = await fetchJson("/api/pipelines");
+    expect(status).toBe(200);
+    expect(body).toEqual([
+      {
+        issueId: "PROJ-1",
+        currentPhase: null,
+        updatedAt: pipelineState.get("PROJ-1")?.updatedAt,
+        repos: [
+          { repo: "api", inScope: false, branchName: null, prNumber: null, orphaned: false },
+          { repo: "web", inScope: false, branchName: null, prNumber: 8, orphaned: true },
+          {
+            repo: "idle",
+            inScope: false,
+            branchName: "branch-only",
+            prNumber: null,
+            orphaned: false,
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("GET /api/pipelines excludes empty records before limiting to the newest 50", async () => {
+    const pipelineState = new PipelineStateStore(db, ["api"]);
+    const updateTime = db.prepare("UPDATE pipeline_state SET updated_at = ? WHERE issue_id = ?");
+    for (let i = 0; i < 55; i++) {
+      const issueId = `PROJ-${String(i)}`;
+      pipelineState.create(issueId, "coding");
+      pipelineState.setScope(issueId, ["api"]);
+      updateTime.run(new Date(Date.UTC(2026, 0, 1, 0, i)).toISOString(), issueId);
+    }
+    for (let i = 0; i < 60; i++) {
+      const issueId = `EMPTY-${String(i)}`;
+      pipelineState.create(issueId, "spec-writing");
+      updateTime.run(new Date(Date.UTC(2026, 0, 2, 0, i)).toISOString(), issueId);
+    }
+    await restartWithPipelines(pipelineState);
+
+    const { status, body } = await fetchJson("/api/pipelines");
+    expect(status).toBe(200);
+    const pipelines = body as PipelineWire[];
+    expect(pipelines.map((record) => record.issueId)).toEqual(
+      Array.from({ length: 50 }, (_, index) => `PROJ-${String(54 - index)}`),
+    );
+    expect(pipelines.every((record) => record.repos.length === 1)).toBe(true);
   });
 
   it("returns 404 for unknown route", async () => {

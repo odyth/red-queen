@@ -1,5 +1,8 @@
+import { renderPipelinesPartial } from "./pipelines.js";
+
 export function renderWorkflowPartial(): string {
-  return `<section id="workflow-panel" class="span2">
+  return `${renderPipelinesPartial()}
+  <section id="workflow-panel" class="span2">
     <h2>Workflow</h2>
     <div id="workflow-loader" class="muted">loading…</div>
     <div id="workflow-body" style="display:none">

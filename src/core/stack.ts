@@ -7,6 +7,7 @@
 // dependent assembles its worktree by merging those branches in topo order.
 
 import type { BlockerRef } from "../integrations/issue-tracker.js";
+import { DEFAULT_REPO_NAME } from "./pipeline-state.js";
 import type { PhaseGraph, PipelineRecord } from "./types.js";
 
 export interface StackProblem {
@@ -15,20 +16,31 @@ export interface StackProblem {
   detail: string;
 }
 
+export interface StackRepoTarget {
+  name: string;
+  // Bare (no origin/) base branch name for this repo.
+  bareBase: string;
+}
+
+export interface StackRepoResolution {
+  // Ancestor branches in this repo, furthest ancestor first and lowest ticket
+  // number first on ties.
+  mergeBranches: string[];
+  // Nearest contributing blocker's branch in this repo, else the repo's base.
+  // Never bare base while ancestor branches contribute unreviewed code.
+  prBase: string;
+}
+
 export interface StackResolution {
   ok: boolean;
   directBlockers: BlockerRef[];
-  // Ancestor branches to merge, topologically ordered (furthest ancestor
-  // first), lowest ticket number popped first on ties.
+  // Compatibility mirrors of the first target repo.
   mergeBranches: string[];
-  // Branch the dependent's PR targets: the nearest contributing blocker's
-  // branch (BFS layers from the root, lowest ticket number on ties), else the
-  // bare base branch. Never bare base while mergeBranches is non-empty — a PR
-  // against base would make gated ancestors' unreviewed code mergeable.
   prBase: string;
   unsatisfied: string[];
   cycle: string[] | null;
   problems: StackProblem[];
+  repos: Record<string, StackRepoResolution>;
 }
 
 export interface StackResolveDeps {
@@ -36,6 +48,8 @@ export interface StackResolveDeps {
   getPipelineRecord(issueId: string): PipelineRecord | null;
   getTrackerPhase(issueId: string): Promise<string | null>;
   terminalGates: ReadonlySet<string>;
+  // Legacy callers that omit targets resolve a single DEFAULT_REPO_NAME repo.
+  repos?: readonly StackRepoTarget[];
 }
 
 // Terminal human gates are the ones that exit to done — an issue parked there
@@ -79,27 +93,47 @@ function compareTickets(a: string, b: string): number {
 }
 
 type Satisfaction =
-  | { state: "satisfied"; branch: string | null }
+  | { state: "satisfied"; branches: ReadonlyMap<string, string> }
   | { state: "unsatisfied" }
-  | { state: "missing-branch" };
+  | { state: "missing-branch"; repos: string[] };
+
+function emptyResolution(
+  bareBase: string,
+  targets: readonly StackRepoTarget[],
+  directBlockers: BlockerRef[],
+  extra: Pick<StackResolution, "ok" | "unsatisfied" | "cycle" | "problems">,
+): StackResolution {
+  const repos: Record<string, StackRepoResolution> = {};
+  for (const target of targets) {
+    repos[target.name] = { mergeBranches: [], prBase: target.bareBase };
+  }
+  return {
+    ...extra,
+    directBlockers,
+    mergeBranches: [],
+    prBase: targets[0]?.bareBase ?? bareBase,
+    repos,
+  };
+}
 
 export async function resolveStack(
   issueId: string,
   bareBase: string,
   deps: StackResolveDeps,
 ): Promise<StackResolution> {
+  const targets: readonly StackRepoTarget[] =
+    deps.repos !== undefined && deps.repos.length > 0
+      ? deps.repos
+      : [{ name: DEFAULT_REPO_NAME, bareBase }];
   // Root lookup failures propagate — the caller defers with <resolve-error>.
   const directBlockers = await deps.getBlockedBy(issueId);
   if (directBlockers.length === 0) {
-    return {
+    return emptyResolution(bareBase, targets, [], {
       ok: true,
-      directBlockers: [],
-      mergeBranches: [],
-      prBase: bareBase,
       unsatisfied: [],
       cycle: null,
       problems: [],
-    };
+    });
   }
 
   const refById = new Map<string, BlockerRef>();
@@ -170,20 +204,17 @@ export async function resolveStack(
   const cycle = await visit(issueId, [issueId], directBlockers);
 
   if (cycle !== null) {
-    return {
+    return emptyResolution(bareBase, targets, directBlockers, {
       ok: false,
-      directBlockers,
-      mergeBranches: [],
-      prBase: bareBase,
       unsatisfied: [],
       cycle,
       problems,
-    };
+    });
   }
 
   // Classify every walked blocker node (everything except the root).
   const unsatisfied: string[] = [];
-  const branchByNode = new Map<string, string>();
+  const branchesByNode = new Map<string, ReadonlyMap<string, string>>();
   for (const [id, ref] of refById) {
     // refById holds each node exactly once, so this loop is itself the
     // per-resolution memo for the record/phase lookups.
@@ -204,14 +235,14 @@ export async function resolveStack(
       continue;
     }
     if (s.state === "satisfied") {
-      if (s.branch !== null) {
-        branchByNode.set(id, s.branch);
+      if (s.branches.size > 0) {
+        branchesByNode.set(id, s.branches);
       }
     } else if (s.state === "missing-branch") {
       problems.push({
         issueId: id,
         kind: "missing-branch",
-        detail: `${id} is at the terminal gate with a PR but has no recorded branch`,
+        detail: `${id} is at the terminal gate with a PR but has no recorded branch in ${s.repos.join(", ")}`,
       });
     } else {
       unsatisfied.push(id);
@@ -248,46 +279,52 @@ export async function resolveStack(
     }
   }
 
-  const mergeBranches = topoOrder
-    .filter((n) => branchByNode.has(n))
-    .map((n) => branchByNode.get(n))
-    .filter((b): b is string => b !== undefined);
-
-  // PR base: nearest contributing blocker by BFS layer from the root, lowest
-  // ticket number on ties — the direct-blocker diamond rule extended through
-  // done/closed intermediates. Bare base only when nothing contributes at
-  // all: falling back to base while gated ancestor branches exist would let
-  // their unreviewed code merge through this PR's diff.
   const blockersOf = new Map<string, string[]>();
   for (const [blocker, dependent] of edges) {
     blockersOf.set(dependent, [...(blockersOf.get(dependent) ?? []), blocker]);
   }
-  let prBase = bareBase;
-  const visited = new Set<string>([issueId]);
-  let frontier = [issueId];
-  while (frontier.length > 0) {
-    const layer = [...new Set(frontier.flatMap((id) => blockersOf.get(id) ?? []))].filter(
-      (id) => visited.has(id) === false,
-    );
-    for (const id of layer) {
-      visited.add(id);
+
+  // Resolve each repo independently: nearest contributing blocker by BFS
+  // layer, lowest ticket on ties. Walk through done/closed intermediates so
+  // unmerged ancestors never leak into a PR targeting the bare base.
+  const repos: Record<string, StackRepoResolution> = {};
+  for (const target of targets) {
+    const contributes = (id: string): string | undefined =>
+      branchesByNode.get(id)?.get(target.name);
+    const mergeBranches = topoOrder.map(contributes).filter((b): b is string => b !== undefined);
+    let prBase = target.bareBase;
+    const visited = new Set<string>([issueId]);
+    let frontier = [issueId];
+    while (frontier.length > 0) {
+      const layer = [...new Set(frontier.flatMap((id) => blockersOf.get(id) ?? []))].filter(
+        (id) => visited.has(id) === false,
+      );
+      for (const id of layer) {
+        visited.add(id);
+      }
+      const contributor = layer
+        .filter((id) => contributes(id) !== undefined)
+        .sort(compareTickets)[0];
+      if (contributor !== undefined) {
+        prBase = contributes(contributor) ?? target.bareBase;
+        break;
+      }
+      frontier = layer;
     }
-    const contributor = layer.filter((id) => branchByNode.has(id)).sort(compareTickets)[0];
-    if (contributor !== undefined) {
-      prBase = branchByNode.get(contributor) ?? bareBase;
-      break;
-    }
-    frontier = layer;
+    repos[target.name] = { mergeBranches, prBase };
   }
+  const first = targets[0];
+  const primary = first === undefined ? undefined : repos[first.name];
 
   return {
     ok: unsatisfied.length === 0 && problems.length === 0,
     directBlockers,
-    mergeBranches,
-    prBase,
+    mergeBranches: primary?.mergeBranches ?? [],
+    prBase: primary?.prBase ?? bareBase,
     unsatisfied: unsatisfied.sort(compareTickets),
     cycle: null,
     problems,
+    repos,
   };
 }
 
@@ -296,28 +333,43 @@ async function classify(ref: BlockerRef, deps: StackResolveDeps): Promise<Satisf
   if (rec?.currentPhase === "done") {
     // Merged to base (or into a parent's branch — the lineage walk covers
     // that): the blocker itself has nothing left to contribute.
-    return { state: "satisfied", branch: null };
+    return { state: "satisfied", branches: new Map() };
   }
   if (ref.closed) {
     // Done/cancelled outside RQ, or auto-closed by its merged PR.
-    return { state: "satisfied", branch: null };
+    return { state: "satisfied", branches: new Map() };
   }
-  // Without a record and PR the gate test can never pass — skip the tracker
-  // call rather than spend one API call per untracked blocker per sweep.
   if (rec === null) {
     return { state: "unsatisfied" };
   }
-  if (rec.prNumber === null) {
+  const rows = rec.repos.filter((row) => row.inScope);
+  // Completed rows are already landed even if cleanup removed their branch
+  // and PR. Historical terminal PR identity alone is not current completion.
+  const unfinished = rows.filter((row) => row.mergeCompleted === false);
+  // Every unfinished scoped row needs a PR before the ticket-level gate can
+  // pass, including rows outside the dependent's target repos.
+  if (rows.length === 0 || unfinished.some((row) => row.prNumber === null)) {
     return { state: "unsatisfied" };
+  }
+  if (unfinished.length === 0) {
+    return { state: "satisfied", branches: new Map() };
   }
   // The tracker is authoritative for the gate test — the local phase cache
   // misses manual phase moves and webhook-less deployments.
   const phase = await deps.getTrackerPhase(ref.id);
-  if (phase !== null && deps.terminalGates.has(phase)) {
-    if (rec.branchName !== null) {
-      return { state: "satisfied", branch: rec.branchName };
-    }
-    return { state: "missing-branch" };
+  if (phase === null || deps.terminalGates.has(phase) === false) {
+    return { state: "unsatisfied" };
   }
-  return { state: "unsatisfied" };
+  const branches = new Map<string, string>();
+  const missing: string[] = [];
+  for (const row of unfinished) {
+    if (row.branchName === null) {
+      missing.push(row.repo);
+    } else {
+      branches.set(row.repo, row.branchName);
+    }
+  }
+  return missing.length > 0
+    ? { state: "missing-branch", repos: missing }
+    : { state: "satisfied", branches };
 }

@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import type { AuditLogger } from "../core/audit.js";
 import type { RedQueenConfig } from "../core/config.js";
 import type { TaskQueue } from "../core/queue.js";
-import type { OrchestratorStateStore } from "../core/pipeline-state.js";
+import type { OrchestratorStateStore, PipelineStateStore } from "../core/pipeline-state.js";
 import type { PhaseUsageStore } from "../core/phase-usage.js";
 import type { RuntimeState } from "../core/runtime-state.js";
 import type { CostBreakdown } from "../core/types.js";
@@ -36,7 +36,7 @@ import {
 import { handleWorkflowGet, handleWorkflowPut, handleWorkflowValidate } from "./api/workflow.js";
 import { SSEManager } from "./events.js";
 import type { DashboardEvent } from "./events.js";
-import type { StatusPayload, TaskSummary } from "./shared/api-types.js";
+import type { PipelineWire, StatusPayload, TaskSummary } from "./shared/api-types.js";
 import { renderShell } from "./html/shell.js";
 import { renderConfigPartial } from "./html/partials/config.js";
 import { renderCostPartial } from "./html/partials/cost.js";
@@ -123,6 +123,8 @@ export interface DashboardDeps {
   queue: TaskQueue;
   orchestratorState: OrchestratorStateStore;
   audit: AuditLogger;
+  // Optional for standalone dashboards and legacy call sites; absent means an empty list.
+  pipelineState?: Pick<PipelineStateStore, "listAll">;
   service?: DashboardServiceDeps;
   editor?: DashboardEditorDeps;
   // Cost deps are optional at the type level so legacy call sites and tests
@@ -388,6 +390,13 @@ export class DashboardServer {
     });
     routes.push({
       method: "GET",
+      path: "/api/pipelines",
+      handler: (_req, res) => {
+        this.sendJson(res, 200, this.buildPipelinesPayload());
+      },
+    });
+    routes.push({
+      method: "GET",
       path: "/api/logs",
       handler: (_req, res) => {
         this.sendJson(res, 200, this.deps.audit.query({ limit: 50 }));
@@ -643,6 +652,29 @@ export class DashboardServer {
     const ready = this.deps.queue.listByStatus("ready");
     const deferred = this.deps.queue.listByStatus("deferred");
     return [...ready, ...deferred].map(summarizeTask);
+  }
+
+  private buildPipelinesPayload(): PipelineWire[] {
+    const store = this.deps.pipelineState;
+    if (store === undefined) {
+      return [];
+    }
+    return store
+      .listAll()
+      .filter((record) => record.repos.length > 0)
+      .slice(0, 50)
+      .map((record) => ({
+        issueId: record.issueId,
+        currentPhase: record.currentPhase,
+        updatedAt: record.updatedAt,
+        repos: record.repos.map((row) => ({
+          repo: row.repo,
+          inScope: row.inScope,
+          branchName: row.branchName,
+          prNumber: row.prNumber,
+          orphaned: row.inScope === false && row.prNumber !== null,
+        })),
+      }));
   }
 
   private sendJson(res: ServerResponse, status: number, body: unknown): void {

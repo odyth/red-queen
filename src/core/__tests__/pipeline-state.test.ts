@@ -1,7 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import type BetterSqlite3 from "better-sqlite3";
-import { PipelineStateStore, OrchestratorStateStore } from "../pipeline-state.js";
+import {
+  PipelineStateStore,
+  OrchestratorStateStore,
+  classifyRepoMergeTransition,
+} from "../pipeline-state.js";
 import { SCHEMA_SQL } from "../database.js";
 
 let db: BetterSqlite3.Database;
@@ -18,7 +22,7 @@ function createTestDb(): BetterSqlite3.Database {
 describe("PipelineStateStore", () => {
   beforeEach(() => {
     db = createTestDb();
-    store = new PipelineStateStore(db);
+    store = new PipelineStateStore(db, ["app", "web"]);
   });
 
   afterEach(() => {
@@ -100,7 +104,7 @@ describe("PipelineStateStore", () => {
 
   it("markDone records the terminal PR identity for safe re-entry", () => {
     store.create("PROJ-1", "human-review");
-    store.updateBranchInfo("PROJ-1", {
+    store.updateBranchInfo("PROJ-1", "app", {
       prNumber: 42,
       prBaseBranch: "main",
     });
@@ -116,7 +120,7 @@ describe("PipelineStateStore", () => {
     record = store.get("PROJ-1");
     expect(record?.terminalPrNumber).toBe(42);
 
-    store.updateBranchInfo("PROJ-1", { prNumber: 43 });
+    store.updateBranchInfo("PROJ-1", "app", { prNumber: 43 });
     record = store.get("PROJ-1");
     expect(record?.prNumber).toBe(43);
     expect(record?.terminalPrNumber).toBe(42);
@@ -135,13 +139,13 @@ describe("PipelineStateStore", () => {
 
   it("markPrMerged records an event PR that was never persisted locally", () => {
     store.create("PROJ-1", "coding");
-    store.updateBranchInfo("PROJ-1", {
+    store.updateBranchInfo("PROJ-1", "app", {
       branchName: "feature/PROJ-1",
       prBaseBranch: "main",
       worktreePath: "/tmp/worktree",
     });
 
-    expect(store.markPrMerged("PROJ-1", 77)).toBe("processed");
+    expect(store.markPrMerged("PROJ-1", "app", 77)).toBe("processed");
 
     const record = store.get("PROJ-1");
     expect(record?.currentPhase).toBe("done");
@@ -155,18 +159,18 @@ describe("PipelineStateStore", () => {
 
   it("markPrMerged rejects stale PRs and recognizes duplicate processing", () => {
     store.create("PROJ-1", "coding");
-    store.updateBranchInfo("PROJ-1", { prNumber: 77, prBaseBranch: "main" });
+    store.updateBranchInfo("PROJ-1", "app", { prNumber: 77, prBaseBranch: "main" });
 
-    expect(store.markPrMerged("PROJ-1", 76)).toBe("stale");
+    expect(store.markPrMerged("PROJ-1", "app", 76)).toBe("stale");
     expect(store.get("PROJ-1")?.currentPhase).toBe("coding");
 
-    expect(store.markPrMerged("PROJ-1", 77)).toBe("processed");
-    expect(store.markPrMerged("PROJ-1", 77)).toBe("already-processed");
+    expect(store.markPrMerged("PROJ-1", "app", 77)).toBe("processed");
+    expect(store.markPrMerged("PROJ-1", "app", 77)).toBe("already-processed");
     expect(store.get("PROJ-1")?.priorPhase).toBe("coding");
   });
 
   it("markPrMerged reports missing records", () => {
-    expect(store.markPrMerged("PROJ-404", 77)).toBe("missing");
+    expect(store.markPrMerged("PROJ-404", "app", 77)).toBe("missing");
   });
 
   it("resetIterations leaves prior_phase intact", () => {
@@ -181,22 +185,22 @@ describe("PipelineStateStore", () => {
 
   it("updates branch name", () => {
     store.create("PROJ-1");
-    store.updateBranch("PROJ-1", "feature/PROJ-1-add-login");
+    store.updateBranch("PROJ-1", "app", "feature/PROJ-1-add-login");
     expect(store.get("PROJ-1")?.branchName).toBe("feature/PROJ-1-add-login");
   });
 
   it("updates PR number", () => {
     store.create("PROJ-1");
-    store.updatePrNumber("PROJ-1", 42);
+    store.updatePrNumber("PROJ-1", "app", 42, null);
     expect(store.get("PROJ-1")?.prNumber).toBe(42);
   });
 
   it("updates worktree path", () => {
     store.create("PROJ-1");
-    store.updateWorktreePath("PROJ-1", "/tmp/worktrees/PROJ-1");
+    store.updateWorktreePath("PROJ-1", "app", "/tmp/worktrees/PROJ-1");
     expect(store.get("PROJ-1")?.worktreePath).toBe("/tmp/worktrees/PROJ-1");
 
-    store.updateWorktreePath("PROJ-1", null);
+    store.updateWorktreePath("PROJ-1", "app", null);
     expect(store.get("PROJ-1")?.worktreePath).toBeNull();
   });
 
@@ -290,7 +294,7 @@ describe("PipelineStateStore", () => {
 
   it("updateBranchInfo applies partial updates atomically", () => {
     store.create("PROJ-1");
-    const updated = store.updateBranchInfo("PROJ-1", {
+    const updated = store.updateBranchInfo("PROJ-1", "app", {
       branchName: "feature/PROJ-1",
       prNumber: 42,
       prBaseBranch: "main",
@@ -300,7 +304,7 @@ describe("PipelineStateStore", () => {
     expect(updated.prBaseBranch).toBe("main");
     expect(updated.worktreePath).toBeNull();
 
-    const withWorktree = store.updateBranchInfo("PROJ-1", {
+    const withWorktree = store.updateBranchInfo("PROJ-1", "app", {
       worktreePath: "/tmp/worktree",
     });
     expect(withWorktree.branchName).toBe("feature/PROJ-1");
@@ -310,12 +314,12 @@ describe("PipelineStateStore", () => {
 
   it("updateBranchInfo clears fields when null is explicitly set", () => {
     store.create("PROJ-1");
-    store.updateBranchInfo("PROJ-1", {
+    store.updateBranchInfo("PROJ-1", "app", {
       prNumber: 1,
       prBaseBranch: "main",
       worktreePath: "/tmp/w",
     });
-    const cleared = store.updateBranchInfo("PROJ-1", {
+    const cleared = store.updateBranchInfo("PROJ-1", "app", {
       prNumber: null,
       prBaseBranch: null,
       worktreePath: null,
@@ -326,12 +330,14 @@ describe("PipelineStateStore", () => {
   });
 
   it("updateBranchInfo throws if record does not exist", () => {
-    expect(() => store.updateBranchInfo("nope", { prNumber: 1 })).toThrow(/no pipeline record/);
+    expect(() => store.updateBranchInfo("nope", "app", { prNumber: 1 })).toThrow(
+      /no pipeline record/,
+    );
   });
 
   it("updateBranchInfo with empty object is a no-op", () => {
     const record = store.create("PROJ-1");
-    const updated = store.updateBranchInfo("PROJ-1", {});
+    const updated = store.updateBranchInfo("PROJ-1", "app", {});
     expect(updated.issueId).toBe(record.issueId);
   });
 
@@ -358,6 +364,48 @@ describe("PipelineStateStore", () => {
 
   it("setOpenQuestionCount returns false for nonexistent issue", () => {
     expect(store.setOpenQuestionCount("nope", 0)).toBe(false);
+  });
+
+  it("setSpecMetadata records count and replaces scope together", () => {
+    store.create("PROJ-1");
+    store.setScope("PROJ-1", ["app"]);
+    const repos = store.setSpecMetadata("PROJ-1", 3, ["web"]);
+    expect(store.get("PROJ-1")?.openQuestionCount).toBe(3);
+    expect(repos.map((repo) => [repo.repo, repo.inScope])).toEqual([
+      ["app", false],
+      ["web", true],
+    ]);
+  });
+
+  it("setSpecMetadata preserves scope when repo names are omitted", () => {
+    store.create("PROJ-1");
+    const before = store.setScope("PROJ-1", ["app"]);
+    expect(store.setSpecMetadata("PROJ-1", 0)).toEqual(before);
+    expect(store.get("PROJ-1")?.openQuestionCount).toBe(0);
+  });
+
+  it("setSpecMetadata rolls back count and repo writes if scope persistence fails", () => {
+    store.create("PROJ-1");
+    store.setScope("PROJ-1", ["app"]);
+    store.setOpenQuestionCount("PROJ-1", 3);
+    const before = store.get("PROJ-1");
+    db.exec(`
+      CREATE TRIGGER reject_web_scope BEFORE INSERT ON pipeline_repos
+      WHEN NEW.repo = 'web'
+      BEGIN
+        SELECT RAISE(ABORT, 'scope write rejected');
+      END;
+    `);
+
+    expect(() => store.setSpecMetadata("PROJ-1", 0, ["app", "web"])).toThrow(
+      /scope write rejected/,
+    );
+    expect(store.get("PROJ-1")).toEqual(before);
+  });
+
+  it("setSpecMetadata rejects a missing issue without creating scope", () => {
+    expect(() => store.setSpecMetadata("nope", 0, ["app"])).toThrow(/no pipeline record/);
+    expect(store.listRepos("nope")).toEqual([]);
   });
 
   it("resetIterations also clears openQuestionCount", () => {
@@ -432,5 +480,566 @@ describe("OrchestratorStateStore", () => {
     const state = orchStore.get();
     expect(state.lastPoll).toBe(now);
     expect(state.startedAt).toBe(now);
+  });
+});
+
+describe("PipelineStateStore pipeline_repos", () => {
+  beforeEach(() => {
+    db = createTestDb();
+    store = new PipelineStateStore(db, ["app", "web"]);
+  });
+  afterEach(() => {
+    db.close();
+  });
+
+  it("starts with no repo rows and null scalars", () => {
+    const record = store.create("PROJ-1", "spec-writing");
+    expect(record.repos).toEqual([]);
+    expect(record.branchName).toBeNull();
+    expect(record.prNumber).toBeNull();
+  });
+
+  it("setScope upserts in-scope rows in config order and descopes the rest", () => {
+    store.create("PROJ-1");
+    const rows = store.setScope("PROJ-1", ["web", "app"]);
+    expect(rows.map((r) => [r.repo, r.inScope])).toEqual([
+      ["app", true],
+      ["web", true],
+    ]);
+    const after = store.setScope("PROJ-1", ["web"]);
+    expect(after.map((r) => [r.repo, r.inScope])).toEqual([
+      ["app", false],
+      ["web", true],
+    ]);
+  });
+
+  it("descoping a row with an open PR keeps its branch, PR, and worktree", () => {
+    store.create("PROJ-1");
+    store.setScope("PROJ-1", ["app", "web"]);
+    store.updateBranchInfo("PROJ-1", "app", {
+      branchName: "feature/PROJ-1",
+      prNumber: 7,
+      prBaseBranch: "main",
+      worktreePath: "/w/app",
+    });
+    store.setScope("PROJ-1", ["web"]);
+    const app = store.getRepo("PROJ-1", "app");
+    expect(app?.inScope).toBe(false);
+    expect(app?.prNumber).toBe(7);
+    expect(app?.branchName).toBe("feature/PROJ-1");
+    expect(app?.worktreePath).toBe("/w/app");
+  });
+
+  it("mirrors the first in-scope row into the pipeline_state scalars", () => {
+    store.create("PROJ-1");
+    store.setScope("PROJ-1", ["app", "web"]);
+    store.updatePrNumber("PROJ-1", "web", 5, "main");
+    store.updatePrNumber("PROJ-1", "app", 9, "main");
+    expect(store.get("PROJ-1")?.prNumber).toBe(9);
+    const raw = db
+      .prepare("SELECT pr_number, pr_base_branch FROM pipeline_state WHERE issue_id = ?")
+      .get("PROJ-1") as { pr_number: number | null; pr_base_branch: string | null };
+    expect(raw).toEqual({ pr_number: 9, pr_base_branch: "main" });
+    store.setScope("PROJ-1", ["web"]);
+    expect(store.get("PROJ-1")?.prNumber).toBe(5);
+  });
+
+  it("updateBranchInfo seeds the first row of an issue in scope", () => {
+    store.create("PROJ-1");
+    const row = store.updateBranchInfo("PROJ-1", "web", { branchName: "b" });
+    expect(row.inScope).toBe(true);
+    expect(row.branchName).toBe("b");
+  });
+
+  it("updateBranchInfo never adds a repo to an issue that already has rows", () => {
+    store.create("PROJ-1", "coding");
+    store.setScope("PROJ-1", ["app"]);
+    expect(() => store.updateBranchInfo("PROJ-1", "web", { branchName: "b" })).toThrow(
+      /PROJ-1.*"web".*setScope/,
+    );
+    expect(store.getRepo("PROJ-1", "web")).toBeNull();
+    store.setScope("PROJ-1", []);
+    expect(() => store.updateBranchInfo("PROJ-1", "web", { branchName: "b" })).toThrow(/setScope/);
+  });
+
+  it("updateBranchInfo throws when the pipeline record is missing", () => {
+    expect(() => store.updateBranchInfo("nope", "app", { branchName: "b" })).toThrow(
+      /no pipeline record/,
+    );
+  });
+
+  it("markPrMerged marks done only when the last in-scope PR merges", () => {
+    store.create("PROJ-1", "human-review");
+    store.setScope("PROJ-1", ["app", "web"]);
+    store.updatePrNumber("PROJ-1", "app", 1, "main");
+    store.updatePrNumber("PROJ-1", "web", 2, "main");
+
+    expect(store.markPrMerged("PROJ-1", "app", 1)).toBe("pending-others");
+    expect(store.get("PROJ-1")?.currentPhase).toBe("human-review");
+    expect(store.getRepo("PROJ-1", "app")).toMatchObject({
+      prNumber: null,
+      terminalPrNumber: 1,
+      prBaseBranch: null,
+    });
+
+    expect(store.markPrMerged("PROJ-1", "web", 2)).toBe("processed");
+    const done = store.get("PROJ-1");
+    expect(done?.currentPhase).toBe("done");
+    expect(done?.priorPhase).toBe("human-review");
+    expect(done?.terminalPrNumber).toBe(1);
+  });
+
+  it("markPrMerged on a descoped row transitions the row but never advances the issue", () => {
+    store.create("PROJ-1", "human-review");
+    store.setScope("PROJ-1", ["app", "web"]);
+    store.updatePrNumber("PROJ-1", "app", 1, "main");
+    store.setScope("PROJ-1", ["web"]);
+    expect(store.markPrMerged("PROJ-1", "app", 1)).toBe("pending-others");
+    expect(store.get("PROJ-1")?.currentPhase).toBe("human-review");
+    expect(store.getRepo("PROJ-1", "app")?.terminalPrNumber).toBe(1);
+  });
+
+  it("completeIfMerged finishes an issue whose unmerged sibling was descoped", () => {
+    store.create("PROJ-1", "coding");
+    store.setScope("PROJ-1", ["app", "web"]);
+    store.updatePrNumber("PROJ-1", "app", 1, "main");
+    store.updatePrNumber("PROJ-1", "web", 2, "main");
+    expect(store.markPrMerged("PROJ-1", "app", 1)).toBe("pending-others");
+    expect(store.completeIfMerged("PROJ-1")).toBe(false);
+
+    store.setScope("PROJ-1", ["app"]);
+    expect(store.markPrMerged("PROJ-1", "app", 1)).toBe("already-processed");
+    expect(store.get("PROJ-1")?.currentPhase).toBe("coding");
+
+    expect(store.completeIfMerged("PROJ-1")).toBe(true);
+    expect(store.get("PROJ-1")).toMatchObject({ currentPhase: "done", priorPhase: "coding" });
+    expect(store.completeIfMerged("PROJ-1")).toBe(false);
+    expect(store.get("PROJ-1")?.priorPhase).toBe("coding");
+  });
+
+  it("completeIfMerged needs at least one in-scope row", () => {
+    store.create("PROJ-1", "coding");
+    expect(store.completeIfMerged("PROJ-1")).toBe(false);
+    store.setScope("PROJ-1", ["app"]);
+    store.updatePrNumber("PROJ-1", "app", 1, "main");
+    store.markPrMerged("PROJ-1", "app", 1);
+    store.updatePhase("PROJ-1", "coding");
+    store.setScope("PROJ-1", []);
+    expect(store.completeIfMerged("PROJ-1")).toBe(false);
+    expect(store.completeIfMerged("missing")).toBe(false);
+    expect(store.get("PROJ-1")?.currentPhase).toBe("coding");
+  });
+
+  it("rescoping a repo that merged while descoped requires fresh work there", () => {
+    store.create("PROJ-1", "human-review");
+    store.setScope("PROJ-1", ["app", "web"]);
+    store.updatePrNumber("PROJ-1", "app", 1, "main");
+    store.updatePrNumber("PROJ-1", "web", 2, "main");
+    store.setScope("PROJ-1", ["web"]);
+    store.markPrMerged("PROJ-1", "app", 1);
+
+    store.setScope("PROJ-1", ["app", "web"]);
+    expect(store.getRepo("PROJ-1", "app")).toMatchObject({
+      inScope: true,
+      mergeCompleted: false,
+      terminalPrNumber: 1,
+    });
+    expect(store.markPrMerged("PROJ-1", "web", 2)).toBe("pending-others");
+    expect(store.get("PROJ-1")?.currentPhase).toBe("human-review");
+    expect(store.markPrMerged("PROJ-1", "app", 1)).toBe("stale");
+  });
+
+  it("re-asserting scope keeps a sibling's completed merge", () => {
+    store.create("PROJ-1", "human-review");
+    store.setScope("PROJ-1", ["app", "web"]);
+    store.updatePrNumber("PROJ-1", "app", 1, "main");
+    store.markPrMerged("PROJ-1", "app", 1);
+
+    store.setScope("PROJ-1", ["app", "web"]);
+    expect(store.getRepo("PROJ-1", "app")?.mergeCompleted).toBe(true);
+  });
+
+  it("waits for an in-scope sibling that has not produced a PR yet", () => {
+    store.create("PROJ-1", "human-review");
+    store.setScope("PROJ-1", ["app", "web"]);
+    store.updatePrNumber("PROJ-1", "app", 1, "main");
+
+    expect(store.markPrMerged("PROJ-1", "app", 1)).toBe("pending-others");
+    expect(store.get("PROJ-1")?.currentPhase).toBe("human-review");
+    expect(store.getRepo("PROJ-1", "app")?.mergeCompleted).toBe(true);
+    expect(store.getRepo("PROJ-1", "web")?.mergeCompleted).toBe(false);
+
+    store.updatePrNumber("PROJ-1", "web", 2, "main");
+    expect(store.markPrMerged("PROJ-1", "web", 2)).toBe("processed");
+  });
+
+  it("retains replay identity but requires fresh merges after reopening a completed issue", () => {
+    store.create("PROJ-1", "human-review");
+    store.setScope("PROJ-1", ["app", "web"]);
+    store.updatePrNumber("PROJ-1", "app", 1, "main");
+    store.updatePrNumber("PROJ-1", "web", 2, "main");
+    store.markPrMerged("PROJ-1", "app", 1);
+    store.markPrMerged("PROJ-1", "web", 2);
+    store.updatePhase("PROJ-1", "coding");
+
+    expect(store.getRepo("PROJ-1", "app")).toMatchObject({
+      terminalPrNumber: 1,
+      mergeCompleted: false,
+    });
+    expect(store.markPrMerged("PROJ-1", "app", 1)).toBe("stale");
+    store.updatePrNumber("PROJ-1", "web", 3, "main");
+    expect(store.markPrMerged("PROJ-1", "web", 2)).toBe("stale");
+    expect(store.markPrMerged("PROJ-1", "web", 3)).toBe("pending-others");
+    expect(store.get("PROJ-1")?.currentPhase).toBe("coding");
+    store.updatePrNumber("PROJ-1", "app", 4, "main");
+    expect(store.markPrMerged("PROJ-1", "app", 4)).toBe("processed");
+  });
+
+  it("counts a numberless merge only for its own row", () => {
+    store.create("PROJ-1", "coding");
+    store.setScope("PROJ-1", ["app", "web"]);
+    store.updateBranch("PROJ-1", "app", "feature/app");
+    expect(store.markPrMerged("PROJ-1", "app", null)).toBe("pending-others");
+    expect(store.getRepo("PROJ-1", "app")).toMatchObject({
+      terminalPrNumber: null,
+      mergeCompleted: true,
+    });
+    expect(store.markPrMerged("PROJ-1", "app", null)).toBe("already-processed");
+    store.updatePrNumber("PROJ-1", "web", 2, "main");
+    expect(store.markPrMerged("PROJ-1", "web", 2)).toBe("processed");
+  });
+
+  it("preserves partial merge completion through cleanup and feedback, but not a new PR", () => {
+    store.create("PROJ-1", "human-review");
+    store.setScope("PROJ-1", ["app", "web"]);
+    store.updateBranchInfo("PROJ-1", "app", { branchName: "feature/app", prNumber: 1 });
+    store.markPrMerged("PROJ-1", "app", 1);
+    store.updateBranchInfo("PROJ-1", "app", { branchName: null, worktreePath: null });
+    store.updatePhase("PROJ-1", "code-feedback");
+    expect(store.getRepo("PROJ-1", "app")?.mergeCompleted).toBe(true);
+    expect(store.markPrMerged("PROJ-1", "app", 1)).toBe("already-processed");
+
+    store.updatePrNumber("PROJ-1", "app", 3, "main");
+    expect(store.getRepo("PROJ-1", "app")).toMatchObject({
+      terminalPrNumber: 1,
+      mergeCompleted: false,
+    });
+    expect(store.markPrMerged("PROJ-1", "app", 1)).toBe("stale");
+  });
+
+  it("markDone keeps earlier partial merge evidence without claiming unmerged PRs completed", () => {
+    store.create("PROJ-1", "human-review");
+    store.setScope("PROJ-1", ["app", "web"]);
+    store.updatePrNumber("PROJ-1", "app", 1, "main");
+    store.updatePrNumber("PROJ-1", "web", 2, "main");
+    store.markPrMerged("PROJ-1", "app", 1);
+    store.markDone("PROJ-1");
+    expect(store.getRepo("PROJ-1", "app")).toMatchObject({
+      terminalPrNumber: 1,
+      mergeCompleted: true,
+    });
+    expect(store.getRepo("PROJ-1", "web")).toMatchObject({
+      prNumber: 2,
+      terminalPrNumber: 2,
+      mergeCompleted: false,
+    });
+    expect(store.markPrMerged("PROJ-1", "web", 2)).toBe("processed");
+  });
+
+  it("markPrMerged reports duplicates and stale PRs per row", () => {
+    store.create("PROJ-1", "human-review");
+    store.setScope("PROJ-1", ["app", "web"]);
+    store.updatePrNumber("PROJ-1", "app", 1, "main");
+    store.updatePrNumber("PROJ-1", "web", 2, "main");
+    store.markPrMerged("PROJ-1", "app", 1);
+    expect(store.markPrMerged("PROJ-1", "app", 1)).toBe("already-processed");
+    expect(store.markPrMerged("PROJ-1", "web", 99)).toBe("stale");
+    expect(store.markPrMerged("PROJ-1", "nope", 1)).toBe("missing");
+    expect(store.markPrMerged("nope", "app", 1)).toBe("missing");
+  });
+
+  it("rejects a different PR replay after a partial merge without changing any state", () => {
+    store.create("PROJ-1", "human-review");
+    store.setScope("PROJ-1", ["app", "web"]);
+    store.updatePrNumber("PROJ-1", "app", 1, "main");
+    store.markPrMerged("PROJ-1", "app", 1);
+    const before = store.get("PROJ-1");
+
+    expect(store.markPrMerged("PROJ-1", "app", 99)).toBe("stale");
+    expect(store.get("PROJ-1")).toEqual(before);
+  });
+
+  it("classifies partial merge duplicates independently of the issue phase", () => {
+    const row = { prNumber: null, terminalPrNumber: 1, mergeCompleted: true };
+    expect(classifyRepoMergeTransition("human-review", row, 1)).toBe("already-processed");
+    expect(classifyRepoMergeTransition("human-review", row, null)).toBe("already-processed");
+    expect(classifyRepoMergeTransition("human-review", row, 99)).toBe("stale");
+  });
+
+  it("findByPr resolves the issue by repo and PR number", () => {
+    store.create("PROJ-1");
+    store.create("PROJ-2");
+    store.updatePrNumber("PROJ-1", "app", 10, "main");
+    store.updatePrNumber("PROJ-2", "web", 10, "main");
+    expect(store.findByPr("web", 10)?.issueId).toBe("PROJ-2");
+    expect(store.findByPr("app", 11)).toBeNull();
+  });
+
+  it("markDone records terminal PR numbers per in-scope row and keeps pr_number", () => {
+    store.create("PROJ-1", "human-review");
+    store.updatePrNumber("PROJ-1", "app", 3, "main");
+    store.markDone("PROJ-1");
+    expect(store.getRepo("PROJ-1", "app")).toMatchObject({ prNumber: 3, terminalPrNumber: 3 });
+    expect(store.get("PROJ-1")?.terminalPrNumber).toBe(3);
+  });
+
+  it("delete removes repo rows too", () => {
+    store.create("PROJ-1");
+    store.updateBranch("PROJ-1", "app", "b");
+    store.delete("PROJ-1");
+    expect(db.prepare("SELECT COUNT(*) AS c FROM pipeline_repos").get()).toEqual({ c: 0 });
+  });
+
+  it("listAll attaches repo rows to every record", () => {
+    store.create("PROJ-1");
+    store.create("PROJ-2");
+    store.updateBranch("PROJ-2", "web", "b");
+    const all = store.listAll();
+    expect(all.find((r) => r.issueId === "PROJ-2")?.repos.map((r) => r.repo)).toEqual(["web"]);
+    expect(all.find((r) => r.issueId === "PROJ-1")?.repos).toEqual([]);
+  });
+});
+
+describe("PipelineStateStore.adoptLegacyRows", () => {
+  beforeEach(() => {
+    db = createTestDb();
+    store = new PipelineStateStore(db, ["app"]);
+  });
+  afterEach(() => {
+    db.close();
+  });
+
+  function insertLegacy(
+    issueId: string,
+    cols: Partial<
+      Record<
+        | "branch_name"
+        | "pr_number"
+        | "worktree_path"
+        | "spec_content"
+        | "terminal_pr_number"
+        | "current_phase",
+        string | number | null
+      >
+    >,
+  ): void {
+    const keys = Object.keys(cols);
+    db.prepare(
+      `INSERT INTO pipeline_state (issue_id, created_at, updated_at${keys.map((k) => `, ${k}`).join("")})
+       VALUES (?, ?, ?${keys.map(() => ", ?").join("")})`,
+    ).run(issueId, "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z", ...Object.values(cols));
+  }
+
+  it("adopts rows with branch, PR, worktree, spec, or terminal PR into repos[0] and is idempotent", () => {
+    insertLegacy("A", { branch_name: "feature/A", pr_number: 4, worktree_path: "/w/A" });
+    insertLegacy("B", { spec_content: "spec" });
+    insertLegacy("C", { current_phase: "done", terminal_pr_number: 8 });
+    insertLegacy("D", {});
+    expect(store.adoptLegacyRows("app").sort()).toEqual(["A", "B", "C"]);
+    expect(store.adoptLegacyRows("app")).toEqual([]);
+    expect(store.getRepo("A", "app")).toMatchObject({
+      inScope: true,
+      branchName: "feature/A",
+      prNumber: 4,
+      worktreePath: "/w/A",
+    });
+    expect(store.getRepo("B", "app")?.inScope).toBe(true);
+    expect(store.getRepo("C", "app")?.terminalPrNumber).toBe(8);
+    expect(store.listRepos("D")).toEqual([]);
+    expect(store.get("A")?.prNumber).toBe(4);
+  });
+
+  it("skips issues that already have repo rows", () => {
+    insertLegacy("A", { branch_name: "old" });
+    store.updateBranch("A", "app", "new");
+    expect(store.adoptLegacyRows("app")).toEqual([]);
+    expect(store.getRepo("A", "app")?.branchName).toBe("new");
+  });
+
+  it("keeps modern spec-only rows unscoped unless explicitly running in legacy mode", () => {
+    store.create("MODERN", "spec-writing");
+    store.updateSpec("MODERN", "workspace spec before scope selection");
+
+    expect(store.adoptLegacyRows("app")).toEqual([]);
+    expect(store.get("MODERN")?.repos).toEqual([]);
+    expect(store.adoptLegacyRows("app", true)).toEqual(["MODERN"]);
+    expect(store.getRepo("MODERN", "app")?.inScope).toBe(true);
+  });
+
+  it("does not later adopt new workspace specs on pre-upgrade empty rows already seen at startup", () => {
+    insertLegacy("EMPTY", {});
+    expect(store.adoptLegacyRows("app")).toEqual([]);
+    store.updateSpec("EMPTY", "new workspace spec before scope selection");
+    expect(store.adoptLegacyRows("app")).toEqual([]);
+    expect(store.get("EMPTY")?.repos).toEqual([]);
+    expect(store.adoptLegacyRows("app", true)).toEqual(["EMPTY"]);
+  });
+
+  it("distinguishes a completed legacy merge from terminal history and an unmerged done PR", () => {
+    insertLegacy("merged", { current_phase: "done", terminal_pr_number: 8 });
+    insertLegacy("reopened", { current_phase: "coding", terminal_pr_number: 9 });
+    insertLegacy("unmerged", { current_phase: "done", pr_number: 10, terminal_pr_number: 10 });
+    store.adoptLegacyRows("app");
+
+    expect(store.getRepo("merged", "app")?.mergeCompleted).toBe(true);
+    expect(store.getRepo("reopened", "app")?.mergeCompleted).toBe(false);
+    expect(store.getRepo("unmerged", "app")?.mergeCompleted).toBe(false);
+    expect(store.markPrMerged("reopened", "app", 9)).toBe("stale");
+    expect(store.markPrMerged("unmerged", "app", 10)).toBe("processed");
+
+    store.updatePhase("merged", "coding");
+    store.setScope("merged", ["app", "web"]);
+    store.updatePrNumber("merged", "web", 11, "main");
+    expect(store.markPrMerged("merged", "web", 11)).toBe("pending-others");
+    expect(store.markPrMerged("merged", "app", 8)).toBe("stale");
+    expect(store.get("merged")?.currentPhase).toBe("coding");
+  });
+});
+
+describe("PipelineStateStore.reconcileRepoNames", () => {
+  beforeEach(() => {
+    db = createTestDb();
+  });
+  afterEach(() => {
+    db.close();
+  });
+
+  it("legacy mode re-keys rows stored under a previous repo name, including done issues", () => {
+    const before = new PipelineStateStore(db, ["old-name"]);
+    before.create("OPEN", "coding");
+    before.updateBranchInfo("OPEN", "old-name", { branchName: "feature/OPEN", prNumber: 4 });
+    before.create("DONE", "human-review");
+    before.updatePrNumber("DONE", "old-name", 5, "main");
+    before.markPrMerged("DONE", "old-name", 5);
+
+    store = new PipelineStateStore(db, ["new-name"]);
+    expect(store.reconcileRepoNames(true).sort()).toEqual(["DONE", "OPEN"]);
+    expect(store.reconcileRepoNames(true)).toEqual([]);
+
+    expect(store.getRepo("OPEN", "old-name")).toBeNull();
+    expect(store.getRepo("OPEN", "new-name")).toMatchObject({
+      inScope: true,
+      branchName: "feature/OPEN",
+      prNumber: 4,
+    });
+    expect(store.getRepo("DONE", "new-name")).toMatchObject({
+      terminalPrNumber: 5,
+      mergeCompleted: true,
+    });
+    expect(store.findByPr("new-name", 4)?.issueId).toBe("OPEN");
+  });
+
+  it("legacy mode refuses to merge two rows of one issue into the sole repo", () => {
+    const before = new PipelineStateStore(db, ["old-name", "new-name"]);
+    before.create("SPLIT", "coding");
+    before.setScope("SPLIT", ["old-name", "new-name"]);
+    before.updateBranch("SPLIT", "old-name", "feature/SPLIT");
+    before.updateBranch("SPLIT", "new-name", "feature/SPLIT");
+
+    store = new PipelineStateStore(db, ["new-name"]);
+    expect(() => store.reconcileRepoNames(true)).toThrow(/SPLIT → old-name.*one row per issue/s);
+    expect(() => store.reconcileRepoNames(true)).not.toThrow(/Restore the project\.repos list/);
+    expect(store.getRepo("SPLIT", "old-name")?.branchName).toBe("feature/SPLIT");
+  });
+
+  it("assertRepoNames reports legacy rows under a previous name without moving them", () => {
+    const before = new PipelineStateStore(db, ["old-name"]);
+    before.create("OPEN", "coding");
+    before.updateBranch("OPEN", "old-name", "feature/OPEN");
+
+    store = new PipelineStateStore(db, ["new-name"]);
+    expect(() => {
+      store.assertRepoNames(true);
+    }).toThrow(/"old-name".*"new-name".*Restart Red Queen.*sourceControl\.config\.repo/s);
+    expect(store.getRepo("OPEN", "old-name")?.branchName).toBe("feature/OPEN");
+    expect(store.getRepo("OPEN", "new-name")).toBeNull();
+  });
+
+  it("assertRepoNames accepts legacy rows under the configured name", () => {
+    store = new PipelineStateStore(db, ["new-name"]);
+    store.create("OPEN", "coding");
+    store.updateBranch("OPEN", "new-name", "feature/OPEN");
+    expect(() => {
+      store.assertRepoNames(true);
+    }).not.toThrow();
+  });
+
+  it("workspace mode rejects unfinished issues whose rows name an unconfigured repo", () => {
+    const before = new PipelineStateStore(db, ["api", "web"]);
+    before.create("OPEN", "coding");
+    before.setScope("OPEN", ["api", "web"]);
+    before.create("UNSTARTED");
+    before.setScope("UNSTARTED", ["web"]);
+
+    store = new PipelineStateStore(db, ["api", "site"]);
+    expect(() => store.reconcileRepoNames(false)).toThrow(
+      /OPEN → web, UNSTARTED → web.*configured: api, site/s,
+    );
+    expect(store.getRepo("OPEN", "web")?.inScope).toBe(true);
+  });
+
+  it("workspace mode ignores a descoped row that holds no branch, PR, or worktree", () => {
+    const before = new PipelineStateStore(db, ["api", "web"]);
+    before.create("OPEN", "coding");
+    before.setScope("OPEN", ["api", "web"]);
+    before.setScope("OPEN", ["api"]);
+
+    store = new PipelineStateStore(db, ["api"]);
+    expect(store.reconcileRepoNames(false)).toEqual([]);
+    expect(store.getRepo("OPEN", "web")?.inScope).toBe(false);
+  });
+
+  it.each([{ branchName: "feature/OPEN" }, { prNumber: 7 }, { worktreePath: "/w/OPEN/web" }])(
+    "workspace mode still rejects a descoped row holding %o",
+    (held) => {
+      const before = new PipelineStateStore(db, ["api", "web"]);
+      before.create("OPEN", "coding");
+      before.updateBranchInfo("OPEN", "web", held);
+      before.setScope("OPEN", ["api"]);
+
+      store = new PipelineStateStore(db, ["api"]);
+      expect(() => store.reconcileRepoNames(false)).toThrow(
+        /OPEN → web.*redqueen pipeline cleanup/s,
+      );
+    },
+  );
+
+  it("deleteRepo drops one row and re-points the issue at what remains", () => {
+    store = new PipelineStateStore(db, ["api", "web"]);
+    store.create("OPEN", "coding");
+    store.setScope("OPEN", ["api", "web"]);
+    store.updatePrNumber("OPEN", "api", 3, "main");
+    store.updatePrNumber("OPEN", "web", 4, "main");
+
+    expect(store.deleteRepo("OPEN", "api")).toBe(true);
+    expect(store.deleteRepo("OPEN", "api")).toBe(false);
+    expect(store.listRepos("OPEN").map((row) => row.repo)).toEqual(["web"]);
+    expect(store.get("OPEN")?.prNumber).toBe(4);
+    expect(
+      db.prepare("SELECT pr_number FROM pipeline_state WHERE issue_id = ?").get("OPEN"),
+    ).toEqual({ pr_number: 4 });
+  });
+
+  it("workspace mode leaves finished issues and configured rows alone", () => {
+    const before = new PipelineStateStore(db, ["api", "web"]);
+    before.create("DONE", "human-review");
+    before.updatePrNumber("DONE", "web", 5, "main");
+    before.markPrMerged("DONE", "web", 5);
+    before.create("OPEN", "coding");
+    before.setScope("OPEN", ["api"]);
+
+    store = new PipelineStateStore(db, ["api"]);
+    expect(store.reconcileRepoNames(false)).toEqual([]);
+    expect(store.getRepo("DONE", "web")?.terminalPrNumber).toBe(5);
   });
 });

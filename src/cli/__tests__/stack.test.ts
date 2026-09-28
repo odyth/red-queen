@@ -25,7 +25,7 @@ interface StackHarness {
 function mkStackHarness(projectDir: string): StackHarness {
   db = new Database(":memory:");
   db.exec(SCHEMA_SQL);
-  const pipelineState = new PipelineStateStore(db);
+  const pipelineState = new PipelineStateStore(db, ["app"]);
   const issueTracker = new MockIssueTracker();
   issueTracker.issues.set("#2", { ...makeIssue("#2", "coding"), issueType: "feature" });
   const config = makeTestConfig({
@@ -43,7 +43,28 @@ function satisfyBlockerAtGate(h: StackHarness, id: string, branch: string): void
   h.issueTracker.blockedBy.set("#2", [{ id, closed: false }]);
   h.issueTracker.phases.set(id, "human-review");
   h.pipelineState.create(id, "human-review");
-  h.pipelineState.updateBranchInfo(id, { branchName: branch, prNumber: 5 });
+  h.pipelineState.updateBranchInfo(id, "app", { branchName: branch, prNumber: 5 });
+}
+
+function mkWorkspaceHarness(projectDir: string, names = ["api", "web"]): StackHarness {
+  const h = mkStackHarness(projectDir);
+  const repos = names.map((name) => ({
+    name,
+    path: join(projectDir, name),
+    owner: "acme",
+    repo: name,
+    baseBranch: name === "web" ? "origin/develop" : "origin/main",
+    buildCommand: "build",
+    testCommand: "test",
+    modules: [],
+  }));
+  h.pipelineState = new PipelineStateStore(db, names);
+  h.io = {
+    ...h.io,
+    config: makeTestConfig({ project: { directory: projectDir, repos } }),
+    pipelineState: h.pipelineState,
+  };
+  return h;
 }
 
 // Records every git invocation; per-prefix overrides supply output or throw.
@@ -112,7 +133,7 @@ describe("executeStackSetup (fake git)", () => {
     const h = mkStackHarness(tmp);
     satisfyBlockerAtGate(h, "#1", "feature/#1");
     h.pipelineState.create("#2", "coding");
-    h.pipelineState.updateBranchInfo("#2", { branchName: "feature/#2" });
+    h.pipelineState.updateBranchInfo("#2", "app", { branchName: "feature/#2" });
     mkdirSync(join(tmp, ".redqueen", "worktrees", "#2"), { recursive: true });
     const git = fakeGit([["ls-remote", "sha\trefs/heads/feature/#2\n"]]);
 
@@ -137,7 +158,7 @@ describe("executeStackSetup (fake git)", () => {
   it("reuse (unstacked): merges base after own remote branch", async () => {
     const h = mkStackHarness(tmp);
     h.pipelineState.create("#2", "coding");
-    h.pipelineState.updateBranchInfo("#2", { branchName: "feature/#2" });
+    h.pipelineState.updateBranchInfo("#2", "app", { branchName: "feature/#2" });
     mkdirSync(join(tmp, ".redqueen", "worktrees", "#2"), { recursive: true });
     const git = fakeGit([["ls-remote", "sha\trefs/heads/feature/#2\n"]]);
 
@@ -194,8 +215,10 @@ describe("executeStackSetup (fake git)", () => {
 
     expect(result).toEqual({
       status: "conflict",
+      repo: "app",
       branch: "feature/#2",
       files: ["src/a.ts", "src/b.ts"],
+      repos: [],
     });
     expect(git.calls.some((c) => c.startsWith("merge --abort"))).toBe(false);
   });
@@ -215,7 +238,13 @@ describe("executeStackSetup (fake git)", () => {
 
     const result = await executeStackSetup({ ...h.io, spec: true, git: git.run });
 
-    expect(result).toEqual({ status: "conflict", branch: null, files: ["src/a.ts"] });
+    expect(result).toEqual({
+      status: "conflict",
+      repo: "app",
+      branch: null,
+      files: ["src/a.ts"],
+      repos: [],
+    });
     expect(git.calls).toContain("merge --abort");
   });
 
@@ -248,6 +277,184 @@ describe("executeStackSetup (fake git)", () => {
     }
     expect(result.unsatisfied).toEqual(["#1"]);
     expect(git.calls).toEqual([]);
+  });
+
+  it("workspace: uses each scoped repo's path, base and ancestors", async () => {
+    const h = mkWorkspaceHarness(tmp);
+    h.pipelineState.create("#2", "coding");
+    h.pipelineState.setScope("#2", ["api", "web"]);
+    h.issueTracker.blockedBy.set("#2", [{ id: "#1", closed: false }]);
+    h.issueTracker.phases.set("#1", "human-review");
+    h.pipelineState.create("#1", "human-review");
+    h.pipelineState.updateBranchInfo("#1", "api", { branchName: "feature/#1", prNumber: 5 });
+    const git = fakeGit();
+    const calls: { cmd: string; cwd: string }[] = [];
+
+    const result = await executeStackSetup({
+      ...h.io,
+      git: (args, cwd) => {
+        calls.push({ cmd: args.join(" "), cwd });
+        return git.run(args, cwd);
+      },
+    });
+
+    expect(result.status).toBe("ok");
+    if (result.status !== "ok") {
+      return;
+    }
+    expect(result.repos).toEqual([
+      {
+        repo: "api",
+        worktree: join(tmp, ".redqueen", "worktrees", "#2", "api"),
+        branch: "feature/#2",
+        merged: ["origin/feature/#1"],
+        prBase: "feature/#1",
+      },
+      {
+        repo: "web",
+        worktree: join(tmp, ".redqueen", "worktrees", "#2", "web"),
+        branch: "feature/#2",
+        merged: [],
+        prBase: "develop",
+      },
+    ]);
+    expect(result.worktree).toBe(result.repos[0]?.worktree);
+    expect(result.branch).toBe(result.repos[0]?.branch);
+    expect(result.merged).toEqual(result.repos[0]?.merged);
+    expect(result.prBase).toBe(result.repos[0]?.prBase);
+    expect(calls.filter((call) => call.cmd.startsWith("fetch")).map((call) => call.cwd)).toEqual([
+      join(tmp, "api"),
+      join(tmp, "web"),
+    ]);
+    expect(calls.some((call) => call.cwd === tmp)).toBe(false);
+    expect(git.calls).toContain("fetch origin +refs/heads/develop:refs/remotes/origin/develop");
+    expect(h.pipelineState.getRepo("#2", "web")).toMatchObject({
+      branchName: "feature/#2",
+      worktreePath: result.repos[1]?.worktree,
+    });
+  });
+
+  it("workspace: preserves each selected row's existing branch name", async () => {
+    const h = mkWorkspaceHarness(tmp);
+    h.pipelineState.create("#2", "coding");
+    h.pipelineState.setScope("#2", ["api", "web"]);
+    h.pipelineState.updateBranchInfo("#2", "api", { branchName: "custom/api" });
+    h.pipelineState.updateBranchInfo("#2", "web", { branchName: "custom/web" });
+    const result = await executeStackSetup({ ...h.io, git: fakeGit().run });
+    expect(result.status).toBe("ok");
+    if (result.status === "ok") {
+      expect(result.repos.map((repo) => repo.branch)).toEqual(["custom/api", "custom/web"]);
+    }
+    expect(h.pipelineState.getRepo("#2", "api")?.branchName).toBe("custom/api");
+    expect(h.pipelineState.getRepo("#2", "web")?.branchName).toBe("custom/web");
+  });
+
+  it("workspace: ignores a descoped branch when naming a new scoped branch", async () => {
+    const h = mkWorkspaceHarness(tmp);
+    h.pipelineState.create("#2", "coding");
+    h.pipelineState.updateBranchInfo("#2", "api", { branchName: "orphan/api" });
+    h.pipelineState.setScope("#2", ["web"]);
+    const original = h.pipelineState.getRepo("#2", "api");
+    const git = fakeGit();
+    const result = await executeStackSetup({ ...h.io, git: git.run });
+    expect(result).toMatchObject({ status: "ok", branch: "feature/#2", prBase: "develop" });
+    expect(git.calls.some((call) => call.includes("orphan/api"))).toBe(false);
+    expect(h.pipelineState.getRepo("#2", "api")).toEqual(original);
+  });
+
+  it("workspace: skips completed rows during rework while starting unfinished siblings", async () => {
+    const h = mkWorkspaceHarness(tmp);
+    h.pipelineState.create("#2", "human-review");
+    h.pipelineState.setScope("#2", ["api", "web"]);
+    h.pipelineState.updateBranchInfo("#2", "api", { branchName: "feature/api", prNumber: 5 });
+    h.pipelineState.markPrMerged("#2", "api", 5);
+    h.pipelineState.updateBranchInfo("#2", "api", { branchName: null, worktreePath: null });
+    h.pipelineState.updatePhase("#2", "code-feedback");
+    const original = h.pipelineState.getRepo("#2", "api");
+    const result = await executeStackSetup({ ...h.io, git: fakeGit().run });
+    expect(result.status).toBe("ok");
+    if (result.status === "ok") {
+      expect(result.repos.map((repo) => repo.repo)).toEqual(["web"]);
+    }
+    expect(h.pipelineState.getRepo("#2", "api")).toEqual(original);
+  });
+
+  it.each([false, true])(
+    "workspace: rejects empty scope without mutations, existing=%s",
+    async (existing) => {
+      const h = mkWorkspaceHarness(tmp, ["api"]);
+      if (existing) {
+        h.pipelineState.create("#2", "coding");
+      }
+      const original = h.pipelineState.get("#2");
+      const git = fakeGit();
+      await expect(executeStackSetup({ ...h.io, git: git.run })).rejects.toThrow(
+        /no .*scope.*spec meta.*--repos/i,
+      );
+      expect(git.calls).toEqual([]);
+      expect(h.pipelineState.get("#2")).toEqual(original);
+    },
+  );
+
+  it("workspace: completed-only scope does not recreate a worktree", async () => {
+    const h = mkWorkspaceHarness(tmp);
+    h.pipelineState.create("#2", "human-review");
+    h.pipelineState.updateBranchInfo("#2", "web", { branchName: "feature/web", prNumber: 5 });
+    h.pipelineState.markPrMerged("#2", "web", 5);
+    const original = h.pipelineState.get("#2");
+    const git = fakeGit();
+    await expect(executeStackSetup({ ...h.io, git: git.run })).rejects.toThrow(
+      /no unfinished.*repositories/i,
+    );
+    expect(git.calls).toEqual([]);
+    expect(h.pipelineState.get("#2")).toEqual(original);
+  });
+
+  it("workspace --spec: explores every repo without changing completed scope", async () => {
+    const h = mkWorkspaceHarness(tmp);
+    h.pipelineState.create("#2", "human-review");
+    h.pipelineState.updateBranchInfo("#2", "api", { branchName: "feature/api", prNumber: 5 });
+    h.pipelineState.markPrMerged("#2", "api", 5);
+    const original = h.pipelineState.get("#2");
+    const git = fakeGit();
+    const result = await executeStackSetup({ ...h.io, spec: true, git: git.run });
+    expect(result.status).toBe("ok");
+    if (result.status === "ok") {
+      expect(result.repos.map((repo) => [repo.repo, repo.branch, repo.worktree])).toEqual([
+        ["api", null, join(tmp, ".redqueen", "worktrees", "spec-#2", "api")],
+        ["web", null, join(tmp, ".redqueen", "worktrees", "spec-#2", "web")],
+      ]);
+    }
+    expect(git.calls).toContain(
+      `worktree add --detach ${join(tmp, ".redqueen", "worktrees", "spec-#2", "web")} origin/develop`,
+    );
+    expect(h.pipelineState.get("#2")).toEqual(original);
+  });
+
+  it("workspace: conflict identifies its repo and returns earlier completed setups", async () => {
+    const h = mkWorkspaceHarness(tmp);
+    h.pipelineState.create("#2", "coding");
+    h.pipelineState.setScope("#2", ["api", "web"]);
+    h.issueTracker.blockedBy.set("#2", [{ id: "#1", closed: false }]);
+    h.issueTracker.phases.set("#1", "human-review");
+    h.pipelineState.create("#1", "human-review");
+    h.pipelineState.setScope("#1", ["api", "web"]);
+    h.pipelineState.updateBranchInfo("#1", "api", { branchName: "feature/api", prNumber: 5 });
+    h.pipelineState.updateBranchInfo("#1", "web", { branchName: "feature/web", prNumber: 6 });
+    const git = fakeGit([
+      [
+        "merge --no-edit origin/feature/web",
+        () => {
+          throw new Error("conflict");
+        },
+      ],
+      ["diff --name-only --diff-filter=U", "src/web.ts\n"],
+    ]);
+    const result = await executeStackSetup({ ...h.io, git: git.run });
+    expect(result).toMatchObject({ status: "conflict", repo: "web", files: ["src/web.ts"] });
+    if (result.status === "conflict") {
+      expect(result.repos.map((repo) => repo.repo)).toEqual(["api"]);
+    }
   });
 });
 

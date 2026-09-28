@@ -1,15 +1,16 @@
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { buildPhaseGraph } from "../core/config.js";
-import type { RedQueenConfig } from "../core/config.js";
+import type { RedQueenConfig, RepoConfig } from "../core/config.js";
 import type { PipelineStateStore } from "../core/pipeline-state.js";
 import { resolveBranchPrefix } from "../core/skill-context.js";
 import { bareBaseBranch, resolveStack, terminalGateNames } from "../core/stack.js";
-import type { StackProblem } from "../core/stack.js";
+import type { StackProblem, StackRepoResolution } from "../core/stack.js";
+import { gitCwdFor, worktreePathFor } from "../core/worktree-layout.js";
 import type { IssueTracker } from "../integrations/issue-tracker.js";
 import { loadCliContext } from "./context.js";
+import type { CliContext } from "./context.js";
 import { CliError } from "./errors.js";
 import { writeJson } from "./io.js";
 
@@ -28,9 +29,19 @@ export interface StackSetupIo {
   git: GitRun;
 }
 
+export interface StackRepoSetup {
+  repo: string;
+  worktree: string;
+  branch: string | null;
+  merged: string[];
+  prBase: string;
+}
+
 export type StackSetupOutput =
   | {
       status: "ok";
+      repos: StackRepoSetup[];
+      // Compatibility mirrors of the first assembled repo.
       worktree: string;
       branch: string | null;
       merged: string[];
@@ -42,11 +53,35 @@ export type StackSetupOutput =
       problems: StackProblem[];
       cycle: string[] | null;
     }
-  | { status: "conflict"; branch: string | null; files: string[] };
+  | {
+      status: "conflict";
+      repo: string;
+      branch: string | null;
+      files: string[];
+      repos: StackRepoSetup[];
+    };
 
 export async function executeStackSetup(io: StackSetupIo): Promise<StackSetupOutput> {
   const { issueId, spec, config, issueTracker, pipelineState, git } = io;
-  const projectDir = config.project.directory;
+  const record = pipelineState.get(issueId);
+  const rows = record?.repos ?? [];
+  const inScope = new Set(rows.filter((row) => row.inScope).map((row) => row.repo));
+  const unfinished = new Set(
+    rows.filter((row) => row.inScope && row.mergeCompleted === false).map((row) => row.repo),
+  );
+  // Spec work explores all candidates. Coding can only recreate unfinished
+  // scoped work; completed siblings and descoped branches remain untouched.
+  const selected =
+    spec || (config.project.workspaceMode === false && rows.length === 0)
+      ? config.project.repos
+      : config.project.repos.filter((repo) => unfinished.has(repo.name));
+  if (selected.length === 0) {
+    throw new Error(
+      inScope.size === 0
+        ? `stack setup: no repositories in scope for ${issueId}; record scope with spec meta ${issueId} --repos <names> before coding`
+        : `stack setup: no unfinished in-scope repositories for ${issueId}; all scoped work is complete or its repositories are no longer configured`,
+    );
+  }
   const bareBase = bareBaseBranch(config.pipeline.baseBranch);
 
   const resolution = await resolveStack(issueId, bareBase, {
@@ -54,6 +89,10 @@ export async function executeStackSetup(io: StackSetupIo): Promise<StackSetupOut
     getPipelineRecord: (id) => pipelineState.get(id),
     getTrackerPhase: (id) => issueTracker.getPhase(id),
     terminalGates: terminalGateNames(buildPhaseGraph(config.phases)),
+    repos: config.project.repos.map((repo) => ({
+      name: repo.name,
+      bareBase: bareBaseBranch(repo.baseBranch),
+    })),
   });
   if (resolution.ok === false) {
     // Belt-and-braces — the orchestrator already gated before dispatch.
@@ -65,26 +104,65 @@ export async function executeStackSetup(io: StackSetupIo): Promise<StackSetupOut
     };
   }
 
-  const worktreePath = join(
-    projectDir,
-    ".redqueen",
-    "worktrees",
-    spec ? `spec-${issueId}` : issueId,
-  );
-  const reuse = existsSync(worktreePath);
-
-  let branch: string | null = null;
-  let remoteBranchExists = false;
-  if (spec === false) {
-    const record = pipelineState.get(issueId);
-    branch = record?.branchName ?? null;
-    if (branch === null) {
+  let generatedBranch: string | null = null;
+  const done: StackRepoSetup[] = [];
+  for (const repo of selected) {
+    let branch = spec ? null : (rows.find((row) => row.repo === repo.name)?.branchName ?? null);
+    if (spec === false && branch === null && generatedBranch === null) {
       const issueType = await issueTracker.getIssue(issueId).then(
         (issue) => issue.issueType,
         () => null,
       );
-      branch = resolveBranchPrefix(config.pipeline.branchPrefixes, issueType) + issueId;
+      generatedBranch = resolveBranchPrefix(config.pipeline.branchPrefixes, issueType) + issueId;
     }
+    if (spec === false && branch === null) {
+      branch = generatedBranch;
+    }
+    const perRepo = resolution.repos[repo.name] ?? {
+      mergeBranches: [],
+      prBase: bareBaseBranch(repo.baseBranch),
+    };
+    const outcome = setupRepo({ issueId, spec, config, repo, branch, perRepo, pipelineState, git });
+    if (outcome.status === "conflict") {
+      return { status: "conflict", repo: repo.name, branch, files: outcome.files, repos: done };
+    }
+    done.push(outcome.setup);
+  }
+  const first = done[0];
+  if (first === undefined) {
+    throw new Error("stack setup: no repositories assembled");
+  }
+  return {
+    status: "ok",
+    repos: done,
+    worktree: first.worktree,
+    branch: first.branch,
+    merged: first.merged,
+    prBase: first.prBase,
+  };
+}
+
+interface RepoSetupIo {
+  issueId: string;
+  spec: boolean;
+  config: RedQueenConfig;
+  repo: RepoConfig;
+  branch: string | null;
+  perRepo: StackRepoResolution;
+  pipelineState: PipelineStateStore;
+  git: GitRun;
+}
+
+function setupRepo(
+  io: RepoSetupIo,
+): { status: "ok"; setup: StackRepoSetup } | { status: "conflict"; files: string[] } {
+  const { issueId, spec, config, repo, branch, perRepo, pipelineState, git } = io;
+  const projectDir = gitCwdFor(config, repo.name);
+  const bareBase = bareBaseBranch(repo.baseBranch);
+  const worktreePath = worktreePathFor(config, issueId, repo.name, spec ? "spec" : "coding");
+  const reuse = existsSync(worktreePath);
+  let remoteBranchExists = false;
+  if (spec === false && branch !== null) {
     // refs/heads/ prefix, same as the webhook path: never let a branch name
     // parse as a git option.
     remoteBranchExists =
@@ -95,7 +173,7 @@ export async function executeStackSetup(io: StackSetupIo): Promise<StackSetupOut
     ...new Set([
       bareBase,
       ...(remoteBranchExists && branch !== null ? [branch] : []),
-      ...resolution.mergeBranches,
+      ...perRepo.mergeBranches,
     ]),
   ];
   // Explicit destination refspecs: opportunistic origin/<X> tracking updates
@@ -126,7 +204,7 @@ export async function executeStackSetup(io: StackSetupIo): Promise<StackSetupOut
   // Reuse (coding): the worktree already sits on the branch — no rebase, ever.
 
   const mergeRefs = spec
-    ? resolution.mergeBranches.map((b) => `origin/${b}`)
+    ? perRepo.mergeBranches.map((b) => `origin/${b}`)
     : [
         // Own remote branch first: absorbs deterministic refreshes pushed by
         // the pr-merged handler while this worktree lagged behind.
@@ -134,8 +212,8 @@ export async function executeStackSetup(io: StackSetupIo): Promise<StackSetupOut
         // Base only when the PR targets base: while stacked on an unmerged
         // blocker, folding in newer base commits would pollute the PR diff.
         // The pr-merged refresh folds base in once the blocker actually merges.
-        ...(reuse && resolution.prBase === bareBase ? [`origin/${bareBase}`] : []),
-        ...resolution.mergeBranches.map((b) => `origin/${b}`),
+        ...(reuse && perRepo.prBase === bareBase ? [`origin/${bareBase}`] : []),
+        ...perRepo.mergeBranches.map((b) => `origin/${b}`),
       ];
 
   const merged: string[] = [];
@@ -162,7 +240,7 @@ export async function executeStackSetup(io: StackSetupIo): Promise<StackSetupOut
       }
       // Coding mode leaves the conflict in place — the coder resolves it in
       // the worktree and re-runs stack setup until it exits 0.
-      return { status: "conflict", branch, files };
+      return { status: "conflict", files };
     }
   }
 
@@ -170,15 +248,15 @@ export async function executeStackSetup(io: StackSetupIo): Promise<StackSetupOut
     if (pipelineState.get(issueId) === null) {
       pipelineState.create(issueId);
     }
-    pipelineState.updateBranchInfo(issueId, { branchName: branch, worktreePath });
+    pipelineState.updateBranchInfo(issueId, repo.name, {
+      branchName: branch,
+      worktreePath,
+    });
   }
 
   return {
     status: "ok",
-    worktree: worktreePath,
-    branch,
-    merged,
-    prBase: resolution.prBase,
+    setup: { repo: repo.name, worktree: worktreePath, branch, merged, prBase: perRepo.prBase },
   };
 }
 
@@ -214,7 +292,16 @@ export async function cmdStack(args: string[]): Promise<void> {
     throw new CliError("stack setup: <issueId> is required");
   }
 
-  const ctx = loadCliContext();
+  let ctx: CliContext;
+  try {
+    ctx = loadCliContext();
+  } catch (err) {
+    // A refused context (config, database, repo-name check) hits the same
+    // exit-code collision as the failures below.
+    const message = err instanceof Error ? err.message : String(err);
+    writeJson({ status: "error", message }, values.pretty === true);
+    throw new CliError(`stack setup: ${message}`, 1);
+  }
   let result: StackSetupOutput;
   try {
     result = await executeStackSetup({

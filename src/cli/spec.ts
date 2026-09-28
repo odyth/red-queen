@@ -1,4 +1,5 @@
 import { parseArgs } from "node:util";
+import { loadConfigFromProject } from "./config-discovery.js";
 import { loadCliContext } from "./context.js";
 import { CliError } from "./errors.js";
 import { readBodyFromStdinOrFlag, writeJson, writeText } from "./io.js";
@@ -74,6 +75,7 @@ function cmdSpecMeta(args: string[]): Promise<void> {
     args,
     options: {
       "open-questions": { type: "string" },
+      repos: { type: "string" },
     },
     allowPositionals: true,
   });
@@ -86,25 +88,65 @@ function cmdSpecMeta(args: string[]): Promise<void> {
     throw new CliError("spec meta: --open-questions <N> is required");
   }
   const count = Number.parseInt(raw, 10);
-  if (Number.isNaN(count) || count < 0 || String(count) !== raw.trim()) {
+  if (Number.isSafeInteger(count) === false || count < 0 || String(count) !== raw.trim()) {
     throw new CliError(`spec meta: --open-questions must be a non-negative integer, got "${raw}"`);
   }
+  // Validate before context initialization, which may adopt legacy repo rows.
+  const { config } = loadConfigFromProject(process.cwd());
+  const names = config.project.workspaceMode
+    ? parseRepoList(
+        values.repos,
+        config.project.repos.map((repo) => repo.name),
+      )
+    : undefined;
   const ctx = loadCliContext();
   try {
     const existing = ctx.pipelineState.get(issueId);
     if (existing === null) {
       throw new CliError(`spec meta: no pipeline record for ${issueId} — run new-ticket first`);
     }
-    ctx.pipelineState.setOpenQuestionCount(issueId, count);
+    const repos = ctx.pipelineState.setSpecMetadata(issueId, count, names);
     ctx.audit.log({
       component: "helper:spec",
       issueId,
-      message: `Recorded open-question count: ${String(count)}`,
-      metadata: { openQuestionCount: count },
+      message: `Recorded open-question count: ${String(count)}${
+        names === undefined ? "" : `; repos in scope: ${names.join(", ")}`
+      }`,
+      metadata: {
+        openQuestionCount: count,
+        repos: repos.map((repo) => ({ repo: repo.repo, inScope: repo.inScope })),
+      },
     });
-    writeJson({ issueId, openQuestionCount: count });
+    writeJson({ issueId, openQuestionCount: count, repos });
   } finally {
     ctx.cleanup();
   }
   return Promise.resolve();
+}
+
+function parseRepoList(raw: string | undefined, valid: readonly string[]): string[] {
+  if (raw === undefined || raw.trim() === "") {
+    throw new CliError(
+      `spec meta: --repos is required in workspace mode (valid: ${valid.join(", ")})`,
+    );
+  }
+  const names = [
+    ...new Set(
+      raw
+        .split(",")
+        .map((name) => name.trim())
+        .filter((name) => name !== ""),
+    ),
+  ];
+  if (names.length === 0) {
+    throw new CliError(
+      `spec meta: --repos must name at least one repo (valid: ${valid.join(", ")})`,
+    );
+  }
+  for (const name of names) {
+    if (valid.includes(name) === false) {
+      throw new CliError(`spec meta: unknown repo "${name}" — valid: ${valid.join(", ")}`);
+    }
+  }
+  return names;
 }

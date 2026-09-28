@@ -41,6 +41,24 @@ export interface StatusPayload {
   currentTask: TaskSummary | null;
 }
 
+// --- Pipelines (per-issue repo rows) ---
+
+export interface PipelineRepoWire {
+  repo: string;
+  inScope: boolean;
+  branchName: string | null;
+  prNumber: number | null;
+  // Descoped by a later spec revision but still holding a PR for a human to close.
+  orphaned: boolean;
+}
+
+export interface PipelineWire {
+  issueId: string;
+  currentPhase: string | null;
+  updatedAt: string;
+  repos: PipelineRepoWire[];
+}
+
 // --- Logs ---
 
 export interface AuditEntryWire {
@@ -90,7 +108,12 @@ export interface SkillEntry {
   name: string;
   origin: SkillOrigin;
   disabled: boolean;
+  // Phases that run this skill in the install's mode.
   referencedBy: string[];
+  // The base skill this is the "-workspace" variant of. Phases name the base.
+  variantOf: string | null;
+  // False for the half of a base/variant pair the install's mode does not run.
+  active: boolean;
 }
 
 export interface SkillGetResponse {

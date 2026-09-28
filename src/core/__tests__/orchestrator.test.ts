@@ -1,3 +1,4 @@
+import { createSourceControlRegistry } from "../../integrations/source-control-registry.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -45,6 +46,7 @@ interface HarnessOptions {
   skipSpecReviewIfReady?: boolean;
   phases?: PhaseDefinition[];
   pipeline?: Partial<RedQueenConfig["pipeline"]>;
+  repos?: RedQueenConfig["project"]["repos"];
 }
 
 function setupHarness(
@@ -53,7 +55,6 @@ function setupHarness(
 ): Harness {
   const db = new RedQueenDatabase(dbPath);
   const queue = new SqliteTaskQueue(db.db);
-  const pipelineState = new PipelineStateStore(db.db);
   const phaseUsage = new PhaseUsageStore(db.db);
   const orchestratorState = new OrchestratorStateStore(db.db);
   const audit = new DualWriteAuditLogger(db.db, auditPath);
@@ -65,6 +66,7 @@ function setupHarness(
       buildCommand: "npm run build",
       testCommand: "npm test",
       directory: tempDir,
+      ...(options.repos === undefined ? {} : { repos: options.repos, workspaceMode: true }),
     },
     skills: { directory: skillsDir, disabled: [] },
     dashboard: { enabled: false, port: 0, host: "127.0.0.1" },
@@ -86,6 +88,10 @@ function setupHarness(
       ...(options.pipeline ?? {}),
     },
   });
+  const pipelineState = new PipelineStateStore(
+    db.db,
+    config.project.repos.map((repo) => repo.name),
+  );
   const runtime = new RuntimeState(phaseGraph, config);
 
   const runs: WorkerOptions[] = [];
@@ -102,7 +108,9 @@ function setupHarness(
     orchestratorState,
     audit,
     issueTracker,
-    sourceControl,
+    sourceControls: createSourceControlRegistry([
+      { name: "app", fullName: "acme/app", adapter: sourceControl },
+    ]),
     workerRunner: wrappedWorker,
     installSignalHandlers: false,
     sleepFn: (ms) => new Promise((r) => setTimeout(r, Math.min(ms, 5))),
@@ -200,6 +208,80 @@ describe("RedQueen orchestrator", () => {
       currentHarness = null;
     }
     rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it.each([
+    { mode: "legacy", mapExists: true },
+    { mode: "legacy", mapExists: false },
+    { mode: "workspace", mapExists: true },
+    { mode: "workspace", mapExists: false },
+  ])(
+    "passes codebaseMapPath from the project root in $mode mode (map exists: $mapExists)",
+    async ({ mode, mapExists }) => {
+      const mapPath = join(tempDir, ".redqueen", "codebase-map.md");
+      if (mapExists) {
+        mkdirSync(join(tempDir, ".redqueen"), { recursive: true });
+        writeFileSync(mapPath, "# Project map\n");
+      }
+
+      const options: HarnessOptions = {};
+      if (mode === "workspace") {
+        const repoPath = join(tempDir, "app");
+        options.repos = makeTestConfig({ project: { directory: repoPath } }).project.repos;
+        // A repo-local map must never replace the workspace-root map.
+        mkdirSync(join(repoPath, ".redqueen"), { recursive: true });
+        writeFileSync(join(repoPath, ".redqueen", "codebase-map.md"), "# Repo map\n");
+      }
+
+      let capturedPrompt: string | null = null;
+      const h = setupHarness((opts) => {
+        capturedPrompt = readDispatchedPrompt(opts);
+        return Promise.resolve(
+          makeWorkerResult({ success: true, exitCode: 0, elapsed: 1, summary: "ok", error: null }),
+        );
+      }, options);
+      h.pipelineState.create("PROJ-MAP", "spec-writing");
+      h.issueTracker.phases.set("PROJ-MAP", "spec-writing");
+      h.issueTracker.specs.set("PROJ-MAP", "spec");
+      h.queue.enqueue({ type: "spec-writing", issueId: "PROJ-MAP" });
+
+      await runUntilAfterRuns(h, 1);
+
+      expect(capturedPrompt).toContain(`codebaseMapPath: ${mapExists ? mapPath : "null"}`);
+    },
+  );
+
+  it.each([
+    { mode: "legacy", expected: "# prompt-writer\n" },
+    { mode: "workspace", expected: "# prompt-writer-workspace\n" },
+  ])("dispatches the $mode prompt for a phase's skill", async ({ mode, expected }) => {
+    writeSkill("prompt-writer-workspace");
+    const options: HarnessOptions = {};
+    if (mode === "workspace") {
+      options.repos = makeTestConfig({
+        project: { directory: join(tempDir, "app") },
+      }).project.repos;
+    }
+
+    let capturedPrompt: string | null = null;
+    const h = setupHarness((opts) => {
+      capturedPrompt = readDispatchedPrompt(opts);
+      return Promise.resolve(
+        makeWorkerResult({ success: true, exitCode: 0, elapsed: 1, summary: "ok", error: null }),
+      );
+    }, options);
+    h.pipelineState.create("PROJ-MODE", "spec-writing");
+    h.issueTracker.phases.set("PROJ-MODE", "spec-writing");
+    h.issueTracker.specs.set("PROJ-MODE", "spec");
+    h.queue.enqueue({ type: "spec-writing", issueId: "PROJ-MODE" });
+
+    await runUntilAfterRuns(h, 1);
+
+    expect(capturedPrompt).toMatch(/```\n\n# prompt-writer(-workspace)?\n$/);
+    expect(capturedPrompt).toContain(expected);
+    expect(capturedPrompt).not.toContain(
+      mode === "workspace" ? "# prompt-writer\n" : "# prompt-writer-workspace\n",
+    );
   });
 
   it("processes a task end-to-end and advances phase", async () => {
@@ -1057,7 +1139,7 @@ describe("RedQueen orchestrator", () => {
       ),
     );
     h.pipelineState.create("PROJ-99", "coding");
-    h.pipelineState.updateBranchInfo("PROJ-99", { prNumber: 42, prBaseBranch: "main" });
+    h.pipelineState.updateBranchInfo("PROJ-99", "app", { prNumber: 42, prBaseBranch: "main" });
     h.sourceControl.prs.set(42, {
       number: 42,
       title: "PROJ-99",
@@ -1114,7 +1196,7 @@ describe("RedQueen orchestrator", () => {
       ),
     );
     h.pipelineState.create("PROJ-99", "human-review");
-    h.pipelineState.updateBranchInfo("PROJ-99", { prNumber: 42, prBaseBranch: "main" });
+    h.pipelineState.updateBranchInfo("PROJ-99", "app", { prNumber: 42, prBaseBranch: "main" });
     let resolveLookup: ((value: null) => void) | null = null;
     const lookupStarted = new Promise<void>((resolveStarted) => {
       h.sourceControl.getPullRequest = () =>
@@ -1434,7 +1516,7 @@ describe("RedQueen orchestrator", () => {
       ),
     );
     h.pipelineState.create("PROJ-80", "human-review");
-    h.pipelineState.updatePrNumber("PROJ-80", 42);
+    h.pipelineState.updatePrNumber("PROJ-80", "app", 42, null);
     h.issueTracker.phases.set("PROJ-80", "human-review");
     h.queue.enqueue({ type: "code-feedback", issueId: "PROJ-80" });
 
@@ -1475,7 +1557,7 @@ describe("RedQueen orchestrator", () => {
       throw new Error("worker should not run — task must be marked stale");
     });
     h.pipelineState.create("PROJ-82", "human-review");
-    h.pipelineState.updatePrNumber("PROJ-82", 50);
+    h.pipelineState.updatePrNumber("PROJ-82", "app", 50, null);
     h.issueTracker.phases.set("PROJ-82", "human-review");
     const task = h.queue.enqueue({ type: "coding", issueId: "PROJ-82" });
 
@@ -1575,7 +1657,7 @@ describe("RedQueen orchestrator", () => {
       );
     });
     h.pipelineState.create("PROJ-92", "human-review");
-    h.pipelineState.updatePrNumber("PROJ-92", 42);
+    h.pipelineState.updatePrNumber("PROJ-92", "app", 42, null);
     h.issueTracker.phases.set("PROJ-92", "human-review");
     h.queue.enqueue({ type: "code-feedback", issueId: "PROJ-92" });
 
@@ -1597,13 +1679,172 @@ describe("RedQueen orchestrator", () => {
       ),
     );
     h.pipelineState.create("PROJ-100", "code-feedback");
-    h.pipelineState.updatePrNumber("PROJ-100", 77);
+    h.pipelineState.updatePrNumber("PROJ-100", "app", 77, null);
     h.issueTracker.phases.set("PROJ-100", "code-feedback");
     h.queue.enqueue({ type: "code-feedback", issueId: "PROJ-100" });
 
     await runUntil(h, () => h.sourceControl.calls.includes("dismissStaleReviews:77"));
 
     expect(h.sourceControl.calls).toContain("dismissStaleReviews:77");
+  });
+
+  it("dismisses reviews through each in-scope repo adapter and continues after an adapter fails", async () => {
+    const app = new MockSourceControl();
+    const web = new MockSourceControl();
+    const docs = new MockSourceControl();
+    const pending = new MockSourceControl();
+    app.dismissStaleReviewsThrows = true;
+    const repos = ["app", "web", "docs", "pending"].map((name) => ({
+      name,
+      path: join(tempDir, name),
+      owner: "acme",
+      repo: name,
+      baseBranch: "origin/main",
+      buildCommand: "build",
+      testCommand: "test",
+      modules: [],
+    }));
+    const h = setupHarness(
+      () =>
+        Promise.resolve(
+          makeWorkerResult({
+            success: true,
+            exitCode: 0,
+            elapsed: 1,
+            summary: "done",
+            error: null,
+          }),
+        ),
+      {
+        repos,
+        extra: {
+          sourceControls: createSourceControlRegistry([
+            { name: "app", fullName: "acme/app", adapter: app },
+            { name: "web", fullName: "acme/web", adapter: web },
+            { name: "docs", fullName: "acme/docs", adapter: docs },
+            { name: "pending", fullName: "acme/pending", adapter: pending },
+          ]),
+        },
+      },
+    );
+    h.pipelineState.create("PROJ-MULTI", "code-feedback");
+    h.pipelineState.setScope("PROJ-MULTI", ["app", "web", "docs"]);
+    for (const name of ["app", "web", "docs"]) {
+      h.pipelineState.updatePrNumber("PROJ-MULTI", name, 77, null);
+    }
+    h.pipelineState.setScope("PROJ-MULTI", ["app", "web", "pending"]);
+    h.issueTracker.phases.set("PROJ-MULTI", "code-feedback");
+    h.queue.enqueue({ type: "code-feedback", issueId: "PROJ-MULTI" });
+
+    await runUntil(h, () => web.calls.includes("dismissStaleReviews:77"));
+
+    expect(app.calls).toContain("dismissStaleReviews:77");
+    expect(web.calls).toContain("dismissStaleReviews:77");
+    expect(docs.calls.some((call) => call.startsWith("dismissStaleReviews"))).toBe(false);
+    expect(pending.calls.some((call) => call.startsWith("dismissStaleReviews"))).toBe(false);
+    expect(
+      h.audit
+        .query({ issueId: "PROJ-MULTI" })
+        .find((entry) => entry.message.startsWith("dismissStaleReviews failed"))?.metadata,
+    ).toMatchObject({ repo: "app", prNumber: 77 });
+  });
+
+  it("adopts modern legacy-mode spec-only rows before startup reconciliation", async () => {
+    const h = setupHarness(() =>
+      Promise.resolve(
+        makeWorkerResult({ success: true, exitCode: 0, elapsed: 1, summary: "done", error: null }),
+      ),
+    );
+    h.pipelineState.create("PROJ-LEGACY", "spec-review");
+    h.db.db
+      .prepare("UPDATE pipeline_state SET spec_content = ? WHERE issue_id = ?")
+      .run("legacy spec", "PROJ-LEGACY");
+    h.issueTracker.phases.set("PROJ-LEGACY", "spec-review");
+    expect(h.pipelineState.get("PROJ-LEGACY")?.repos).toEqual([]);
+
+    await runUntil(h, () => (h.pipelineState.get("PROJ-LEGACY")?.repos.length ?? 0) > 0);
+
+    expect(h.pipelineState.get("PROJ-LEGACY")?.repos).toEqual([
+      expect.objectContaining({ repo: "app", inScope: true }),
+    ]);
+    expect(readFileSync(auditPath, "utf8")).toContain(
+      "Adopted 1 legacy pipeline record(s) into repo app",
+    );
+  });
+
+  it("startup adopts old legacy rows without assigning scope to a modern one-repo workspace", async () => {
+    const repos = makeTestConfig({ project: { directory: tempDir } }).project.repos;
+    const h = setupHarness(
+      () =>
+        Promise.resolve(
+          makeWorkerResult({
+            success: true,
+            exitCode: 0,
+            elapsed: 1,
+            summary: "done",
+            error: null,
+          }),
+        ),
+      { repos },
+    );
+    h.pipelineState.create("PROJ-NEW", "spec-review");
+    h.pipelineState.updateSpec("PROJ-NEW", "new workspace spec before scope selection");
+    h.db.db
+      .prepare(
+        `INSERT INTO pipeline_state (issue_id, current_phase, spec_content, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run("PROJ-OLD", "spec-review", "old legacy spec", "2026-01-01", "2026-01-01");
+    h.issueTracker.phases.set("PROJ-NEW", "spec-review");
+    h.issueTracker.phases.set("PROJ-OLD", "spec-review");
+
+    await runUntil(h, () => (h.pipelineState.get("PROJ-OLD")?.repos.length ?? 0) > 0);
+
+    expect(h.pipelineState.getRepo("PROJ-OLD", "app")?.inScope).toBe(true);
+    expect(h.pipelineState.get("PROJ-NEW")?.repos).toEqual([]);
+  });
+
+  it("startup re-keys legacy rows stored under a previous repo name", async () => {
+    const h = setupHarness(() =>
+      Promise.resolve(
+        makeWorkerResult({ success: true, exitCode: 0, elapsed: 1, summary: "done", error: null }),
+      ),
+    );
+    h.pipelineState.create("PROJ-RENAMED", "spec-review");
+    h.pipelineState.updateBranchInfo("PROJ-RENAMED", "old-app", {
+      branchName: "feature/PROJ-RENAMED",
+      prNumber: 12,
+    });
+    h.issueTracker.phases.set("PROJ-RENAMED", "spec-review");
+
+    await runUntil(h, () => h.pipelineState.getRepo("PROJ-RENAMED", "app") !== null);
+
+    expect(h.pipelineState.get("PROJ-RENAMED")?.repos).toEqual([
+      expect.objectContaining({ repo: "app", branchName: "feature/PROJ-RENAMED", prNumber: 12 }),
+    ]);
+    expect(readFileSync(auditPath, "utf8")).toContain("Re-keyed 1 pipeline record(s) to repo app");
+  });
+
+  it("refuses to start a workspace whose unfinished issues name an unconfigured repo", async () => {
+    const repos = makeTestConfig({ project: { directory: tempDir } }).project.repos;
+    const h = setupHarness(
+      () =>
+        Promise.resolve(
+          makeWorkerResult({
+            success: true,
+            exitCode: 0,
+            elapsed: 1,
+            summary: "done",
+            error: null,
+          }),
+        ),
+      { repos },
+    );
+    h.pipelineState.create("PROJ-GONE", "coding");
+    h.pipelineState.updateBranch("PROJ-GONE", "removed", "feature/PROJ-GONE");
+
+    await expect(h.rq.start()).rejects.toThrow(/PROJ-GONE → removed/);
+    expect(h.orchestratorState.get().status).toBe("stopped");
   });
 
   it("skips dismissStaleReviews when phase does not require PR", async () => {
@@ -1633,7 +1874,7 @@ describe("RedQueen orchestrator", () => {
       );
     });
     h.pipelineState.create("PROJ-101", "coding");
-    h.pipelineState.updatePrNumber("PROJ-101", 78);
+    h.pipelineState.updatePrNumber("PROJ-101", "app", 78, null);
     h.issueTracker.phases.set("PROJ-101", "coding");
     h.issueTracker.specs.set("PROJ-101", "Implementation spec body.");
     h.queue.enqueue({ type: "coding", issueId: "PROJ-101" });
@@ -1681,7 +1922,7 @@ describe("RedQueen orchestrator", () => {
     );
     h.sourceControl.dismissStaleReviewsThrows = true;
     h.pipelineState.create("PROJ-103", "code-feedback");
-    h.pipelineState.updatePrNumber("PROJ-103", 99);
+    h.pipelineState.updatePrNumber("PROJ-103", "app", 99, null);
     h.issueTracker.phases.set("PROJ-103", "code-feedback");
     const task = h.queue.enqueue({ type: "code-feedback", issueId: "PROJ-103" });
 

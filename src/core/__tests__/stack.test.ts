@@ -2,12 +2,16 @@ import { describe, it, expect } from "vitest";
 import { resolveStack, terminalGateNames, ticketNumber } from "../stack.js";
 import type { StackResolveDeps } from "../stack.js";
 import { PhaseGraph } from "../types.js";
-import type { PipelineRecord } from "../types.js";
+import type { PipelineRecord, PipelineRepoRecord } from "../types.js";
 import { DEFAULT_PHASES } from "../defaults.js";
 import type { BlockerRef } from "../../integrations/issue-tracker.js";
 
-function record(issueId: string, overrides: Partial<PipelineRecord> = {}): PipelineRecord {
-  return {
+function record(
+  issueId: string,
+  overrides: Partial<PipelineRecord> = {},
+  rows?: PipelineRepoRecord[],
+): PipelineRecord {
+  const base = {
     issueId,
     currentPhase: "coding",
     priorPhase: null,
@@ -15,6 +19,7 @@ function record(issueId: string, overrides: Partial<PipelineRecord> = {}): Pipel
     prNumber: null,
     prBaseBranch: null,
     terminalPrNumber: null,
+    repos: [],
     worktreePath: null,
     reviewIterations: 0,
     feedbackIterations: 0,
@@ -22,6 +27,36 @@ function record(issueId: string, overrides: Partial<PipelineRecord> = {}): Pipel
     priorContext: null,
     delegatorAccountId: null,
     openQuestionCount: null,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    ...overrides,
+  };
+  return {
+    ...base,
+    repos:
+      rows ??
+      overrides.repos ??
+      (base.branchName !== null || base.prNumber !== null
+        ? [row(issueId, "default", { branchName: base.branchName, prNumber: base.prNumber })]
+        : []),
+  };
+}
+
+function row(
+  issueId: string,
+  repo: string,
+  overrides: Partial<PipelineRepoRecord> = {},
+): PipelineRepoRecord {
+  return {
+    issueId,
+    repo,
+    inScope: true,
+    mergeCompleted: false,
+    branchName: null,
+    prNumber: null,
+    prBaseBranch: null,
+    terminalPrNumber: null,
+    worktreePath: null,
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
     ...overrides,
@@ -97,6 +132,7 @@ describe("resolveStack", () => {
       unsatisfied: [],
       cycle: null,
       problems: [],
+      repos: { default: { mergeBranches: [], prBase: BASE } },
     });
   });
 
@@ -408,5 +444,202 @@ describe("resolveStack", () => {
     h.blockedBy.set("#2", [{ id: "other/repo#7", closed: true }]);
     const closed = await resolveStack("#2", BASE, h.deps);
     expect(closed.ok).toBe(true);
+  });
+});
+
+describe("resolveStack per repo", () => {
+  const targets = [
+    { name: "api", bareBase: "main" },
+    { name: "web", bareBase: "develop" },
+  ];
+
+  function atRepoGate(h: Harness, id: string, rows: PipelineRepoRecord[]): void {
+    h.records.set(id, record(id, { currentPhase: "human-review" }, rows));
+    h.phases.set(id, "human-review");
+  }
+
+  it("merges a blocker only in the repos it touched", async () => {
+    const h = mkDeps();
+    h.deps.repos = targets;
+    h.blockedBy.set("#2", [{ id: "#1", closed: false }]);
+    atRepoGate(h, "#1", [row("#1", "api", { branchName: "feature/api-1", prNumber: 10 })]);
+
+    const r = await resolveStack("#2", "main", h.deps);
+
+    expect(r.ok).toBe(true);
+    expect(r.repos).toEqual({
+      api: { mergeBranches: ["feature/api-1"], prBase: "feature/api-1" },
+      web: { mergeBranches: [], prBase: "develop" },
+    });
+    expect(r.mergeBranches).toEqual(r.repos.api?.mergeBranches);
+    expect(r.prBase).toBe(r.repos.api?.prBase);
+  });
+
+  it("is unsatisfied when any scoped row lacks a PR, including outside the target repos", async () => {
+    const h = mkDeps();
+    h.deps.repos = targets.slice(0, 1);
+    h.blockedBy.set("#2", [{ id: "#1", closed: false }]);
+    atRepoGate(h, "#1", [
+      row("#1", "api", { branchName: "feature/api-1", prNumber: 10 }),
+      row("#1", "web", { branchName: "feature/web-1" }),
+    ]);
+
+    const r = await resolveStack("#2", "main", h.deps);
+
+    expect(r.ok).toBe(false);
+    expect(r.unsatisfied).toEqual(["#1"]);
+    expect(h.phaseCalls).toEqual([]);
+  });
+
+  it("ignores descoped branches and missing PRs", async () => {
+    const h = mkDeps();
+    h.deps.repos = targets;
+    h.blockedBy.set("#2", [{ id: "#1", closed: false }]);
+    atRepoGate(h, "#1", [
+      row("#1", "api", { branchName: "feature/api-1", prNumber: 10 }),
+      row("#1", "web", { inScope: false, branchName: "feature/web-1" }),
+    ]);
+
+    const r = await resolveStack("#2", "main", h.deps);
+
+    expect(r.ok).toBe(true);
+    expect(r.repos.web).toEqual({ mergeBranches: [], prBase: "develop" });
+  });
+
+  it("names all unfinished repos missing a branch at the gate", async () => {
+    const h = mkDeps();
+    h.deps.repos = targets;
+    h.blockedBy.set("#2", [{ id: "#1", closed: false }]);
+    atRepoGate(h, "#1", [row("#1", "api", { prNumber: 10 }), row("#1", "web", { prNumber: 11 })]);
+
+    const r = await resolveStack("#2", "main", h.deps);
+
+    expect(r.ok).toBe(false);
+    expect(r.problems).toHaveLength(1);
+    expect(r.problems[0]).toMatchObject({ issueId: "#1", kind: "missing-branch" });
+    expect(r.problems[0]?.detail).toContain("api, web");
+  });
+
+  it.each([null, "feature/already-merged"])(
+    "treats a partially merged row with branch %s as already landed",
+    async (branchName) => {
+      const h = mkDeps();
+      h.deps.repos = targets;
+      h.blockedBy.set("#2", [{ id: "#1", closed: false }]);
+      atRepoGate(h, "#1", [
+        row("#1", "api", { mergeCompleted: true, terminalPrNumber: 10, branchName }),
+        row("#1", "web", { branchName: "feature/web-1", prNumber: 11 }),
+      ]);
+
+      const r = await resolveStack("#2", "main", h.deps);
+
+      expect(r.ok).toBe(true);
+      expect(r.repos).toEqual({
+        api: { mergeBranches: [], prBase: "main" },
+        web: { mergeBranches: ["feature/web-1"], prBase: "feature/web-1" },
+      });
+    },
+  );
+
+  it("still waits for an unfinished sibling after a partial merge", async () => {
+    const h = mkDeps();
+    h.deps.repos = targets;
+    h.blockedBy.set("#2", [{ id: "#1", closed: false }]);
+    atRepoGate(h, "#1", [
+      row("#1", "api", { mergeCompleted: true, terminalPrNumber: 10 }),
+      row("#1", "web"),
+    ]);
+
+    const r = await resolveStack("#2", "main", h.deps);
+
+    expect(r.ok).toBe(false);
+    expect(r.unsatisfied).toEqual(["#1"]);
+    expect(h.phaseCalls).toEqual([]);
+  });
+
+  it("does not treat historical terminal PR identity as current completion", async () => {
+    const h = mkDeps();
+    h.deps.repos = targets;
+    h.blockedBy.set("#2", [{ id: "#1", closed: false }]);
+    atRepoGate(h, "#1", [row("#1", "api", { terminalPrNumber: 10 })]);
+
+    const r = await resolveStack("#2", "main", h.deps);
+
+    expect(r.ok).toBe(false);
+    expect(r.unsatisfied).toEqual(["#1"]);
+    expect(h.phaseCalls).toEqual([]);
+  });
+
+  it("does not let compatibility scalars override empty repo scope", async () => {
+    const h = mkDeps();
+    h.deps.repos = targets;
+    h.blockedBy.set("#2", [{ id: "#1", closed: false }]);
+    h.records.set("#1", record("#1", { prNumber: 10, branchName: "feature/old" }, []));
+    h.phases.set("#1", "human-review");
+
+    const r = await resolveStack("#2", "main", h.deps);
+
+    expect(r.ok).toBe(false);
+    expect(r.unsatisfied).toEqual(["#1"]);
+  });
+
+  it("orders ancestor branches and chooses the nearest base separately in each repo", async () => {
+    const h = mkDeps();
+    h.deps.repos = targets;
+    h.blockedBy.set("#6", [
+      { id: "#4", closed: false },
+      { id: "#3", closed: false },
+    ]);
+    h.blockedBy.set("#3", [{ id: "#1", closed: false }]);
+    h.blockedBy.set("#4", [{ id: "#1", closed: false }]);
+    atRepoGate(h, "#1", [
+      row("#1", "api", { branchName: "feature/api-1", prNumber: 10 }),
+      row("#1", "web", { branchName: "feature/web-1", prNumber: 11 }),
+    ]);
+    atRepoGate(h, "#3", [row("#3", "api", { branchName: "feature/api-3", prNumber: 30 })]);
+    atRepoGate(h, "#4", [row("#4", "api", { branchName: "feature/api-4", prNumber: 40 })]);
+
+    const r = await resolveStack("#6", "main", h.deps);
+
+    expect(r.ok).toBe(true);
+    expect(r.repos).toEqual({
+      api: {
+        mergeBranches: ["feature/api-1", "feature/api-3", "feature/api-4"],
+        prBase: "feature/api-3",
+      },
+      web: { mergeBranches: ["feature/web-1"], prBase: "feature/web-1" },
+    });
+    expect(h.phaseCalls.filter((id) => id === "#1")).toHaveLength(1);
+  });
+
+  it.each([false, true])(
+    "mirrors the first target base for an empty resolution (cycle=%s)",
+    async (cycle) => {
+      const h = mkDeps();
+      h.deps.repos = targets;
+      if (cycle) {
+        h.blockedBy.set("#1", [{ id: "#1", closed: false }]);
+      }
+
+      const r = await resolveStack("#1", "different-fallback", h.deps);
+
+      expect(r.ok).toBe(cycle === false);
+      expect(r.prBase).toBe("main");
+      expect(r.mergeBranches).toEqual([]);
+      expect(r.repos).toEqual({
+        api: { mergeBranches: [], prBase: "main" },
+        web: { mergeBranches: [], prBase: "develop" },
+      });
+    },
+  );
+
+  it("defaults to one default target for callers that omit repos", async () => {
+    const h = mkDeps();
+    h.blockedBy.set("#2", [{ id: "#1", closed: false }]);
+    atGate(h, "#1", "feature/#1");
+
+    const r = await resolveStack("#2", "main", h.deps);
+
+    expect(r.repos).toEqual({ default: { mergeBranches: ["feature/#1"], prBase: "feature/#1" } });
   });
 });

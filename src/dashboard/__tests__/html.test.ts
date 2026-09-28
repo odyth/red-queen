@@ -67,11 +67,24 @@ describe("renderShell", () => {
 });
 
 describe("renderStatusPartial", () => {
-  it("contains the worker/stats/queue/log skeletons", () => {
+  it("contains the worker/stats/queue/pipelines/log skeletons", () => {
     const html = renderStatusPartial();
     expect(html).toContain(`id="worker"`);
     expect(html).toContain(`id="queue"`);
+    expect(html).toContain(`id="pipelines"`);
     expect(html).toContain(`id="log"`);
+  });
+});
+
+describe("pipeline list partials", () => {
+  it("shows the same PR-list section in Status and Workflow", () => {
+    for (const html of [renderStatusPartial(), renderWorkflowPartial()]) {
+      expect(html).toContain('class="span2 pipelines-panel"');
+      expect(html).toContain("Pipelines (PRs per issue)");
+      expect(html.match(/id="pipelines"/g)).toHaveLength(1);
+    }
+    expect(renderWorkflowPartial()).toContain('id="wf-phases"');
+    expect(renderWorkflowPartial()).toContain('id="wf-save"');
   });
 });
 

@@ -1,7 +1,14 @@
 import type BetterSqlite3 from "better-sqlite3";
-import type { OrchestratorState, OrchestratorStatus, PipelineRecord } from "./types.js";
+import type {
+  OrchestratorState,
+  OrchestratorStatus,
+  PipelineRecord,
+  PipelineRepoRecord,
+} from "./types.js";
 
-// --- Pipeline state row shape ---
+export const DEFAULT_REPO_NAME = "default";
+
+// --- Row shapes ---
 
 interface PipelineRow {
   issue_id: string;
@@ -22,7 +29,33 @@ interface PipelineRow {
   updated_at: string;
 }
 
-export type MergeTransitionResult = "processed" | "already-processed" | "stale" | "missing";
+interface PipelineRepoRow {
+  issue_id: string;
+  repo: string;
+  in_scope: number;
+  branch_name: string | null;
+  pr_number: number | null;
+  pr_base_branch: string | null;
+  terminal_pr_number: number | null;
+  merge_completed: number;
+  worktree_path: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BranchInfoUpdate {
+  branchName?: string | null;
+  prNumber?: number | null;
+  prBaseBranch?: string | null;
+  worktreePath?: string | null;
+}
+
+export type MergeTransitionResult =
+  | "processed"
+  | "already-processed"
+  | "stale"
+  | "missing"
+  | "pending-others";
 
 // Single source of truth for the merged-PR transition rules. The webhook's
 // classifyMergedPrEvent (early exit, before side effects) and markPrMerged
@@ -48,13 +81,47 @@ export function classifyMergeTransition(
   return "process";
 }
 
+// Completion belongs to this issue cycle; terminal identity survives reopening
+// to reject old deliveries. Partial merges are duplicates even before done.
+export function classifyRepoMergeTransition(
+  currentPhase: string | null,
+  row: Pick<PipelineRepoRecord, "prNumber" | "terminalPrNumber" | "mergeCompleted">,
+  mergedPrNumber: number | null,
+): "process" | "already-processed" | "stale" {
+  if (row.prNumber === null && row.mergeCompleted) {
+    return mergedPrNumber === null || row.terminalPrNumber === mergedPrNumber
+      ? "already-processed"
+      : "stale";
+  }
+  return classifyMergeTransition(
+    { currentPhase, prNumber: row.prNumber, terminalPrNumber: row.terminalPrNumber },
+    mergedPrNumber,
+  );
+}
+
+export function firstInScopeRepo(repos: readonly PipelineRepoRecord[]): PipelineRepoRecord | null {
+  return repos.find((r) => r.inScope) ?? null;
+}
+
+// The repo a single-row caller acts on: the first in-scope row, else the
+// fallback (the config's first repo — the only repo in legacy mode).
+export function primaryRepoName(record: Pick<PipelineRecord, "repos">, fallback: string): string {
+  return firstInScopeRepo(record.repos)?.repo ?? fallback;
+}
+
 // --- Pipeline state store ---
 
 export class PipelineStateStore {
   private readonly db: BetterSqlite3.Database;
+  private readonly repoNames: string[];
 
-  constructor(db: BetterSqlite3.Database) {
+  constructor(db: BetterSqlite3.Database, repoNames: readonly string[] = [DEFAULT_REPO_NAME]) {
     this.db = db;
+    this.repoNames = [...repoNames];
+  }
+
+  get defaultRepo(): string {
+    return this.repoNames[0] ?? DEFAULT_REPO_NAME;
   }
 
   create(
@@ -65,8 +132,8 @@ export class PipelineStateStore {
     const now = new Date().toISOString();
     this.db
       .prepare(
-        `INSERT INTO pipeline_state (issue_id, current_phase, delegator_account_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?)`,
+        `INSERT INTO pipeline_state (issue_id, current_phase, delegator_account_id, repo_state_version, created_at, updated_at)
+         VALUES (?, ?, ?, 1, ?, ?)`,
       )
       .run(issueId, initialPhase ?? null, delegatorAccountId ?? null, now, now);
     const record = this.get(issueId);
@@ -83,169 +150,412 @@ export class PipelineStateStore {
     if (row === undefined) {
       return null;
     }
-    return toPipelineRecord(row);
+    return toPipelineRecord(row, this.listRepos(issueId));
+  }
+
+  listAll(): PipelineRecord[] {
+    const rows = this.db
+      .prepare("SELECT * FROM pipeline_state ORDER BY updated_at DESC")
+      .all() as PipelineRow[];
+    const repoRows = this.db.prepare("SELECT * FROM pipeline_repos").all() as PipelineRepoRow[];
+    const byIssue = new Map<string, PipelineRepoRecord[]>();
+    for (const repoRow of repoRows) {
+      const list = byIssue.get(repoRow.issue_id) ?? [];
+      list.push(toRepoRecord(repoRow));
+      byIssue.set(repoRow.issue_id, list);
+    }
+    return rows.map((row) =>
+      toPipelineRecord(row, this.sortRepos(byIssue.get(row.issue_id) ?? [])),
+    );
+  }
+
+  listRepos(issueId: string): PipelineRepoRecord[] {
+    const rows = this.db
+      .prepare("SELECT * FROM pipeline_repos WHERE issue_id = ?")
+      .all(issueId) as PipelineRepoRow[];
+    return this.sortRepos(rows.map(toRepoRecord));
+  }
+
+  getRepo(issueId: string, repo: string): PipelineRepoRecord | null {
+    const row = this.db
+      .prepare("SELECT * FROM pipeline_repos WHERE issue_id = ? AND repo = ?")
+      .get(issueId, repo) as PipelineRepoRow | undefined;
+    return row === undefined ? null : toRepoRecord(row);
+  }
+
+  findByPr(repo: string, prNumber: number): PipelineRecord | null {
+    const row = this.db
+      .prepare("SELECT issue_id FROM pipeline_repos WHERE repo = ? AND pr_number = ?")
+      .get(repo, prNumber) as { issue_id: string } | undefined;
+    return row === undefined ? null : this.get(row.issue_id);
+  }
+
+  // Upserts in-scope rows for the named repos and descopes every other row.
+  // Rows are never deleted here: a descoped row keeps its branch, PR, and
+  // worktree so a human can close the orphaned PR.
+  setScope(issueId: string, repoNames: readonly string[]): PipelineRepoRecord[] {
+    return this.db.transaction((): PipelineRepoRecord[] => {
+      this.assertRecord(issueId);
+      const now = new Date().toISOString();
+      // Bringing a repo back into scope asks for fresh work there. The row does
+      // not record whether its merge landed before or after it was descoped,
+      // so both are cleared; descoping the repo again lets completeIfMerged
+      // finish the issue. Rows that stay in scope keep theirs while siblings
+      // catch up.
+      const upsert = this.db.prepare(
+        `INSERT INTO pipeline_repos (issue_id, repo, in_scope, created_at, updated_at)
+         VALUES (?, ?, 1, ?, ?)
+         ON CONFLICT(issue_id, repo) DO UPDATE SET
+           merge_completed = CASE WHEN in_scope = 0 THEN 0 ELSE merge_completed END,
+           in_scope = 1,
+           updated_at = excluded.updated_at`,
+      );
+      for (const name of repoNames) {
+        upsert.run(issueId, name, now, now);
+      }
+      if (repoNames.length === 0) {
+        this.db
+          .prepare("UPDATE pipeline_repos SET in_scope = 0, updated_at = ? WHERE issue_id = ?")
+          .run(now, issueId);
+      } else {
+        const placeholders = repoNames.map(() => "?").join(", ");
+        this.db
+          .prepare(
+            `UPDATE pipeline_repos SET in_scope = 0, updated_at = ?
+             WHERE issue_id = ? AND repo NOT IN (${placeholders})`,
+          )
+          .run(now, issueId, ...repoNames);
+      }
+      this.refreshMirror(issueId, now);
+      return this.listRepos(issueId);
+    })();
+  }
+
+  updateBranchInfo(issueId: string, repo: string, info: BranchInfoUpdate): PipelineRepoRecord {
+    return this.db.transaction((): PipelineRepoRecord => {
+      this.assertRecord(issueId);
+      const now = new Date().toISOString();
+      // The first write seeds the row, which is how a legacy install's sole
+      // repo enters scope. Once an issue has rows, only setScope adds one.
+      this.db
+        .prepare(
+          `INSERT INTO pipeline_repos (issue_id, repo, in_scope, created_at, updated_at)
+           SELECT ?, ?, 1, ?, ?
+           WHERE NOT EXISTS (SELECT 1 FROM pipeline_repos WHERE issue_id = ?)`,
+        )
+        .run(issueId, repo, now, now, issueId);
+      const previous = this.getRepo(issueId, repo);
+      if (previous === null) {
+        throw new Error(
+          `Cannot update branch info for ${issueId}: it has no row for repo "${repo}", and only setScope adds a repo to an issue`,
+        );
+      }
+
+      const sets: string[] = [];
+      const params: (string | number | null)[] = [];
+      if (Object.prototype.hasOwnProperty.call(info, "branchName")) {
+        sets.push("branch_name = ?");
+        params.push(info.branchName ?? null);
+      }
+      if (Object.prototype.hasOwnProperty.call(info, "prNumber")) {
+        sets.push("pr_number = ?");
+        params.push(info.prNumber ?? null);
+      }
+      if (Object.prototype.hasOwnProperty.call(info, "prBaseBranch")) {
+        sets.push("pr_base_branch = ?");
+        params.push(info.prBaseBranch ?? null);
+      }
+      if (Object.prototype.hasOwnProperty.call(info, "worktreePath")) {
+        sets.push("worktree_path = ?");
+        params.push(info.worktreePath ?? null);
+      }
+      // A replacement PR/branch starts fresh work; clearing cleanup artifacts
+      // must retain completion while this issue waits for its sibling repos.
+      if (
+        (info.prNumber != null && info.prNumber !== previous.prNumber) ||
+        (info.branchName != null && info.branchName !== previous.branchName)
+      ) {
+        sets.push("merge_completed = 0");
+      }
+      if (sets.length > 0) {
+        sets.push("updated_at = ?");
+        params.push(now, issueId, repo);
+        this.db
+          .prepare(`UPDATE pipeline_repos SET ${sets.join(", ")} WHERE issue_id = ? AND repo = ?`)
+          .run(...params);
+      }
+      this.refreshMirror(issueId, now);
+      const updated = this.getRepo(issueId, repo);
+      if (updated === null) {
+        throw new Error(`Repo row ${issueId}/${repo} disappeared during updateBranchInfo`);
+      }
+      return updated;
+    })();
+  }
+
+  updateBranch(issueId: string, repo: string, branchName: string): boolean {
+    this.updateBranchInfo(issueId, repo, { branchName });
+    return true;
+  }
+
+  updatePrNumber(
+    issueId: string,
+    repo: string,
+    prNumber: number,
+    prBaseBranch: string | null,
+  ): boolean {
+    this.updateBranchInfo(issueId, repo, { prNumber, prBaseBranch });
+    return true;
+  }
+
+  updateWorktreePath(issueId: string, repo: string, worktreePath: string | null): boolean {
+    this.updateBranchInfo(issueId, repo, { worktreePath });
+    return true;
   }
 
   updatePhase(issueId: string, phase: string): boolean {
-    const now = new Date().toISOString();
-    // Shift the outgoing phase into prior_phase atomically. SQLite evaluates the
-    // RHS against the pre-update row, so prior_phase captures current_phase as it
-    // was before this transition. Every transition path funnels through here, so
-    // a dispatched skill can read prior_phase to know what ran before it.
-    const result = this.db
-      .prepare(
-        "UPDATE pipeline_state SET prior_phase = current_phase, current_phase = ?, updated_at = ? WHERE issue_id = ?",
-      )
-      .run(phase, now, issueId);
-    return result.changes > 0;
+    return this.db.transaction((): boolean => {
+      const now = new Date().toISOString();
+      if (phase !== "done") {
+        this.db
+          .prepare(
+            `UPDATE pipeline_repos SET merge_completed = 0, updated_at = ?
+             WHERE issue_id = ? AND EXISTS (
+               SELECT 1 FROM pipeline_state WHERE issue_id = ? AND current_phase = 'done'
+             )`,
+          )
+          .run(now, issueId, issueId);
+      }
+      // SQLite evaluates the RHS against the pre-update row, preserving the
+      // outgoing phase for the next dispatched skill.
+      const result = this.db
+        .prepare(
+          "UPDATE pipeline_state SET prior_phase = current_phase, current_phase = ?, updated_at = ? WHERE issue_id = ?",
+        )
+        .run(phase, now, issueId);
+      if (result.changes > 0) {
+        this.refreshMirror(issueId, now);
+      }
+      return result.changes > 0;
+    })();
   }
 
   markDone(issueId: string): boolean {
-    const now = new Date().toISOString();
-    const result = this.db
-      .prepare(
-        `UPDATE pipeline_state
-         SET prior_phase = CASE
-               WHEN current_phase = 'done' THEN prior_phase
-               ELSE current_phase
-             END,
-             current_phase = 'done',
-             terminal_pr_number = CASE
-               WHEN current_phase = 'done' THEN terminal_pr_number
-               ELSE pr_number
-             END,
-             updated_at = ?
-         WHERE issue_id = ?`,
-      )
-      .run(now, issueId);
-    return result.changes > 0;
+    return this.db.transaction((): boolean => {
+      const state = this.db
+        .prepare("SELECT current_phase FROM pipeline_state WHERE issue_id = ?")
+        .get(issueId) as { current_phase: string | null } | undefined;
+      if (state === undefined) {
+        return false;
+      }
+      const now = new Date().toISOString();
+      if (state.current_phase !== "done") {
+        this.db
+          .prepare(
+            `UPDATE pipeline_repos SET terminal_pr_number = COALESCE(pr_number, terminal_pr_number), updated_at = ?
+             WHERE issue_id = ? AND in_scope = 1`,
+          )
+          .run(now, issueId);
+        this.db
+          .prepare(
+            `UPDATE pipeline_state SET prior_phase = current_phase, current_phase = 'done', updated_at = ?
+             WHERE issue_id = ?`,
+          )
+          .run(now, issueId);
+      }
+      this.refreshMirror(issueId, now);
+      return true;
+    })();
   }
 
-  markPrMerged(issueId: string, mergedPrNumber: number | null): MergeTransitionResult {
+  // Per-row terminal transition. The issue moves to done only inside the
+  // transaction that completes all in-scope rows; a descoped row's merge
+  // transitions that row and nothing else.
+  markPrMerged(
+    issueId: string,
+    repo: string,
+    mergedPrNumber: number | null,
+  ): MergeTransitionResult {
     return this.db.transaction((): MergeTransitionResult => {
-      const row = this.db
-        .prepare(
-          `SELECT current_phase, pr_number, terminal_pr_number
-           FROM pipeline_state
-           WHERE issue_id = ?`,
-        )
-        .get(issueId) as
-        | {
-            current_phase: string | null;
-            pr_number: number | null;
-            terminal_pr_number: number | null;
-          }
-        | undefined;
-      if (row === undefined) {
+      const state = this.db
+        .prepare("SELECT current_phase FROM pipeline_state WHERE issue_id = ?")
+        .get(issueId) as { current_phase: string | null } | undefined;
+      const row = this.getRepo(issueId, repo);
+      if (state === undefined || row === null) {
         return "missing";
       }
-
-      const disposition = classifyMergeTransition(
-        {
-          currentPhase: row.current_phase,
-          prNumber: row.pr_number,
-          terminalPrNumber: row.terminal_pr_number,
-        },
-        mergedPrNumber,
-      );
+      const disposition = classifyRepoMergeTransition(state.current_phase, row, mergedPrNumber);
       if (disposition !== "process") {
         return disposition;
       }
-
       const now = new Date().toISOString();
       this.db
         .prepare(
-          `UPDATE pipeline_state
-           SET prior_phase = CASE
-                 WHEN current_phase = 'done' THEN prior_phase
-                 ELSE current_phase
-               END,
-               current_phase = 'done',
-               terminal_pr_number = COALESCE(?, pr_number),
+          `UPDATE pipeline_repos
+           SET terminal_pr_number = COALESCE(?, pr_number),
+               merge_completed = 1,
                pr_number = NULL,
                pr_base_branch = NULL,
                updated_at = ?
+           WHERE issue_id = ? AND repo = ?`,
+        )
+        .run(mergedPrNumber, now, issueId, repo);
+      const remaining = this.db
+        .prepare(
+          "SELECT COUNT(*) AS c FROM pipeline_repos WHERE issue_id = ? AND in_scope = 1 AND merge_completed = 0",
+        )
+        .get(issueId) as { c: number };
+      if (row.inScope === false || remaining.c > 0) {
+        this.refreshMirror(issueId, now);
+        return "pending-others";
+      }
+      this.db
+        .prepare(
+          `UPDATE pipeline_state
+           SET prior_phase = CASE WHEN current_phase = 'done' THEN prior_phase ELSE current_phase END,
+               current_phase = 'done',
+               updated_at = ?
            WHERE issue_id = ?`,
         )
-        .run(mergedPrNumber, now, issueId);
+        .run(now, issueId);
+      this.refreshMirror(issueId, now);
       return "processed";
     })();
   }
 
-  updateBranch(issueId: string, branchName: string): boolean {
-    const now = new Date().toISOString();
-    const result = this.db
-      .prepare("UPDATE pipeline_state SET branch_name = ?, updated_at = ? WHERE issue_id = ?")
-      .run(branchName, now, issueId);
-    return result.changes > 0;
+  // Shrinking scope can leave every in-scope row merged with no merge event
+  // left to finish the issue, and a replay of the merged row is a duplicate.
+  // Callers must hold this back while a worker owns the issue: its phase
+  // advance out of done would reopen the cycle and clear the merges.
+  completeIfMerged(issueId: string): boolean {
+    return this.db.transaction((): boolean => {
+      const scope = this.db
+        .prepare(
+          `SELECT COUNT(*) AS scoped, COALESCE(SUM(merge_completed = 0), 0) AS remaining
+           FROM pipeline_repos WHERE issue_id = ? AND in_scope = 1`,
+        )
+        .get(issueId) as { scoped: number; remaining: number };
+      if (scope.scoped === 0 || scope.remaining > 0) {
+        return false;
+      }
+      const now = new Date().toISOString();
+      const result = this.db
+        .prepare(
+          `UPDATE pipeline_state
+           SET prior_phase = current_phase, current_phase = 'done', updated_at = ?
+           WHERE issue_id = ? AND (current_phase IS NULL OR current_phase <> 'done')`,
+        )
+        .run(now, issueId);
+      return result.changes > 0;
+    })();
   }
 
-  updatePrNumber(issueId: string, prNumber: number): boolean {
-    const now = new Date().toISOString();
-    const result = this.db
-      .prepare("UPDATE pipeline_state SET pr_number = ?, updated_at = ? WHERE issue_id = ?")
-      .run(prNumber, now, issueId);
-    return result.changes > 0;
+  // Pre-upgrade rows with scalar state get a row for the config's first repo.
+  // Modern workspace specs stay unscoped until scope is explicitly selected.
+  // Explicit legacy mode preserves the sole-repo scope of modern legacy specs.
+  adoptLegacyRows(repoName: string, legacyMode = false): string[] {
+    return this.db.transaction((): string[] => {
+      const candidates = this.db
+        .prepare(
+          `SELECT issue_id FROM pipeline_state ps
+           WHERE (branch_name IS NOT NULL OR pr_number IS NOT NULL OR worktree_path IS NOT NULL
+                  OR spec_content IS NOT NULL OR terminal_pr_number IS NOT NULL)
+             AND (repo_state_version = 0 OR ? = 1)
+             AND NOT EXISTS (SELECT 1 FROM pipeline_repos pr WHERE pr.issue_id = ps.issue_id)
+           ORDER BY issue_id`,
+        )
+        .all(legacyMode ? 1 : 0) as { issue_id: string }[];
+      const now = new Date().toISOString();
+      this.db
+        .prepare(
+          `INSERT INTO pipeline_repos
+             (issue_id, repo, in_scope, branch_name, pr_number, pr_base_branch, terminal_pr_number, merge_completed, worktree_path, created_at, updated_at)
+           SELECT issue_id, ?, 1, branch_name, pr_number, pr_base_branch, terminal_pr_number,
+                  CASE WHEN current_phase = 'done' AND pr_number IS NULL AND terminal_pr_number IS NOT NULL THEN 1 ELSE 0 END,
+                  worktree_path, created_at, ?
+           FROM pipeline_state ps
+           WHERE (branch_name IS NOT NULL OR pr_number IS NOT NULL OR worktree_path IS NOT NULL
+                  OR spec_content IS NOT NULL OR terminal_pr_number IS NOT NULL)
+             AND (repo_state_version = 0 OR ? = 1)
+             AND NOT EXISTS (SELECT 1 FROM pipeline_repos pr WHERE pr.issue_id = ps.issue_id)`,
+        )
+        .run(repoName, now, legacyMode ? 1 : 0);
+      // Mark even empty pre-upgrade records as seen: a later workspace spec
+      // write must not become eligible for adoption on the next helper/start.
+      this.db
+        .prepare("UPDATE pipeline_state SET repo_state_version = 1 WHERE repo_state_version = 0")
+        .run();
+      for (const candidate of candidates) {
+        this.refreshMirror(candidate.issue_id, now);
+      }
+      return candidates.map((c) => c.issue_id);
+    })();
   }
 
-  updateWorktreePath(issueId: string, worktreePath: string | null): boolean {
-    const now = new Date().toISOString();
-    const result = this.db
-      .prepare("UPDATE pipeline_state SET worktree_path = ?, updated_at = ? WHERE issue_id = ?")
-      .run(worktreePath, now, issueId);
-    return result.changes > 0;
+  // Rows are keyed by config repo name. Helpers read the config file, which can
+  // be ahead of a running daemon, so they only verify: re-keying under a live
+  // daemon would strand every in-flight issue at once. A descoped row holding
+  // nothing is inert in a workspace: no skill, event, or sweep can reach it.
+  assertRepoNames(legacyMode: boolean): void {
+    if (legacyMode) {
+      const target = this.defaultRepo;
+      const stale = this.db
+        .prepare("SELECT DISTINCT repo FROM pipeline_repos WHERE repo <> ? ORDER BY repo")
+        .all(target) as { repo: string }[];
+      if (stale.length > 0) {
+        throw new Error(
+          `Pipeline state is keyed to repo ${stale.map((row) => `"${row.repo}"`).join(", ")} but the config now names "${target}". Restart Red Queen to re-key it, or restore the previous sourceControl.config.repo.`,
+        );
+      }
+      return;
+    }
+    const placeholders = this.repoNames.map(() => "?").join(", ");
+    const unknown = this.db
+      .prepare(
+        `SELECT pr.issue_id, pr.repo FROM pipeline_repos pr
+         JOIN pipeline_state ps ON ps.issue_id = pr.issue_id
+         WHERE pr.repo NOT IN (${placeholders})
+           AND (ps.current_phase IS NULL OR ps.current_phase <> 'done')
+           AND (pr.in_scope = 1 OR pr.branch_name IS NOT NULL
+                OR pr.pr_number IS NOT NULL OR pr.worktree_path IS NOT NULL)
+         ORDER BY pr.issue_id, pr.repo`,
+      )
+      .all(...this.repoNames) as { issue_id: string; repo: string }[];
+    if (unknown.length > 0) {
+      throw new Error(
+        `Unfinished issues reference repos missing from project.repos: ${describeRepoRows(unknown)} (configured: ${this.repoNames.join(", ")}). Restore each entry under its previous name until these issues finish, or drop an abandoned issue's rows with redqueen pipeline cleanup <issueId>.`,
+      );
+    }
   }
 
-  updateBranchInfo(
-    issueId: string,
-    info: {
-      branchName?: string | null;
-      prNumber?: number | null;
-      prBaseBranch?: string | null;
-      worktreePath?: string | null;
-    },
-  ): PipelineRecord {
-    const existing = this.get(issueId);
-    if (existing === null) {
-      throw new Error(`Cannot update branch info: no pipeline record for issue ${issueId}`);
+  // Start-only. A legacy install has exactly one repo, so a row under any other
+  // name is that repo under a previous derived name. A workspace cannot tell a
+  // rename from a removal and refuses to guess.
+  reconcileRepoNames(legacyMode: boolean): string[] {
+    if (legacyMode === false) {
+      this.assertRepoNames(false);
+      return [];
     }
-
-    const sets: string[] = [];
-    const params: (string | number | null)[] = [];
-    if (Object.prototype.hasOwnProperty.call(info, "branchName")) {
-      sets.push("branch_name = ?");
-      params.push(info.branchName ?? null);
-    }
-    if (Object.prototype.hasOwnProperty.call(info, "prNumber")) {
-      sets.push("pr_number = ?");
-      params.push(info.prNumber ?? null);
-    }
-    if (Object.prototype.hasOwnProperty.call(info, "prBaseBranch")) {
-      sets.push("pr_base_branch = ?");
-      params.push(info.prBaseBranch ?? null);
-    }
-    if (Object.prototype.hasOwnProperty.call(info, "worktreePath")) {
-      sets.push("worktree_path = ?");
-      params.push(info.worktreePath ?? null);
-    }
-    if (sets.length === 0) {
-      return existing;
-    }
-
-    const now = new Date().toISOString();
-    sets.push("updated_at = ?");
-    params.push(now);
-    params.push(issueId);
-
-    this.db
-      .prepare(`UPDATE pipeline_state SET ${sets.join(", ")} WHERE issue_id = ?`)
-      .run(...params);
-
-    const updated = this.get(issueId);
-    if (updated === null) {
-      throw new Error(`Pipeline record for ${issueId} disappeared during updateBranchInfo`);
-    }
-    return updated;
+    return this.db.transaction((): string[] => {
+      const target = this.defaultRepo;
+      const stale = this.db
+        .prepare(
+          `SELECT issue_id, repo,
+                  (SELECT COUNT(*) FROM pipeline_repos o WHERE o.issue_id = pr.issue_id) AS siblings
+           FROM pipeline_repos pr WHERE repo <> ? ORDER BY issue_id, repo`,
+        )
+        .all(target) as { issue_id: string; repo: string; siblings: number }[];
+      const ambiguous = stale.filter((row) => row.siblings > 1);
+      if (ambiguous.length > 0) {
+        throw new Error(
+          `Cannot re-key pipeline rows to the sole repo "${target}": ${describeRepoRows(ambiguous)} belong to issues that hold another repo row, and a single-repo install keeps one row per issue. If this database last ran as a workspace, restore project.repos; otherwise delete the stale pipeline_repos row for each listed issue.`,
+        );
+      }
+      this.db
+        .prepare("UPDATE pipeline_repos SET repo = ?, updated_at = ? WHERE repo <> ?")
+        .run(target, new Date().toISOString(), target);
+      return stale.map((row) => row.issue_id);
+    })();
   }
 
   incrementReviewIterations(issueId: string): number {
@@ -344,16 +654,79 @@ export class PipelineStateStore {
     return result.changes > 0;
   }
 
-  delete(issueId: string): boolean {
-    const result = this.db.prepare("DELETE FROM pipeline_state WHERE issue_id = ?").run(issueId);
-    return result.changes > 0;
+  // Spec scope and its gate metadata must become visible together. Omitting
+  // repoNames preserves the existing scope for legacy single-repo callers.
+  setSpecMetadata(
+    issueId: string,
+    count: number,
+    repoNames?: readonly string[],
+  ): PipelineRepoRecord[] {
+    return this.db.transaction((): PipelineRepoRecord[] => {
+      this.assertRecord(issueId);
+      this.setOpenQuestionCount(issueId, count);
+      return repoNames === undefined ? this.listRepos(issueId) : this.setScope(issueId, repoNames);
+    })();
   }
 
-  listAll(): PipelineRecord[] {
-    const rows = this.db
-      .prepare("SELECT * FROM pipeline_state ORDER BY updated_at DESC")
-      .all() as PipelineRow[];
-    return rows.map(toPipelineRecord);
+  deleteRepo(issueId: string, repo: string): boolean {
+    return this.db.transaction((): boolean => {
+      const result = this.db
+        .prepare("DELETE FROM pipeline_repos WHERE issue_id = ? AND repo = ?")
+        .run(issueId, repo);
+      if (result.changes > 0) {
+        this.refreshMirror(issueId, new Date().toISOString());
+      }
+      return result.changes > 0;
+    })();
+  }
+
+  delete(issueId: string): boolean {
+    return this.db.transaction((): boolean => {
+      this.db.prepare("DELETE FROM pipeline_repos WHERE issue_id = ?").run(issueId);
+      const result = this.db.prepare("DELETE FROM pipeline_state WHERE issue_id = ?").run(issueId);
+      return result.changes > 0;
+    })();
+  }
+
+  private assertRecord(issueId: string): void {
+    const exists = this.db.prepare("SELECT 1 FROM pipeline_state WHERE issue_id = ?").get(issueId);
+    if (exists === undefined) {
+      throw new Error(`Cannot update branch info: no pipeline record for issue ${issueId}`);
+    }
+  }
+
+  // Refresh the display-only scalar mirror from the first in-scope row. Called
+  // inside every transaction that touches pipeline_repos.
+  private refreshMirror(issueId: string, now: string): void {
+    const first = firstInScopeRepo(this.listRepos(issueId));
+    this.db
+      .prepare(
+        `UPDATE pipeline_state
+         SET branch_name = ?, pr_number = ?, pr_base_branch = ?, terminal_pr_number = ?,
+             worktree_path = ?, updated_at = ?
+         WHERE issue_id = ?`,
+      )
+      .run(
+        first?.branchName ?? null,
+        first?.prNumber ?? null,
+        first?.prBaseBranch ?? null,
+        first?.terminalPrNumber ?? null,
+        first?.worktreePath ?? null,
+        now,
+        issueId,
+      );
+  }
+
+  private sortRepos(rows: PipelineRepoRecord[]): PipelineRepoRecord[] {
+    const order = new Map(this.repoNames.map((name, index) => [name, index]));
+    return [...rows].sort((a, b) => {
+      const ia = order.get(a.repo) ?? Number.MAX_SAFE_INTEGER;
+      const ib = order.get(b.repo) ?? Number.MAX_SAFE_INTEGER;
+      if (ia !== ib) {
+        return ia - ib;
+      }
+      return a.repo.localeCompare(b.repo);
+    });
   }
 }
 
@@ -454,16 +827,37 @@ export class OrchestratorStateStore {
   }
 }
 
-function toPipelineRecord(row: PipelineRow): PipelineRecord {
+function describeRepoRows(rows: { issue_id: string; repo: string }[]): string {
+  return rows.map((row) => `${row.issue_id} → ${row.repo}`).join(", ");
+}
+
+function toRepoRecord(row: PipelineRepoRow): PipelineRepoRecord {
   return {
     issueId: row.issue_id,
-    currentPhase: row.current_phase,
-    priorPhase: row.prior_phase,
+    repo: row.repo,
+    inScope: row.in_scope === 1,
     branchName: row.branch_name,
     prNumber: row.pr_number,
     prBaseBranch: row.pr_base_branch,
     terminalPrNumber: row.terminal_pr_number,
+    mergeCompleted: row.merge_completed === 1,
     worktreePath: row.worktree_path,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function toPipelineRecord(row: PipelineRow, repos: PipelineRepoRecord[]): PipelineRecord {
+  const primary = firstInScopeRepo(repos);
+  return {
+    issueId: row.issue_id,
+    currentPhase: row.current_phase,
+    priorPhase: row.prior_phase,
+    branchName: primary?.branchName ?? null,
+    prNumber: primary?.prNumber ?? null,
+    prBaseBranch: primary?.prBaseBranch ?? null,
+    terminalPrNumber: primary?.terminalPrNumber ?? null,
+    worktreePath: primary?.worktreePath ?? null,
     reviewIterations: row.review_iterations,
     feedbackIterations: row.feedback_iterations,
     specContent: row.spec_content,
@@ -472,5 +866,6 @@ function toPipelineRecord(row: PipelineRow): PipelineRecord {
     openQuestionCount: row.open_question_count,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    repos,
   };
 }

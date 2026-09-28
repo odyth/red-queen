@@ -5,6 +5,7 @@ import type { Review } from "../integrations/source-control.js";
 import { loadCliContext } from "./context.js";
 import { CliError } from "./errors.js";
 import { readBodyFromStdinOrFlag, writeJson, writeText } from "./io.js";
+import { resolveRepoArg, resolveScopedRepoArg } from "./repo-arg.js";
 
 export async function cmdPr(args: string[]): Promise<void> {
   const [subcommand, ...rest] = args;
@@ -44,6 +45,7 @@ async function cmdPrCreate(args: string[]): Promise<void> {
   const { values } = parseArgs({
     args,
     options: {
+      repo: { type: "string" },
       issue: { type: "string" },
       head: { type: "string" },
       base: { type: "string" },
@@ -67,46 +69,53 @@ async function cmdPrCreate(args: string[]): Promise<void> {
 
   const ctx = loadCliContext();
   try {
+    const repo = resolveScopedRepoArg(
+      ctx.config,
+      ctx.pipelineState,
+      issueId,
+      values.repo,
+      "pr create",
+    );
+    const sourceControl = ctx.sourceControls.get(repo.name);
     // Stacked issues target the nearest unmerged blocker's branch, and the
     // stack may have shifted since dispatch (a blocker merged mid-run) — so
     // recompute the base fresh; the coder's --base is the fallback.
     let resolvedBase = base;
     try {
-      const resolution = await resolveStack(
-        issueId,
-        bareBaseBranch(ctx.config.pipeline.baseBranch),
-        {
-          getBlockedBy: (id) => ctx.issueTracker.getBlockedBy(id),
-          getPipelineRecord: (id) => ctx.pipelineState.get(id),
-          getTrackerPhase: (id) => ctx.issueTracker.getPhase(id),
-          terminalGates: terminalGateNames(buildPhaseGraph(ctx.config.phases)),
-        },
-      );
+      const resolution = await resolveStack(issueId, bareBaseBranch(repo.baseBranch), {
+        getBlockedBy: (id) => ctx.issueTracker.getBlockedBy(id),
+        getPipelineRecord: (id) => ctx.pipelineState.get(id),
+        getTrackerPhase: (id) => ctx.issueTracker.getPhase(id),
+        terminalGates: terminalGateNames(buildPhaseGraph(ctx.config.phases)),
+        repos: ctx.config.project.repos.map((target) => ({
+          name: target.name,
+          bareBase: bareBaseBranch(target.baseBranch),
+        })),
+      });
       // Only stacked issues get overridden — a non-stacked --base (possibly a
       // deliberate custom target) passes through untouched.
       if (resolution.ok && resolution.directBlockers.length > 0) {
-        resolvedBase = resolution.prBase;
+        resolvedBase = resolution.repos[repo.name]?.prBase ?? resolution.prBase;
       }
     } catch (err) {
       ctx.audit.log({
         component: "helper:pr",
         issueId,
         message: `pr create: stack base recompute failed — keeping --base ${base}: ${err instanceof Error ? err.message : String(err)}`,
-        metadata: { base },
+        metadata: { base, repo: repo.name },
       });
     }
-    const pr = await ctx.sourceControl.createPullRequest({
+    const pr = await sourceControl.createPullRequest({
       title,
       body,
       head,
       base: resolvedBase,
       draft: values.draft === true,
     });
-    const existing = ctx.pipelineState.get(issueId);
-    if (existing === null) {
+    if (ctx.pipelineState.get(issueId) === null) {
       ctx.pipelineState.create(issueId);
     }
-    ctx.pipelineState.updateBranchInfo(issueId, {
+    ctx.pipelineState.updateBranchInfo(issueId, repo.name, {
       branchName: head,
       prNumber: pr.number,
       prBaseBranch: resolvedBase,
@@ -115,7 +124,7 @@ async function cmdPrCreate(args: string[]): Promise<void> {
       component: "helper:pr",
       issueId,
       message: `Created PR #${String(pr.number)} from ${head} → ${resolvedBase}`,
-      metadata: { prNumber: pr.number, head, base: resolvedBase, url: pr.url },
+      metadata: { prNumber: pr.number, head, base: resolvedBase, url: pr.url, repo: repo.name },
     });
     writeJson(pr, values.pretty === true);
   } finally {
@@ -124,11 +133,17 @@ async function cmdPrCreate(args: string[]): Promise<void> {
 }
 
 async function cmdPrDiff(args: string[]): Promise<void> {
-  const { positionals } = parseArgs({ args, allowPositionals: true });
+  const { positionals, values } = parseArgs({
+    args,
+    options: { repo: { type: "string" } },
+    allowPositionals: true,
+  });
   const prNumber = parsePrNumber(positionals[0], "pr diff");
   const ctx = loadCliContext();
   try {
-    const diff = await ctx.sourceControl.getPullRequestDiff(prNumber);
+    const repo = resolveRepoArg(ctx.config, values.repo, "pr diff");
+    const sourceControl = ctx.sourceControls.get(repo.name);
+    const diff = await sourceControl.getPullRequestDiff(prNumber);
     writeText(diff);
   } finally {
     ctx.cleanup();
@@ -139,6 +154,7 @@ async function cmdPrChecks(args: string[]): Promise<void> {
   const { positionals, values } = parseArgs({
     args,
     options: {
+      repo: { type: "string" },
       wait: { type: "string" },
       pretty: { type: "boolean", default: false },
     },
@@ -148,20 +164,22 @@ async function cmdPrChecks(args: string[]): Promise<void> {
 
   const ctx = loadCliContext();
   try {
+    const repo = resolveRepoArg(ctx.config, values.repo, "pr checks");
+    const sourceControl = ctx.sourceControls.get(repo.name);
     const waitSeconds = values.wait !== undefined ? Number.parseInt(values.wait, 10) : 0;
     if (Number.isNaN(waitSeconds) || waitSeconds < 0) {
       throw new CliError("pr checks: --wait must be a non-negative integer (seconds)");
     }
 
     if (waitSeconds === 0) {
-      const checks = await ctx.sourceControl.getChecks(prNumber);
+      const checks = await sourceControl.getChecks(prNumber);
       writeJson(checks, values.pretty === true);
       return;
     }
 
     const deadline = Date.now() + waitSeconds * 1000;
     for (;;) {
-      const checks = await ctx.sourceControl.getChecks(prNumber);
+      const checks = await sourceControl.getChecks(prNumber);
       const pending = checks.some((c) => c.conclusion === null || c.conclusion === "pending");
       if (pending === false || Date.now() >= deadline) {
         writeJson(checks, values.pretty === true);
@@ -178,6 +196,7 @@ async function cmdPrReview(args: string[]): Promise<void> {
   const { positionals, values } = parseArgs({
     args,
     options: {
+      repo: { type: "string" },
       verdict: { type: "string" },
       body: { type: "string" },
     },
@@ -192,12 +211,14 @@ async function cmdPrReview(args: string[]): Promise<void> {
   const body = await readBodyFromStdinOrFlag(values.body, "review body");
   const ctx = loadCliContext();
   try {
-    await ctx.sourceControl.postReview(prNumber, body, verdict);
+    const repo = resolveRepoArg(ctx.config, values.repo, "pr review");
+    const sourceControl = ctx.sourceControls.get(repo.name);
+    await sourceControl.postReview(prNumber, body, verdict);
     ctx.audit.log({
       component: "helper:pr",
       issueId: null,
       message: `Posted review ${verdict} on PR #${String(prNumber)}`,
-      metadata: { prNumber, verdict, bodyLength: body.length },
+      metadata: { prNumber, verdict, bodyLength: body.length, repo: repo.name },
     });
     writeJson({ ok: true });
   } finally {
@@ -209,6 +230,7 @@ async function cmdPrComments(args: string[]): Promise<void> {
   const { positionals, values } = parseArgs({
     args,
     options: {
+      repo: { type: "string" },
       pretty: { type: "boolean", default: false },
       threads: { type: "boolean", default: false },
       "include-resolved": { type: "boolean", default: false },
@@ -219,7 +241,9 @@ async function cmdPrComments(args: string[]): Promise<void> {
   const unresolvedOnly = values["include-resolved"] !== true;
   const ctx = loadCliContext();
   try {
-    const threads = await ctx.sourceControl.getReviewThreads(prNumber, { unresolvedOnly });
+    const repo = resolveRepoArg(ctx.config, values.repo, "pr comments");
+    const sourceControl = ctx.sourceControls.get(repo.name);
+    const threads = await sourceControl.getReviewThreads(prNumber, { unresolvedOnly });
     if (values.threads === true) {
       writeJson(threads, values.pretty === true);
       return;
@@ -241,7 +265,7 @@ async function cmdPrComments(args: string[]): Promise<void> {
 async function cmdPrReply(args: string[]): Promise<void> {
   const { positionals, values } = parseArgs({
     args,
-    options: { body: { type: "string" } },
+    options: { body: { type: "string" }, repo: { type: "string" } },
     allowPositionals: true,
   });
   const prNumber = parsePrNumber(positionals[0], "pr reply");
@@ -256,12 +280,14 @@ async function cmdPrReply(args: string[]): Promise<void> {
   const body = await readBodyFromStdinOrFlag(values.body, "reply body");
   const ctx = loadCliContext();
   try {
-    await ctx.sourceControl.replyToComment(prNumber, commentId, body);
+    const repo = resolveRepoArg(ctx.config, values.repo, "pr reply");
+    const sourceControl = ctx.sourceControls.get(repo.name);
+    await sourceControl.replyToComment(prNumber, commentId, body);
     ctx.audit.log({
       component: "helper:pr",
       issueId: null,
       message: `Replied to comment ${String(commentId)} on PR #${String(prNumber)}`,
-      metadata: { prNumber, commentId },
+      metadata: { prNumber, commentId, repo: repo.name },
     });
     writeJson({ ok: true });
   } finally {
@@ -273,6 +299,7 @@ async function cmdPrReviews(args: string[]): Promise<void> {
   const { positionals, values } = parseArgs({
     args,
     options: {
+      repo: { type: "string" },
       latest: { type: "boolean", default: false },
       pretty: { type: "boolean", default: false },
     },
@@ -281,7 +308,9 @@ async function cmdPrReviews(args: string[]): Promise<void> {
   const prNumber = parsePrNumber(positionals[0], "pr reviews");
   const ctx = loadCliContext();
   try {
-    const reviews = await ctx.sourceControl.getReviews(prNumber);
+    const repo = resolveRepoArg(ctx.config, values.repo, "pr reviews");
+    const sourceControl = ctx.sourceControls.get(repo.name);
+    const reviews = await sourceControl.getReviews(prNumber);
     if (values.latest === true) {
       writeJson(pickLatestReview(reviews), values.pretty === true);
       return;
@@ -295,19 +324,21 @@ async function cmdPrReviews(args: string[]): Promise<void> {
 async function cmdPrComment(args: string[]): Promise<void> {
   const { positionals, values } = parseArgs({
     args,
-    options: { body: { type: "string" } },
+    options: { body: { type: "string" }, repo: { type: "string" } },
     allowPositionals: true,
   });
   const prNumber = parsePrNumber(positionals[0], "pr comment");
   const body = await readBodyFromStdinOrFlag(values.body, "comment body");
   const ctx = loadCliContext();
   try {
-    await ctx.sourceControl.postPrComment(prNumber, body);
+    const repo = resolveRepoArg(ctx.config, values.repo, "pr comment");
+    const sourceControl = ctx.sourceControls.get(repo.name);
+    await sourceControl.postPrComment(prNumber, body);
     ctx.audit.log({
       component: "helper:pr",
       issueId: null,
       message: `Posted PR comment on PR #${String(prNumber)}`,
-      metadata: { prNumber, bodyLength: body.length },
+      metadata: { prNumber, bodyLength: body.length, repo: repo.name },
     });
     writeJson({ ok: true });
   } finally {

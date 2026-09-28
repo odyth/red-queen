@@ -1,3 +1,4 @@
+import { createSourceControlRegistry } from "../../integrations/source-control-registry.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
 import type BetterSqlite3 from "better-sqlite3";
@@ -5,7 +6,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DualWriteAuditLogger } from "../audit.js";
-import { buildPhaseGraph } from "../config.js";
+import { buildPhaseGraph, parseConfig, resolveProjectPaths } from "../config.js";
 import type { RedQueenConfig } from "../config.js";
 import { SCHEMA_SQL } from "../database.js";
 import { DEFAULT_PHASES } from "../defaults.js";
@@ -51,7 +52,10 @@ const SINGLE_PHASE: PhaseDefinition[] = [
 
 function buildOrchestrator(runtime: RuntimeState, skillsDir: string): RedQueen {
   const queue = new SqliteTaskQueue(db);
-  const pipelineState = new PipelineStateStore(db);
+  const pipelineState = new PipelineStateStore(
+    db,
+    runtime.config.project.repos.map((repo) => repo.name),
+  );
   const phaseUsage = new PhaseUsageStore(db);
   const orchestratorState = new OrchestratorStateStore(db);
   const audit = new DualWriteAuditLogger(db, join(tempDir, "audit.log"));
@@ -63,8 +67,16 @@ function buildOrchestrator(runtime: RuntimeState, skillsDir: string): RedQueen {
     orchestratorState,
     audit,
     issueTracker: new MockIssueTracker(),
-    sourceControl: new MockSourceControl(),
+    sourceControls: createSourceControlRegistry(
+      runtime.config.project.repos.map((repo) => ({
+        name: repo.name,
+        fullName: `${repo.owner}/${repo.repo}`,
+        adapter: new MockSourceControl(),
+      })),
+    ),
     builtInSkillsDir: skillsDir,
+    configPath: join(tempDir, "redqueen.yaml"),
+    projectRoot: tempDir,
     installSignalHandlers: false,
     workerRunner: () =>
       Promise.resolve({
@@ -104,7 +116,7 @@ describe("Orchestrator.reload", () => {
 
     // Graph swap visible through the same runtime reference observers already hold.
     expect(runtime.phaseGraph.getPhaseNames()).toEqual(["solo-phase"]);
-    expect(runtime.config).toBe(newConfig);
+    expect(runtime.config).toEqual(newConfig);
     expect(result.applied).toContain("phases");
   });
 
@@ -134,6 +146,142 @@ describe("Orchestrator.reload", () => {
     const result = orchestrator.reload(runtime.config);
     expect(result.applied).toEqual([]);
     expect(result.restartRequired).toEqual([]);
+  });
+
+  it("normalizes raw reload paths against the config root before comparing repos", () => {
+    const raw = parseConfig(`
+issueTracker:
+  type: mock
+sourceControl:
+  type: mock
+project:
+  directory: ./workspace
+  repos:
+    - name: api
+      path: ./api
+      owner: acme
+      repo: Api
+      buildCommand: build
+      testCommand: test
+`);
+    const resolved = resolveProjectPaths(raw, tempDir);
+    const runtime = new RuntimeState(buildPhaseGraph(raw.phases), resolved);
+    const orchestrator = buildOrchestrator(runtime, join(tempDir, "skills"));
+
+    const unchanged = orchestrator.reload(raw);
+    expect(unchanged.restartRequired).toEqual([]);
+    expect(runtime.config.project).toEqual(resolved.project);
+
+    const changed = {
+      ...raw,
+      skills: { ...raw.skills, disabled: ["unused"] },
+      project: {
+        ...raw.project,
+        directory: "./other-workspace",
+        repos: raw.project.repos.map((repo) => ({ ...repo, name: "renamed", owner: "other" })),
+      },
+    };
+    const result = orchestrator.reload(changed);
+    expect(result.restartRequired).toContain("project.repos");
+    expect(result.restartRequired).toContain("project.directory");
+    expect(runtime.config.project).toEqual(resolved.project);
+    expect(runtime.config.skills.disabled).toEqual(["unused"]);
+    expect(orchestrator.reload(changed).restartRequired).toContain("project.repos");
+  });
+
+  it("retains workspace mode until restart even with an unchanged repo list", () => {
+    const config = resolveProjectPaths(makeTestConfig(), tempDir);
+    const runtime = new RuntimeState(buildPhaseGraph(config.phases), config);
+    const orchestrator = buildOrchestrator(runtime, join(tempDir, "skills"));
+    const result = orchestrator.reload({
+      ...config,
+      project: { ...config.project, workspaceMode: true },
+    });
+    expect(result.restartRequired).toContain("project.workspaceMode");
+    expect(runtime.config.project.workspaceMode).toBe(false);
+  });
+
+  it("applies legacy build, test, and module edits without a restart", () => {
+    const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
+    const orchestrator = buildOrchestrator(runtime, join(tempDir, "skills"));
+    const modules = [
+      { name: "web", paths: ["src/web/**"], buildCommand: "b", testCommandTargeted: "t" },
+    ];
+
+    const result = orchestrator.reload(
+      makeTestConfig({ project: { buildCommand: "make", testCommand: "make test", modules } }),
+    );
+
+    expect(result.applied).toContain("project.commands");
+    expect(result.restartRequired).toEqual([]);
+    expect(runtime.config.project).toMatchObject({
+      buildCommand: "make",
+      testCommand: "make test",
+    });
+    expect(runtime.config.project.repos[0]).toMatchObject({
+      buildCommand: "make",
+      testCommand: "make test",
+      modules,
+    });
+  });
+
+  it("applies a workspace repo's command edits without a restart", () => {
+    const config = resolveProjectPaths(
+      makeTestConfig({
+        project: {
+          directory: tempDir,
+          repos: [
+            {
+              name: "api",
+              path: "./api",
+              owner: "acme",
+              repo: "api",
+              baseBranch: "origin/main",
+              buildCommand: "build",
+              testCommand: "test",
+              modules: [],
+            },
+          ],
+        },
+      }),
+      tempDir,
+    );
+    const runtime = new RuntimeState(buildPhaseGraph(config.phases), config);
+    const orchestrator = buildOrchestrator(runtime, join(tempDir, "skills"));
+
+    const result = orchestrator.reload({
+      ...config,
+      project: {
+        ...config.project,
+        repos: config.project.repos.map((repo) => ({ ...repo, testCommand: "test --ci" })),
+      },
+    });
+
+    expect(result.applied).toContain("project.commands");
+    expect(result.restartRequired).toEqual([]);
+    expect(runtime.config.project.repos[0]?.testCommand).toBe("test --ci");
+  });
+
+  it("holds command edits back when the same reload changes what a repo is bound to", () => {
+    const config = resolveProjectPaths(makeTestConfig(), tempDir);
+    const runtime = new RuntimeState(buildPhaseGraph(config.phases), config);
+    const orchestrator = buildOrchestrator(runtime, join(tempDir, "skills"));
+
+    const result = orchestrator.reload({
+      ...config,
+      project: {
+        ...config.project,
+        repos: config.project.repos.map((repo) => ({
+          ...repo,
+          baseBranch: "origin/develop",
+          buildCommand: "make",
+        })),
+      },
+    });
+
+    expect(result.restartRequired).toContain("project.repos");
+    expect(result.applied).not.toContain("project.commands");
+    expect(runtime.config.project).toEqual(config.project);
   });
 
   it("leaves runtime untouched when new config has an invalid phase graph", () => {
@@ -170,7 +318,7 @@ describe("Orchestrator.reload", () => {
     // Subsystems are constructed BEFORE reload(). They each hold a reference
     // to `runtime` — the shared-ref design means they pick up the swap.
     const queue = new SqliteTaskQueue(db);
-    const pipelineState = new PipelineStateStore(db);
+    const pipelineState = new PipelineStateStore(db, ["app"]);
     const orchestratorState = new OrchestratorStateStore(db);
     const audit = new DualWriteAuditLogger(db, join(tempDir, "audit.log"));
     const issueTracker = new MockIssueTracker();
@@ -190,7 +338,9 @@ describe("Orchestrator.reload", () => {
     await dashboard.start();
     const webhook = new WebhookServer({
       issueTracker,
-      sourceControl,
+      sourceControls: createSourceControlRegistry([
+        { name: "app", fullName: "acme/app", adapter: sourceControl },
+      ]),
       queue,
       pipelineState,
       runtime,

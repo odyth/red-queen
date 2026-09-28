@@ -1,4 +1,5 @@
 import { api } from "../api.js";
+import { refreshPipelines } from "../pipelines.js";
 import { escapeHtml, qs, qsa } from "../dom.js";
 import type {
   PhaseDefinition,
@@ -200,6 +201,7 @@ export function refreshQueueCount(): void {
   if (qs("#wf-ready") === null) {
     return;
   }
+  void refreshPipelines();
   api
     .getStatus()
     .then((s) => {
@@ -231,7 +233,8 @@ async function load(): Promise<void> {
   try {
     const [wf, skills] = await Promise.all([api.getWorkflow(), api.getSkills()]);
     phases = wf.phases;
-    skillsList = skills;
+    // Phases name the base skill; its workspace variant is picked at dispatch.
+    skillsList = skills.filter((s) => s.variantOf === null);
     const skillsRow = qs("#workflow-skills");
     if (skillsRow) {
       skillsRow.innerHTML =

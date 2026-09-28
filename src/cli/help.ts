@@ -6,7 +6,8 @@ Usage:
   redqueen <command> [options]
 
 Top-level commands:
-  init                        Scaffold a new Red Queen project in the current directory
+  init                        Scaffold a project in a git repo or a folder of git repos (workspace)
+  migrate                     Move a single-repo install up into a workspace (--dry-run, --yes)
   start                       Start the orchestrator (foreground)
   stop                        Stop a running orchestrator
   status                      Show orchestrator status
@@ -20,22 +21,27 @@ Helper commands (called by skills):
   issue attachments <id>      Download attachments (--dir <path>)
   spec get <id>               Print the stored spec
   spec set <id>               Set the spec (--body or stdin)
-  spec meta <id>              Record spec metadata (--open-questions <N>)
-  pr create                   Create a PR (--issue --head --base --title, body via stdin)
-  pr diff <number>            Print the PR diff
-  pr checks <number>          Print CI check status (--wait <seconds>)
-  pr review <number>          Post a review (--verdict, body via stdin)
-  pr reviews <number>         List reviews as JSON (--latest for the most recent)
-  pr comments <number>        List review comments as JSON
-  pr comment <number>         Post a PR-level comment (--body or stdin)
-  pr reply <number> <id>      Reply to a review comment (--body or stdin)
-  pipeline update <issueId>   Update pipeline state (--branch --pr --worktree --clear-pr)
-  pipeline cleanup <issueId>  Remove worktree and clear worktree path (--keep-branch)
-  stack setup <issueId>       Assemble a stacked worktree: branch from base, merge unmerged
-                              ancestor branches in topo order (--spec for a detached
-                              exploration worktree). Exit 2 = merge conflict, 3 = blocked.
+  spec meta <id>              Record spec metadata (--open-questions <N> --repos a,b)
+  pr create                   Create a PR (--issue --head --base --title [--repo], body via stdin)
+  pr diff <number>            Print the PR diff (--repo <name> in workspace mode)
+  pr checks <number>          Print CI check status (--wait <seconds>) [--repo]
+  pr review <number>          Post a review (--verdict, body via stdin) [--repo]
+  pr reviews <number>         List reviews as JSON (--latest for the most recent) [--repo]
+  pr comments <number>        List review comments as JSON [--repo]
+  pr comment <number>         Post a PR-level comment (--body or stdin) [--repo]
+  pr reply <number> <id>      Reply to a review comment (--body or stdin) [--repo]
+  pipeline update <issueId>   Update a repo row (--repo --branch --pr --worktree --clear-pr --clear-worktree)
+  pipeline cleanup <issueId>  Remove worktrees and local branches for every repo (--keep-branch);
+                              drops rows for repos no longer in project.repos
+  stack setup <issueId>       Assemble stacked worktrees for unfinished in-scope repos
+                              (--spec = detached exploration worktrees for every repo).
+                              Exit 2 = merge conflict (JSON names the repo), 3 = blocked.
   sub-iter start <id> <label> Open a new in-skill sub-iteration entry
   sub-iter complete <id>      Close the most recent open sub-iteration (--summary "...")
+
+Repository selection:
+  --repo <name>               Required for pr helpers and pipeline update in workspace mode
+                              (including one-repo workspaces); optional in legacy mode
 
 Global flags:
   -h, --help                  Print this message
@@ -45,11 +51,21 @@ Run 'redqueen <command> --help' for command-specific help.
 `;
 
 const COMMAND_HELP: Record<string, string> = {
-  init: `redqueen init — Scaffold a new project
+  migrate: `redqueen migrate — Move a single-repo install up one directory into a workspace
+Run at the git root containing redqueen.yaml, with project.directory resolving there.
+Stop the orchestrator/service first. The parent must have no redqueen.yaml, .redqueen, or .env.
+Requires git >= 2.17. Registered worktrees are moved through Git, including dirty work.
+An installed enabled service is reinstalled and started after migration; a disabled one is uninstalled.
 Options:
-  -y, --yes        Accept all defaults (non-interactive)
-  --force          Overwrite existing redqueen.yaml
-  --map-only       Regenerate .redqueen/codebase-map.md only
+  --dry-run         Print and validate the migration without changing files or services
+  -y, --yes         Migrate without the confirmation prompt
+`,
+  init: `redqueen init — Scaffold a project in a git repo or a folder of git repos (workspace)
+Options:
+  -y, --yes          Accept all defaults and include every discovered repo (non-interactive)
+  --force            Overwrite existing redqueen.yaml
+  --map-only         Regenerate .redqueen/codebase-map.md, preserving edit-me blocks
+  --add-repo <path>   Append a repo to an existing workspace (or convert a single-repo install in place)
 `,
   start: `redqueen start — Run the orchestrator in the foreground
 Options:

@@ -87,13 +87,16 @@ export async function reconcile(deps: ReconcilerDeps): Promise<ReconcileResult> 
       }
 
       const record = pipelineState.get(issue.id);
+      const inScopeRows = record?.repos.filter((row) => row.inScope) ?? [];
       // Merge replay runs before tracker reconciliation. If the tracker still
-      // reports the same automated phase that was active when the PR merged,
-      // do not recreate work for the completed run. A deliberate re-entry to a
-      // different phase remains eligible.
+      // reports the phase active when every scoped repository merged, do not
+      // recreate work for the completed run. Null PRs or historical terminal
+      // identities alone are not completion evidence for the current cycle.
+      // A deliberate re-entry to a different phase remains eligible.
       if (
         record?.currentPhase === "done" &&
-        record.prNumber === null &&
+        inScopeRows.length > 0 &&
+        inScopeRows.every((row) => row.mergeCompleted) &&
         record.priorPhase === phase.name
       ) {
         skipped++;

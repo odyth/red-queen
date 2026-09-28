@@ -2,8 +2,23 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import Database from "better-sqlite3";
+import { PipelineStateStore } from "../core/pipeline-state.js";
 import { loadConfigFromProject } from "./config-discovery.js";
 import { isProcessAlive, readPidFile, resolvePidPath } from "./pid.js";
+
+interface PipelineRepoStatus {
+  repo: string;
+  inScope: boolean;
+  branchName: string | null;
+  prNumber: number | null;
+  orphaned: boolean;
+}
+
+interface PipelineStatusRow {
+  issueId: string;
+  currentPhase: string | null;
+  repos: PipelineRepoStatus[];
+}
 
 interface StatusPayload {
   running: boolean;
@@ -20,6 +35,7 @@ interface StatusPayload {
   deferredCount: number;
   currentTask: unknown;
   note: string | null;
+  pipelines: PipelineStatusRow[];
 }
 
 export async function cmdStatus(args: string[]): Promise<void> {
@@ -72,6 +88,13 @@ export async function cmdStatus(args: string[]): Promise<void> {
     payload = emptyPayload("Red Queen has not been started yet.");
   }
 
+  if (existsSync(dbPath)) {
+    payload.pipelines = readPipelines(
+      dbPath,
+      config.project.repos.map((repo) => repo.name),
+    );
+  }
+
   if (values.json === true) {
     process.stdout.write(`${JSON.stringify(payload)}\n`);
     return;
@@ -103,6 +126,7 @@ async function tryHttp(
       workingCount: Number(body.workingCount ?? 0),
       deferredCount: Number(body.deferredCount ?? 0),
       currentTask: body.currentTask ?? null,
+      pipelines: [],
     };
   } catch {
     return null;
@@ -136,7 +160,40 @@ function readFromDatabase(
       workingCount: countByStatus("working"),
       deferredCount: countByStatus("deferred"),
       currentTask: null,
+      pipelines: [],
     };
+  } finally {
+    db.close();
+  }
+}
+
+function readPipelines(dbPath: string, repoOrder: string[]): PipelineStatusRow[] {
+  const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+  try {
+    // Status must work before startup migrates a pre-workspace database.
+    // Leave those records untouched until writable startup adopts their rows.
+    const repoTable = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'pipeline_repos'")
+      .get();
+    if (repoTable === undefined) {
+      return [];
+    }
+    const store = new PipelineStateStore(db, repoOrder);
+    return store
+      .listAll()
+      .filter((record) => record.repos.length > 0)
+      .slice(0, 50)
+      .map((record) => ({
+        issueId: record.issueId,
+        currentPhase: record.currentPhase,
+        repos: record.repos.map((row) => ({
+          repo: row.repo,
+          inScope: row.inScope,
+          branchName: row.branchName,
+          prNumber: row.prNumber,
+          orphaned: row.inScope === false && row.prNumber !== null,
+        })),
+      }));
   } finally {
     db.close();
   }
@@ -158,6 +215,7 @@ function emptyPayload(note: string): StatusPayload {
     deferredCount: 0,
     currentTask: null,
     note,
+    pipelines: [],
   };
 }
 
@@ -187,5 +245,21 @@ function printHuman(p: StatusPayload): void {
   }
   if (p.note !== null) {
     process.stdout.write(`  note:        ${p.note}\n`);
+  }
+  if (p.pipelines.length > 0) {
+    process.stdout.write("  pipelines:\n");
+    for (const pipeline of p.pipelines) {
+      process.stdout.write(`    ${pipeline.issueId}  ${pipeline.currentPhase ?? "(no phase)"}\n`);
+      for (const repo of pipeline.repos) {
+        const branch = repo.branchName ?? "—";
+        const pr = repo.prNumber === null ? "—" : `PR #${String(repo.prNumber)}`;
+        const flag = repo.orphaned
+          ? "  ORPHANED — descoped; close or merge manually"
+          : repo.inScope === false
+            ? "  (descoped)"
+            : "";
+        process.stdout.write(`      ${repo.repo.padEnd(12)} ${branch.padEnd(28)} ${pr}${flag}\n`);
+      }
+    }
   }
 }

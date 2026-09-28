@@ -2,6 +2,7 @@
 import { CliError } from "./errors.js";
 import { printHelp, printVersion } from "./help.js";
 import { cmdInit } from "./init.js";
+import { cmdMigrate } from "./migrate.js";
 import { cmdStart } from "./start.js";
 import { cmdStop } from "./stop.js";
 import { cmdStatus } from "./status.js";
@@ -29,6 +30,9 @@ async function main(argv: string[]): Promise<void> {
   switch (command) {
     case "init":
       await cmdInit(rest);
+      return;
+    case "migrate":
+      await cmdMigrate(rest);
       return;
     case "start":
       await cmdStart(rest);

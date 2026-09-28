@@ -3,7 +3,7 @@ import { dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { withTimeout } from "../core/async.js";
 import { DualWriteAuditLogger } from "../core/audit.js";
-import { buildPhaseGraph, validatePhaseGraph } from "../core/config.js";
+import { buildPhaseGraph, resolveProjectPaths, validatePhaseGraph } from "../core/config.js";
 import { RedQueenDatabase } from "../core/database.js";
 import { RedQueen } from "../core/orchestrator.js";
 import { OrchestratorStateStore, PipelineStateStore } from "../core/pipeline-state.js";
@@ -89,7 +89,10 @@ export async function cmdStart(args: string[]): Promise<void> {
     throw err;
   }
   const queue = new SqliteTaskQueue(database.db);
-  const pipelineState = new PipelineStateStore(database.db);
+  const pipelineState = new PipelineStateStore(
+    database.db,
+    config.project.repos.map((repo) => repo.name),
+  );
   const phaseUsage = new PhaseUsageStore(database.db);
   const orchestratorState = new OrchestratorStateStore(database.db);
   const audit = new DualWriteAuditLogger(database.db, auditPath);
@@ -100,6 +103,8 @@ export async function cmdStart(args: string[]): Promise<void> {
       issueTrackerConfig: config.issueTracker.config,
       sourceControlType: config.sourceControl.type,
       sourceControlConfig: config.sourceControl.config,
+      repos: config.project.repos,
+      workspaceMode: config.project.workspaceMode,
     },
     {
       configDir: dirname(configPath),
@@ -113,7 +118,7 @@ export async function cmdStart(args: string[]): Promise<void> {
       },
     },
   );
-  const { issueTracker, sourceControl } = adapterPair;
+  const { issueTracker, sourceControls } = adapterPair;
 
   const itValidation = issueTracker.validateConfig(config.issueTracker.config);
   for (const warning of itValidation.warnings) {
@@ -126,14 +131,18 @@ export async function cmdStart(args: string[]): Promise<void> {
       `issueTracker config invalid:\n${itValidation.errors.map((e) => `  - ${e}`).join("\n")}`,
     );
   }
-  try {
-    sourceControl.validateConfig(config.sourceControl.config);
-  } catch (err) {
-    database.close();
-    removePidFile(pidPath);
-    throw new CliError(
-      `sourceControl config invalid: ${err instanceof Error ? err.message : String(err)}`,
-    );
+  for (const repo of config.project.repos) {
+    try {
+      sourceControls
+        .get(repo.name)
+        .validateConfig({ ...config.sourceControl.config, owner: repo.owner, repo: repo.repo });
+    } catch (err) {
+      database.close();
+      removePidFile(pidPath);
+      throw new CliError(
+        `sourceControl config invalid for repo ${repo.name}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   const phaseMapping = issueTracker.validatePhaseMapping(phaseGraph.getPhaseNames());
@@ -183,8 +192,7 @@ export async function cmdStart(args: string[]): Promise<void> {
   }
 
   const configForRuntime = {
-    ...config,
-    project: { ...config.project, directory: projectDir },
+    ...resolveProjectPaths(config, projectRoot),
     audit: { ...config.audit, logFile: auditPath },
   };
   const runtime = new RuntimeState(phaseGraph, configForRuntime);
@@ -214,7 +222,7 @@ export async function cmdStart(args: string[]): Promise<void> {
     orchestratorState,
     audit,
     issueTracker,
-    sourceControl,
+    sourceControls,
     builtInSkillsDir: resolveSkillsDir(),
     installSignalHandlers: true,
     serviceManager,

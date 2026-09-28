@@ -25,6 +25,25 @@ GITHUB_PAT=ghp_...
 GITHUB_WEBHOOK_SECRET=....
 ```
 
+### Workspace mode
+
+With `project.repos[]` in `redqueen.yaml`, put `owner` and `repo` in each
+repo entry and remove them from `sourceControl.config`. That shared config
+carries `auth` and, when enabled, `webhookSecret`. Red Queen builds one
+source-control adapter per repo, all using the same auth strategy.
+
+GitHub App auth requires all repo owners to match case-insensitively. A
+paired GitHub Issues tracker must have that owner too, even when source
+control inherits the tracker's App auth. The tracker may use a different
+repo, including one outside `project.repos[]`. PAT auth permits mixed owners
+if the shared token has access to every repo.
+
+Every `redqueen pr` helper requires `--repo <name>` in workspace mode,
+including a workspace with one repo. The selector is the configured
+`project.repos[].name`, not its GitHub `owner/repo`. See
+[Multi-repo workspaces](../../../README.md#multi-repo-workspaces) for config,
+setup, and migration.
+
 ## Token scopes
 
 ### Fine-grained PAT (recommended)
@@ -61,6 +80,21 @@ poller keeps everything working without them.
    - Events: `issues`, `issue_comment`, `pull_request`,
      `pull_request_review`, `pull_request_review_comment`.
 3. Test — GitHub's "Recent Deliveries" panel should show a 200.
+
+### Webhooks per repo
+
+For workspace mode, repeat the source-control webhook setup on **every**
+repo in `project.repos[]`, or use one org-level webhook covering those repos.
+Every delivery uses the same source-control URL and the shared
+`sourceControl.config.webhookSecret`.
+
+The receiver validates signatures with that secret and routes
+`pull_request`, review, and PR comment events by the payload's
+`repository.full_name`. Events from unconfigured source-control repos are
+logged and dropped. A paired GitHub Issues tracker retains its own
+issue-tracker webhook URL and configured secret; ordinary issue comments are handled
+separately from PR feedback, including when the tracker repo is outside
+the workspace.
 
 ## Check runs vs classic statuses
 
@@ -173,7 +207,6 @@ No adapter code will change.
 
 ## Known limitations (Phase 5)
 
-- One owner/repo per Red Queen instance.
 - Merge method is hardcoded to `squash`.
 - Review dismissal uses a fixed message.
 - Enterprise Server / self-hosted GitHub is not validated.

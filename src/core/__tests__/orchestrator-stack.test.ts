@@ -1,7 +1,9 @@
+import { createSourceControlRegistry } from "../../integrations/source-control-registry.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { parse as parseYaml } from "yaml";
 import { RedQueenDatabase } from "../database.js";
 import { SqliteTaskQueue } from "../queue.js";
 import { PipelineStateStore, OrchestratorStateStore } from "../pipeline-state.js";
@@ -14,6 +16,7 @@ import { RuntimeState } from "../runtime-state.js";
 import type { WorkerOptions, WorkerResult } from "../worker.js";
 import { MockIssueTracker, MockSourceControl, makeIssue } from "./fixtures/mock-adapters.js";
 import { makeTestConfig } from "./fixtures/test-config.js";
+import type { TestConfigOverrides } from "./fixtures/test-config.js";
 
 let tempDir: string;
 let dbPath: string;
@@ -39,10 +42,10 @@ const okResult: WorkerResult = {
 
 function setupHarness(
   workerImpl: (opts: WorkerOptions) => Promise<WorkerResult> = () => Promise.resolve(okResult),
+  project: TestConfigOverrides["project"] = {},
 ): Harness {
   const db = new RedQueenDatabase(dbPath);
   const queue = new SqliteTaskQueue(db.db);
-  const pipelineState = new PipelineStateStore(db.db);
   const phaseUsage = new PhaseUsageStore(db.db);
   const orchestratorState = new OrchestratorStateStore(db.db);
   const audit = new DualWriteAuditLogger(db.db, auditPath);
@@ -53,6 +56,7 @@ function setupHarness(
       buildCommand: "npm run build",
       testCommand: "npm test",
       directory: tempDir,
+      ...project,
     },
     skills: { directory: skillsDir, disabled: [] },
     dashboard: { enabled: false, port: 0, host: "127.0.0.1" },
@@ -73,6 +77,10 @@ function setupHarness(
       skipSpecReviewIfReady: false,
     },
   });
+  const pipelineState = new PipelineStateStore(
+    db.db,
+    config.project.repos.map((repo) => repo.name),
+  );
   const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), config);
 
   const runs: WorkerOptions[] = [];
@@ -84,7 +92,13 @@ function setupHarness(
     orchestratorState,
     audit,
     issueTracker,
-    sourceControl,
+    sourceControls: createSourceControlRegistry(
+      config.project.repos.map((repo) => ({
+        name: repo.name,
+        fullName: `${repo.owner}/${repo.repo}`,
+        adapter: sourceControl,
+      })),
+    ),
     workerRunner: async (opts) => {
       runs.push(opts);
       return workerImpl(opts);
@@ -113,7 +127,7 @@ function seedCodingIssue(h: Harness, issueId: string): string {
 function seedBlockerAtGate(h: Harness, issueId: string, branch: string): void {
   h.issueTracker.phases.set(issueId, "human-review");
   h.pipelineState.create(issueId, "human-review");
-  h.pipelineState.updateBranchInfo(issueId, { branchName: branch, prNumber: 42 });
+  h.pipelineState.updateBranchInfo(issueId, "app", { branchName: branch, prNumber: 42 });
 }
 
 async function runUntil(
@@ -242,6 +256,57 @@ describe("orchestrator stack gate", () => {
     expect(prompt).not.toContain("stackPrBase");
   });
 
+  it.each(["api", "web"])(
+    "workspace mode carries each repo's stack base when only %s contributes",
+    async (contributingRepo) => {
+      const prompts: string[] = [];
+      const h = setupHarness(
+        (opts) => {
+          prompts.push(readDispatchedPrompt(opts));
+          return Promise.resolve(okResult);
+        },
+        {
+          repos: ["api", "web"].map((name) => ({
+            name,
+            path: join(tempDir, name),
+            owner: "acme",
+            repo: name,
+            baseBranch: name === "api" ? "origin/main" : "origin/develop",
+            buildCommand: "build",
+            testCommand: "test",
+            modules: [],
+          })),
+          workspaceMode: true,
+        },
+      );
+      seedCodingIssue(h, "#2");
+      h.pipelineState.setScope("#2", ["api", "web"]);
+      h.pipelineState.create("#1", "human-review");
+      h.pipelineState.setScope("#1", [contributingRepo]);
+      h.pipelineState.updateBranchInfo("#1", contributingRepo, {
+        branchName: "feature/1",
+        prNumber: 10,
+      });
+      h.issueTracker.phases.set("#1", "human-review");
+      h.issueTracker.blockedBy.set("#2", [{ id: "#1", closed: false }]);
+
+      await runUntil(h, () => prompts.length >= 1);
+
+      const prompt = prompts[0] ?? "";
+      const context: unknown = parseYaml(
+        /```yaml context\n([\s\S]*?)\n```/.exec(prompt)?.[1] ?? "",
+      );
+      expect(context).toMatchObject({
+        repos: [
+          { name: "api", stackPrBase: contributingRepo === "api" ? "feature/1" : "main" },
+          { name: "web", stackPrBase: contributingRepo === "web" ? "feature/1" : "develop" },
+        ],
+        stackPrBase: contributingRepo === "api" ? "feature/1" : "main",
+        stackBlockedBy: ["#1"],
+      });
+    },
+  );
+
   it("cycle defers with exactly one comment across two evaluations", async () => {
     const h = setupHarness();
     const taskId = seedCodingIssue(h, "#2");
@@ -280,7 +345,7 @@ describe("orchestrator stack gate", () => {
     h.issueTracker.issues.set("#1", makeIssue("#1", "testing"));
     h.issueTracker.phases.set("#1", "testing");
     h.pipelineState.create("#1", "testing");
-    h.pipelineState.updateBranchInfo("#1", { branchName: "feature/1", prNumber: 7 });
+    h.pipelineState.updateBranchInfo("#1", "app", { branchName: "feature/1", prNumber: 7 });
     h.queue.enqueue({ type: "testing", issueId: "#1" });
 
     const dependentPrompt = (): string | undefined =>

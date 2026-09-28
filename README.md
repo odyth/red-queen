@@ -97,14 +97,16 @@ strand it.
 
 Open <http://127.0.0.1:4400>. Five tabs:
 
-- **Status** — live phase, queue depth, last poll, SSE event stream.
+- **Status** — live phase, queue depth, last poll, SSE event stream,
+  and per-issue repo/branch/PR lists.
 - **Service** — start / stop / restart the daemon, log paths.
 - **Config** — edit `redqueen.yaml` in-browser; save triggers a hot
   reload and shows which sections applied vs. require restart.
 - **Skills** — list bundled and user-overridden prompts; disable any
   skill via `skills.disabled`.
 - **Workflow** — add, remove, reorder phases with live validation;
-  refuses to save while tasks are in flight.
+  refuses to save while tasks are in flight. Also shows per-issue
+  repo/branch/PR lists.
 
 ### 6. Assign a ticket
 
@@ -119,7 +121,7 @@ A few things worth knowing about how the loop behaves:
 - **Spec rework** loops back through `Spec Feedback` up to three times
   before escalating to a blocked gate.
 - **Code rework** — whether from a failed `Code Review` or `Testing` —
-  routes back to `Coding` and pushes to the *same PR*. The coder reads
+  routes back to `Coding` and pushes to the _same PR_. The coder reads
   the prior phase from its context and either addresses reviewer
   blockers or reproduces the test failure locally before pushing.
 - **Code Review and Testing both comment on the PR every run.** Review
@@ -177,15 +179,17 @@ individually — e.g. Claude for planning and review, Codex for coding:
 ```yaml
 pipeline:
   agent: claude-code # or codex; default claude-code
-  model: opus        # optional; names are agent-specific — omit under codex
-                     # to let ~/.codex/config.toml decide
-  effort: max        # optional; omitted defaults to max
-                     # provider-specific values are accepted
+  model:
+    opus # optional; names are agent-specific — omit under codex
+    # to let ~/.codex/config.toml decide
+  effort:
+    max # optional; omitted defaults to max
+    # provider-specific values are accepted
 
 phases:
   - name: coding
     # ...routing fields...
-    agent: codex     # per-phase override; wins over pipeline.agent
+    agent: codex # per-phase override; wins over pipeline.agent
     model: gpt-5.6-sol
     effort: ultra
 ```
@@ -211,11 +215,173 @@ nearest still-gated ancestor branch so nothing merges past human
 review. When a blocker's PR merges, dependent PRs are retargeted onto
 the merged base and the merged code is folded into their branches.
 
-Retargeting runs from the PR-merged webhook. If you run poll-only
-(`pipeline.webhooks.enabled: false`), turn on GitHub's "Automatically
-delete head branches" so GitHub retargets dependent PRs itself when the
-merged branch is deleted — with neither, a dependent PR keeps targeting
-the stale merged branch (PR bases are only computed at creation).
+Retargeting runs from PR-merged webhooks and from merge reconciliation at
+startup and on each poll tick. Poll-only installs
+(`pipeline.webhooks.enabled: false`) therefore handle merged PRs too.
+If GitHub has already retargeted a dependent after deleting its ancestor's
+head branch, Red Queen still refreshes the dependent's branch.
+
+### Multi-repo workspaces
+
+One instance can drive several repos. Install Red Queen in a **workspace
+root** — a folder containing your clones — and declare them under
+`project.repos[]`. For example, use these project and source-control
+sections alongside your existing issue-tracker and pipeline configuration:
+
+```yaml
+project:
+  directory: .
+  repos:
+    - name: api # ^[a-z0-9][a-z0-9-]*$ — used in paths and --repo flags
+      path: ./Api # relative to project.directory, or absolute
+      owner: acme
+      repo: Api
+      baseBranch: origin/main # optional; defaults to pipeline.baseBranch
+      buildCommand: dotnet build
+      testCommand: dotnet test
+      modules: # optional; module paths are relative to this repo
+        - name: portal
+          paths: ["src/Portal/**"]
+          buildCommand: dotnet build src/Portal
+          testCommandTargeted: dotnet test src/Portal.Tests
+    - name: email-templates
+      path: ./EmailTemplates
+      owner: acme
+      repo: EmailTemplates
+      buildCommand: npm run build
+      testCommand: npm test
+
+sourceControl:
+  type: github
+  config:
+    auth:
+      type: pat
+      token: ${GITHUB_PAT}
+    webhookSecret: ${GITHUB_WEBHOOK_SECRET} # omit when webhooks are disabled
+```
+
+Declaring `project.repos` enables workspace mode, even with only one entry.
+Each path must point to a git work tree root, and repo names and upstream
+`owner/repo` identities must be unique. Top-level `project.buildCommand`,
+`project.testCommand`, `project.modules`, `sourceControl.config.owner`, and
+`sourceControl.config.repo` are rejected in this mode: those settings belong
+in each repo entry. Source-control auth and its webhook secret stay shared.
+
+GitHub App auth requires every repo to have the same owner, compared
+case-insensitively. A paired `github-issues` tracker must share that owner
+too, including when source control inherits the tracker's App auth. The
+tracker keeps its own `owner/repo`; its repo need not appear in `repos[]`.
+PAT auth permits mixed owners if the shared token can access every repo.
+
+Getting there:
+
+- **Fresh workspace:** run `redqueen init` in the parent folder of your
+  clones, outside a git work tree root. It discovers immediate git children,
+  derives their GitHub `owner/repo` from `origin`, and prompts for which to
+  include. `redqueen init --yes` includes all discovered repos with defaults.
+  Running `init` at a git root keeps the legacy single-repo setup.
+- **Add a repo:** from the directory containing `redqueen.yaml`, run
+  `redqueen init --add-repo ./EmailTemplates` (substitute your clone's path).
+  This updates the config and workspace map while preserving existing map
+  notes. Restart the orchestrator to load repo configuration changes.
+  `redqueen init --map-only` regenerates the map while preserving its
+  editable notes.
+- **Move an existing single-repo install:** run `redqueen migrate --dry-run`
+  at its git root to validate and inspect the move, then `redqueen migrate`
+  to apply it. Migration moves the config, `.env`, database, and other
+  `.redqueen` state up one directory, lifts the existing repo into
+  `repos[0]`, and moves registered issue/spec worktrees through Git into the
+  workspace layout. Your clone stays in place. Run subsequent setup commands
+  from the parent folder; add sibling clones with `init --add-repo`.
+- **Convert in place:** on a stopped legacy install,
+  `redqueen init --add-repo ../EmailTemplates` lifts the current repo to
+  `path: .` without moving files. It requires `project.directory` to resolve
+  to the git root containing the YAML. It refuses a running orchestrator or
+  service, existing legacy worktree data, or recorded worktree paths; use
+  `redqueen migrate` for installations with in-flight worktrees.
+
+Migration requires Git 2.17 or newer. Stop the orchestrator with
+`redqueen stop`, or its managed service with `redqueen service stop`,
+**before either a dry run or a real migration**. Run at the git root
+containing `redqueen.yaml`, with `project.directory` resolving there. The
+parent must contain no `redqueen.yaml`, `.redqueen`, or `.env`; migration
+refuses destination collisions. `--dry-run` changes no files or services,
+and `redqueen migrate --yes` skips only the confirmation prompt.
+
+Registered worktrees retain their Git registration and local changes.
+Nested, locked, missing, or submodule-containing worktrees require repair
+before migration. The preview lists stale temporary refresh worktrees for
+removal. Unregistered data under the old worktree directory is reported and
+left in place. The codebase map is converted while preserving its notes.
+
+Migration preserves configured file references, including App private-key
+paths. If an environment-based path into moved state cannot keep the same
+meaning, it stops with the affected field and relative-literal guidance;
+it does not rewrite your external environment. It also refuses symlinks
+whose targets would change after the move. Relative links within jointly
+moved state and absolute links to external data can remain valid.
+
+An installed service with `service.enabled: true` keeps its service name
+and is reinstalled **last**, after state and config are ready; installation
+starts it. An installed service with `service.enabled: false` is uninstalled
+and stays stopped.
+
+For each ticket, the prompt-writer reads the workspace map and each
+candidate repo's `CLAUDE.md` and `AGENTS.md`, explores a throwaway worktree
+for every configured repo, then records scope. For an existing pipeline
+ticket touching both repos above, with no unanswered spec questions:
+
+```bash
+redqueen spec meta PROJ-123 --open-questions 0 --repos api,email-templates
+```
+
+`--repos` is required in workspace mode, including one-repo workspaces.
+It accepts a nonempty comma-separated list of configured names and saves
+scope together with the open-question count. Downstream skills use that
+explicit scope; they do not infer repos or select the first one when scope
+is missing. Every `redqueen pr` helper and `redqueen pipeline update` call
+also requires `--repo`, even in a one-repo workspace, and `pr create` and
+`pipeline update` refuse a repo outside the ticket's scope. For example, read
+PR #42 from the `api` repo with:
+
+```bash
+redqueen pr diff 42 --repo api
+```
+
+The coder creates one branch and PR per in-scope repo; reviews and tests run
+per repo. Worktrees live at `.redqueen/worktrees/<issue>/<repo>` and spec
+exploration uses `.redqueen/worktrees/spec-<issue>/<repo>`. Skills run git
+inside the owning clone or worktree. For stacked issues,
+`redqueen stack setup PROJ-123` prepares unfinished in-scope repos; adding
+`--spec` prepares exploration worktrees across all configured repos.
+
+The ticket completes only when **every in-scope repo has merged in the
+current cycle**. A scoped repo that has not opened a PR still blocks
+completion. You choose the merge order across repos. After a partial merge,
+rework and testing skip completed repos and do not recreate their PRs or
+cleaned worktrees.
+Custom skills should use `repos[]` and its `inScope` and `mergeCompleted`
+fields; a historical `terminalPrNumber` alone does not prove completion in
+a reopened cycle. See the [skill context contract](./src/skills/README.md).
+
+Workspaces run their own prompts. A phase that names `coder` dispatches
+`coder-workspace`, so override `.redqueen/skills/coder-workspace/SKILL.md`,
+not `coder`. An override of `coder` is a single-repo prompt and does not run
+in a workspace; `redqueen migrate` lists the ones you need to port. A custom
+skill with no `-workspace` variant runs in both modes.
+
+A repo dropped from scope by a later spec revision keeps its PR for a human
+to close. `redqueen status` and the dashboard's **Status** and **Workflow**
+tabs show per-issue repo, branch, PR, and scope lists and label these retained
+PRs `orphaned`. Orphaned PRs do not count toward ticket completion. The
+dashboard header identifies the workspace root; repo configuration remains
+in the Config tab's YAML editor.
+
+If webhooks are enabled, add a source-control webhook on every configured
+repo, or one org-level webhook covering them, using the same URL and shared
+secret. See [GitHub webhook setup](./src/integrations/github/README.md#webhooks-per-repo).
+Legacy installs without `repos[]` keep their single-repo configuration and
+skill behavior.
 
 ## Verification checklist
 
@@ -232,15 +398,15 @@ After `redqueen service start`:
 
 ## Troubleshooting
 
-| Symptom | Likely cause | Fix |
-|---|---|---|
-| `command not found: redqueen` | Global install failed or not on PATH | Re-run `npm install -g redqueen`, verify `which redqueen` |
-| Service starts but workers fail with `claude: command not found` | `claude` not on the service's runtime PATH | Re-run `redqueen service install` to re-detect, or set `pipeline.claudeBin` explicitly |
-| Workers fail with `codex binary not found` | `codex` not on the (service's) runtime PATH | Set `pipeline.codexBin` to the absolute path (`which codex`) — service install only auto-detects `claude` |
-| Clicking Dashboard **Stop** leaves no way to restart from the UI | Expected — the dashboard is served by the service it just killed | Run `redqueen service start` from a terminal |
-| Jira issues aren't being picked up | Webhook not delivering or `customFields` wrong | Check `.redqueen/audit.log`, run `redqueen jira discover --dry-run`, confirm the Jira webhook is reaching your `publicBaseUrl` |
-| `401 Unauthorized` from GitHub | PAT missing a scope | Regenerate fine-grained PAT with Contents / Issues / PRs / Workflows / Metadata |
-| Worker stalls mid-phase | Claude Code prompt hit an unexpected state | Check `.redqueen/audit.log`; phase retries up to 3, then escalates to `blocked` |
+| Symptom                                                          | Likely cause                                                     | Fix                                                                                                                            |
+| ---------------------------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `command not found: redqueen`                                    | Global install failed or not on PATH                             | Re-run `npm install -g redqueen`, verify `which redqueen`                                                                      |
+| Service starts but workers fail with `claude: command not found` | `claude` not on the service's runtime PATH                       | Re-run `redqueen service install` to re-detect, or set `pipeline.claudeBin` explicitly                                         |
+| Workers fail with `codex binary not found`                       | `codex` not on the (service's) runtime PATH                      | Set `pipeline.codexBin` to the absolute path (`which codex`) — service install only auto-detects `claude`                      |
+| Clicking Dashboard **Stop** leaves no way to restart from the UI | Expected — the dashboard is served by the service it just killed | Run `redqueen service start` from a terminal                                                                                   |
+| Jira issues aren't being picked up                               | Webhook not delivering or `customFields` wrong                   | Check `.redqueen/audit.log`, run `redqueen jira discover --dry-run`, confirm the Jira webhook is reaching your `publicBaseUrl` |
+| `401 Unauthorized` from GitHub                                   | PAT missing a scope                                              | Regenerate fine-grained PAT with Contents / Issues / PRs / Workflows / Metadata                                                |
+| Worker stalls mid-phase                                          | Claude Code prompt hit an unexpected state                       | Check `.redqueen/audit.log`; phase retries up to 3, then escalates to `blocked`                                                |
 
 Per-adapter troubleshooting lives in each adapter's README.
 

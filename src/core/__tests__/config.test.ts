@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from "vitest";
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,9 +9,36 @@ import {
   parseConfig,
   validatePhaseGraph,
   buildPhaseGraph,
+  deriveRepoName,
+  REPO_NAME_RE,
+  resolveProjectPaths,
 } from "../config.js";
 import { DEFAULT_PHASES } from "../defaults.js";
 import type { PhaseDefinition } from "../types.js";
+
+describe("deriveRepoName", () => {
+  it("lowercases and collapses non-alphanumeric runs to single hyphens", () => {
+    expect(deriveRepoName("AlignSmart")).toBe("alignsmart");
+    expect(deriveRepoName("Email_Templates.v2")).toBe("email-templates-v2");
+    expect(deriveRepoName("image__resizer")).toBe("image-resizer");
+  });
+
+  it("strips leading and trailing hyphens", () => {
+    expect(deriveRepoName("--App--")).toBe("app");
+    expect(deriveRepoName(".github")).toBe("github");
+  });
+
+  it("throws a ConfigError naming the source repo when nothing survives", () => {
+    expect(() => deriveRepoName("___")).toThrow(ConfigError);
+    expect(() => deriveRepoName("___")).toThrow(/"___"/);
+  });
+
+  it("always satisfies REPO_NAME_RE", () => {
+    for (const input of ["A", "9lives", "Foo Bar", "x-y_z", "MiXeD.Case-Repo"]) {
+      expect(REPO_NAME_RE.test(deriveRepoName(input))).toBe(true);
+    }
+  });
+});
 
 describe("parseConfig", () => {
   const minimalYaml = `
@@ -580,6 +607,22 @@ skills:
     expect(() => parseConfig(yaml)).toThrow(/skills\.disabled/);
   });
 
+  it("ignores a disabled workspace variant outside workspace mode", () => {
+    const yaml = `
+issueTracker:
+  type: jira
+sourceControl:
+  type: github
+project:
+  buildCommand: "npm run build"
+  testCommand: "npm test"
+skills:
+  disabled:
+    - coder-workspace
+`;
+    expect(parseConfig(yaml).skills.disabled).toEqual(["coder-workspace"]);
+  });
+
   it("loadConfig rejects configs where a phase references a disabled skill", () => {
     const yaml = `
 issueTracker:
@@ -997,5 +1040,332 @@ describe("shipped example configs", () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+});
+
+describe("project.repos (workspace mode)", () => {
+  const workspaceYaml = `
+issueTracker:
+  type: jira
+sourceControl:
+  type: github
+  config:
+    auth: { type: pat, token: tok }
+project:
+  repos:
+    - name: alignsmart
+      path: ./AlignSmart
+      owner: alignsmart
+      repo: AlignSmart
+      baseBranch: origin/master
+      buildCommand: dotnet build
+      testCommand: dotnet test
+      modules:
+        - name: portal
+          paths: ["src/Portal/**"]
+          buildCommand: dotnet build src/Portal
+          testCommandTargeted: dotnet test src/Portal.Tests
+    - name: app
+      path: ./App
+      owner: alignsmart
+      repo: App
+      buildCommand: npm run build
+      testCommand: npm test
+`;
+
+  it("rejects a disabled workspace variant of a skill a phase runs", () => {
+    const yaml = `${workspaceYaml}skills:\n  disabled:\n    - coder-workspace\n`;
+    expect(() => parseConfig(yaml)).toThrow(ConfigError);
+    expect(() => parseConfig(yaml)).toThrow(/"coder-workspace" in workspace mode/);
+  });
+
+  it("parses repos with nested modules and defaults baseBranch to pipeline.baseBranch", () => {
+    const config = parseConfig(workspaceYaml);
+    expect(config.project.workspaceMode).toBe(true);
+    expect(config.project.repos.map((r) => r.name)).toEqual(["alignsmart", "app"]);
+    expect(config.project.repos[0]?.baseBranch).toBe("origin/master");
+    expect(config.project.repos[1]?.baseBranch).toBe("origin/main");
+    expect(config.project.repos[0]?.modules).toEqual([
+      {
+        name: "portal",
+        paths: ["src/Portal/**"],
+        buildCommand: "dotnet build src/Portal",
+        testCommandTargeted: "dotnet test src/Portal.Tests",
+      },
+    ]);
+    expect(config.project.repos[1]?.modules).toEqual([]);
+    expect(config.project.buildCommand).toBeUndefined();
+  });
+
+  it("rejects duplicate repo names", () => {
+    const yaml = workspaceYaml.replace("name: app", "name: alignsmart");
+    expect(() => parseConfig(yaml)).toThrow(/Duplicate repo name.*alignsmart/);
+  });
+
+  it("rejects duplicate owner/repo identities case-insensitively", () => {
+    const yaml = workspaceYaml.replace(
+      "owner: alignsmart\n      repo: App",
+      "owner: AlignSmart\n      repo: alignsmart",
+    );
+    expect(() => parseConfig(yaml)).toThrow(
+      /Duplicate upstream repository.*AlignSmart\/alignsmart/,
+    );
+  });
+
+  it.each(["./AlignSmart", "AlignSmart", "AlignSmart/", "./App/../AlignSmart"])(
+    "rejects a duplicate repo path spelled %s",
+    (path) => {
+      const yaml = workspaceYaml.replace("path: ./App", `path: ${path}`);
+      expect(() => parseConfig(yaml)).toThrow(/Duplicate repo path/);
+    },
+  );
+
+  it("rejects an absolute repo path that matches a relative one under an absolute directory", () => {
+    const yaml = workspaceYaml
+      .replace("project:\n  repos:", "project:\n  directory: /srv/ws\n  repos:")
+      .replace("path: ./App", "path: /srv/ws/AlignSmart");
+    expect(() => parseConfig(yaml)).toThrow(/Duplicate repo path/);
+  });
+
+  it("does not guess at absolute-vs-relative collisions when directory is relative", () => {
+    const yaml = workspaceYaml.replace("path: ./App", "path: /AlignSmart");
+    expect(parseConfig(yaml).project.repos[1]?.path).toBe("/AlignSmart");
+  });
+
+  it("rejects an empty repos list", () => {
+    const yaml = `
+issueTracker:
+  type: jira
+sourceControl:
+  type: github
+project:
+  repos: []
+`;
+    expect(() => parseConfig(yaml)).toThrow(/at least one repo/);
+  });
+
+  it("rejects hand-written names outside the repo name regex", () => {
+    const yaml = workspaceYaml.replace("name: app", "name: App");
+    expect(() => parseConfig(yaml)).toThrow(/repos\[\]\.name/);
+  });
+
+  it.each([
+    ["project.buildCommand", "project:\n  buildCommand: x\n  repos:"],
+    ["project.testCommand", "project:\n  testCommand: x\n  repos:"],
+    [
+      "project.modules",
+      'project:\n  modules: [{ name: m, paths: ["a"], buildCommand: b }]\n  repos:',
+    ],
+  ])("rejects %s in workspace mode", (key, replacement) => {
+    const yaml = workspaceYaml.replace("project:\n  repos:", replacement);
+    expect(() => parseConfig(yaml)).toThrow(
+      new RegExp(`${key.replace(".", "\\.")} is not allowed in workspace mode`),
+    );
+  });
+
+  it.each(["owner", "repo"])("rejects sourceControl.config.%s in workspace mode", (key) => {
+    const yaml = workspaceYaml.replace(
+      "auth: { type: pat, token: tok }",
+      `auth: { type: pat, token: tok }\n    ${key}: alignsmart`,
+    );
+    expect(() => parseConfig(yaml)).toThrow(
+      new RegExp(`sourceControl\\.config\\.${key} is not allowed in workspace mode`),
+    );
+  });
+
+  it("rejects more than one owner under GitHub App auth and lists them", () => {
+    const yaml = workspaceYaml
+      .replace(
+        "auth: { type: pat, token: tok }",
+        "auth: { type: byo-app, appId: 1, installationId: 2, privateKeyPath: k.pem }",
+      )
+      .replace("owner: alignsmart\n      repo: App", "owner: other-org\n      repo: App");
+    expect(() => parseConfig(yaml)).toThrow(/scoped to one owner.*alignsmart.*other-org/);
+  });
+
+  it("accepts owner spelling differences under GitHub App auth", () => {
+    const yaml = workspaceYaml
+      .replace(
+        "auth: { type: pat, token: tok }",
+        "auth: { type: byo-app, appId: 1, installationId: 2, privateKeyPath: k.pem }",
+      )
+      .replace("owner: alignsmart\n      repo: App", "owner: AlignSmart\n      repo: App");
+    expect(parseConfig(yaml).project.repos.map((repo) => repo.owner)).toEqual([
+      "alignsmart",
+      "AlignSmart",
+    ]);
+  });
+
+  it("accepts mixed owners under token auth", () => {
+    const yaml = workspaceYaml.replace(
+      "owner: alignsmart\n      repo: App",
+      "owner: other-org\n      repo: App",
+    );
+    expect(parseConfig(yaml).project.repos[1]?.owner).toBe("other-org");
+  });
+
+  it("accepts a github-issues tracker whose repo is outside repos[]", () => {
+    const yaml = workspaceYaml.replace(
+      "type: jira",
+      "type: github-issues\n  config:\n    owner: alignsmart\n    repo: Planning\n    auth: { type: pat, token: tok }",
+    );
+    expect(parseConfig(yaml).issueTracker.config.repo).toBe("Planning");
+  });
+});
+
+describe("legacy synthesis", () => {
+  it("synthesizes repos[0] from top-level fields for a github source control", () => {
+    const config = parseConfig(`
+issueTracker:
+  type: jira
+sourceControl:
+  type: github
+  config:
+    owner: acme
+    repo: My_App
+project:
+  buildCommand: "npm run build"
+  testCommand: "npm test"
+  directory: ./src
+  modules:
+    - name: web
+      paths: ["web/**"]
+      buildCommand: b
+pipeline:
+  baseBranch: origin/develop
+`);
+    expect(config.project.workspaceMode).toBe(false);
+    expect(config.project.repos).toEqual([
+      {
+        name: "my-app",
+        path: "./src",
+        owner: "acme",
+        repo: "My_App",
+        baseBranch: "origin/develop",
+        buildCommand: "npm run build",
+        testCommand: "npm test",
+        modules: [{ name: "web", paths: ["web/**"], buildCommand: "b", testCommandTargeted: null }],
+      },
+    ]);
+    expect(config.project.buildCommand).toBe("npm run build");
+  });
+
+  it('names the synthesized repo "default" for the mock source control', () => {
+    const config = parseConfig(`
+issueTracker:
+  type: mock
+sourceControl:
+  type: mock
+project:
+  buildCommand: echo
+  testCommand: echo
+`);
+    expect(config.project.repos[0]?.name).toBe("default");
+    expect(config.project.repos[0]?.owner).toBe("");
+  });
+
+  it("still requires buildCommand and testCommand in legacy mode", () => {
+    expect(() =>
+      parseConfig(`
+issueTracker:
+  type: mock
+sourceControl:
+  type: mock
+project:
+  directory: .
+`),
+    ).toThrow(/project\.buildCommand is required/);
+  });
+});
+
+describe("loadConfig path validation", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "rq-config-ws-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const yaml = `
+issueTracker:
+  type: mock
+sourceControl:
+  type: mock
+project:
+  repos:
+    - name: a
+      path: ./A
+      owner: o
+      repo: A
+      buildCommand: b
+      testCommand: t
+`;
+
+  it("absolutizes repo paths and accepts git work tree roots", () => {
+    mkdirSync(join(dir, "A", ".git"), { recursive: true });
+    writeFileSync(join(dir, "redqueen.yaml"), yaml);
+    const config = loadConfig(join(dir, "redqueen.yaml"));
+    expect(config.project.repos[0]?.path).toBe(join(dir, "A"));
+  });
+
+  it("accepts a .git file used by linked worktrees", () => {
+    mkdirSync(join(dir, "A"));
+    writeFileSync(join(dir, "A", ".git"), "gitdir: /repo/.git/worktrees/A\n");
+    writeFileSync(join(dir, "redqueen.yaml"), yaml);
+    expect(loadConfig(join(dir, "redqueen.yaml")).project.repos[0]?.path).toBe(join(dir, "A"));
+  });
+
+  it("rejects nonexistent repo paths", () => {
+    writeFileSync(join(dir, "redqueen.yaml"), yaml);
+    expect(() => loadConfig(join(dir, "redqueen.yaml"))).toThrow(/repos\[a\]\.path/);
+  });
+
+  it("resolves paths relative to project.directory and remains stable on CLI resolution", () => {
+    mkdirSync(join(dir, "workspace", "A", ".git"), { recursive: true });
+    writeFileSync(
+      join(dir, "redqueen.yaml"),
+      yaml.replace("project:\n", "project:\n  directory: ./workspace\n"),
+    );
+    const config = resolveProjectPaths(loadConfig(join(dir, "redqueen.yaml")), dir);
+    expect(config.project.directory).toBe(join(dir, "workspace"));
+    expect(config.project.repos[0]?.path).toBe(join(dir, "workspace", "A"));
+    expect(resolveProjectPaths(config, dir)).toEqual(config);
+  });
+
+  it("throws a ConfigError naming the entry when the path is not a git work tree root", () => {
+    mkdirSync(join(dir, "A"), { recursive: true });
+    writeFileSync(join(dir, "redqueen.yaml"), yaml);
+    expect(() => loadConfig(join(dir, "redqueen.yaml"))).toThrow(ConfigError);
+    expect(() => loadConfig(join(dir, "redqueen.yaml"))).toThrow(/repos\[a\]\.path/);
+  });
+
+  it("does not validate the synthesized legacy repo path", () => {
+    writeFileSync(
+      join(dir, "redqueen.yaml"),
+      "issueTracker:\n  type: mock\nsourceControl:\n  type: mock\nproject:\n  buildCommand: b\n  testCommand: t\n  directory: ./nope\n",
+    );
+    expect(loadConfig(join(dir, "redqueen.yaml")).project.repos[0]?.path).toBe("./nope");
+  });
+});
+
+describe("resolveProjectPaths", () => {
+  it("absolutizes project.directory and every repo path against the project root", () => {
+    const config = parseConfig(`
+issueTracker:
+  type: mock
+sourceControl:
+  type: mock
+project:
+  buildCommand: b
+  testCommand: t
+  directory: ./sub
+`);
+    const resolved = resolveProjectPaths(config, "/srv/root");
+    expect(resolved.project.directory).toBe("/srv/root/sub");
+    expect(resolved.project.repos[0]?.path).toBe("/srv/root/sub");
+    expect(resolveProjectPaths(resolved, "/srv/root")).toEqual(resolved);
+    expect(config.project.directory).toBe("./sub");
+    expect(config.project.repos[0]?.path).toBe("./sub");
   });
 });

@@ -9,17 +9,22 @@ export interface ReworkTransitionContext {
   pipelineState: Pick<PipelineStateStore, "get" | "updatePhase">;
   phaseGraph: PhaseGraph;
   audit: AuditLogger;
+  // Optional event identity guard for async callers such as PR feedback.
+  // A merge or replacement during setPhase must not reopen a completed cycle.
+  isCurrent?: () => boolean;
 }
 
 /**
  * Deterministically move a ticket parked at a human gate into its rework phase
  * and hand it back to the AI (setPhase + local commit + assignToAi).
  *
- * Returns "skip" — touching no tracker state — unless `currentPhase` is a phase
+ * Returns "skip" unless `currentPhase` is a phase
  * whose `rework` target is exactly `targetPhase` and that target's `requiresPr`
  * guard matches the ticket's PR state. Only human gates declare `rework`, so an
  * automated phase the orchestrator is actively working never matches: the guard
  * is what keeps this from racing the dispatch path.
+ * An optional identity guard can also skip the local commit after setPhase if
+ * the caller's event became stale while the tracker request was pending.
  *
  * Shared by the orchestrator's preDispatchValidation and the pr-feedback webhook
  * so a human's feedback flips assignment + status the instant it lands, while the
@@ -40,13 +45,16 @@ export async function autoTransitionRework(
   const requiresPr = ctx.phaseGraph.getPhase(targetPhase)?.requiresPr;
   if (requiresPr !== undefined) {
     const record = ctx.pipelineState.get(issueId);
-    const hasPr = record !== null && record.prNumber !== null;
+    const hasPr = record?.repos.some((row) => row.inScope && row.prNumber !== null) ?? false;
     if (requiresPr === true && hasPr === false) {
       return "skip";
     }
     if (requiresPr === false && hasPr === true) {
       return "skip";
     }
+  }
+  if (ctx.isCurrent?.() === false) {
+    return "skip";
   }
   try {
     await ctx.issueTracker.setPhase(issueId, targetPhase);
@@ -57,6 +65,9 @@ export async function autoTransitionRework(
       message: `Auto-transition ${currentPhase} -> ${targetPhase} failed: ${errorMessage(err)}`,
       metadata: { ...metadata, from: currentPhase, to: targetPhase },
     });
+    return "skip";
+  }
+  if (ctx.isCurrent?.() === false) {
     return "skip";
   }
   // setPhase succeeded — commit the transition locally. assignToAi is an ops

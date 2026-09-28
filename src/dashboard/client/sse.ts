@@ -60,6 +60,9 @@ export function connect(getActiveTab: ActiveTabFn): void {
     if (getActiveTab() === "status") {
       void status.refresh();
     }
+    if (getActiveTab() === "workflow") {
+      workflow.refreshQueueCount();
+    }
   });
 
   addTyped(source, "queue:changed", () => {
@@ -74,6 +77,9 @@ export function connect(getActiveTab: ActiveTabFn): void {
   addTyped(source, "orchestrator:status", () => {
     if (getActiveTab() === "status") {
       void status.refresh();
+    }
+    if (getActiveTab() === "workflow") {
+      workflow.refreshQueueCount();
     }
   });
 
