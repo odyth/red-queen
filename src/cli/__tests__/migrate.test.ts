@@ -548,6 +548,19 @@ describe("migration", () => {
     expect(() => planMigration(install)).toThrow(/locked worktree/);
   });
 
+  it("plans a worktree whose index listing exceeds the default output buffer", () => {
+    const entries = Array.from(
+      { length: 12000 },
+      (_, index) =>
+        `100644 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391\tsrc/modules/feature-${String(index % 200)}/components/some-component-name-${String(index)}.tsx`,
+    );
+    execFileSync("git", ["update-index", "--index-info"], {
+      cwd: join(stateRoot, "worktrees", "PROJ-1"),
+      input: `${entries.join("\n")}\n`,
+    });
+    expect(planMigration(install).worktreeMoves).toHaveLength(2);
+  });
+
   it("validates the database and map before any moves", () => {
     const map = join(stateRoot, "codebase-map.md");
     rmSync(map);
@@ -692,7 +705,21 @@ describe("migration", () => {
       "Untracked work\n",
     );
     expect(existsSync(join(install, "redqueen.yaml"))).toBe(true);
-    expect(readdirSync(join(parent, ".redqueen"))).toEqual([]);
+    expect(existsSync(join(parent, ".redqueen"))).toBe(false);
+    fileFailures.chown = false;
+    expect(() => planMigration(install)).not.toThrow();
+  });
+
+  it("removes the empty destination when the first worktree move fails", () => {
+    const plan = planMigration(install);
+    expect(() => {
+      executeMigration(plan, {
+        git: () => {
+          throw new Error("Injected worktree failure");
+        },
+      });
+    }).toThrow(/No worktrees were moved/);
+    expect(existsSync(join(parent, ".redqueen"))).toBe(false);
   });
 
   it("reports shell-quoted reverse moves and completed file moves after a partial failure", () => {
@@ -719,12 +746,17 @@ describe("migration", () => {
       .split("\n")
       .filter(
         (line) =>
-          line.startsWith("  mkdir ") || line.startsWith("  git ") || line.startsWith("  mv "),
+          line.startsWith("  mkdir ") ||
+          line.startsWith("  git ") ||
+          line.startsWith("  mv ") ||
+          line.startsWith("  find "),
       )) {
       execFileSync("/bin/sh", ["-c", line], { stdio: "pipe" });
     }
     expect(existsSync(join(stateRoot, "worktrees", "PROJ-1", "draft.txt"))).toBe(true);
     expect(existsSync(join(stateRoot, "codebase-map.md"))).toBe(true);
+    expect(existsSync(join(parent, ".redqueen"))).toBe(false);
+    expect(() => planMigration(install)).not.toThrow();
   });
 
   it("keeps the installed unit identity, unloads first, and installs after all state changes", async () => {

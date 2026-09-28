@@ -102,7 +102,13 @@ export interface IMigrationIO {
 }
 
 function git(args: string[], cwd: string): string {
-  return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  // ls-files lists every tracked file; the 1 MiB default fails near 10k of them.
+  return execFileSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: Infinity,
+  });
 }
 
 function present(path: string): boolean {
@@ -622,6 +628,13 @@ function failure(
       lines.push(`  mv -n ${shellSingleQuote(move.to)} ${shellSingleQuote(move.from)}`);
     }
   }
+  const destination = join(plan.parentDir, ".redqueen");
+  if (present(destination)) {
+    lines.push(
+      "Remove the emptied destination after reversing, or redqueen migrate refuses to run again:",
+      `  find ${shellSingleQuote(destination)} -depth -type d -empty -delete`,
+    );
+  }
   if (removed.length > 0) {
     lines.push(
       `Stale refresh worktrees removed: ${removed.join(", ")}. They are disposable and were not backed up.`,
@@ -720,7 +733,29 @@ export function executeMigration(plan: MigrationPlan, io: IMigrationIO = {}): vo
       }
     }
   } catch (error) {
+    if (moved.length === 0 && files.length === 0) {
+      try {
+        removeEmptyDirectories(join(plan.parentDir, ".redqueen"));
+      } catch {
+        // The failure report names the destination that is still there.
+      }
+    }
     throw failure(plan, step, error, moved, files, removed);
+  }
+}
+
+// Only directories holding nothing go, so the rerun's destination check passes
+// while anything unexpected stays for review.
+function removeEmptyDirectories(path: string): void {
+  const stat = lstatSync(path, { throwIfNoEntry: false });
+  if (stat === undefined || stat.isDirectory() === false) {
+    return;
+  }
+  for (const entry of readdirSync(path)) {
+    removeEmptyDirectories(join(path, entry));
+  }
+  if (readdirSync(path).length === 0) {
+    rmdirSync(path);
   }
 }
 
@@ -730,7 +765,7 @@ function createStateDirectory(path: string, original: string): void {
   if (source !== undefined) {
     // Private source directories may protect otherwise-readable keys/logs.
     // Restore ownership first (chown can clear mode bits), before any contents
-    // move. A failure leaves an empty destination and the original data intact.
+    // move. A failure leaves the original data intact.
     chownSync(path, source.uid, source.gid);
     chmodSync(path, source.mode & 0o7777);
   }
