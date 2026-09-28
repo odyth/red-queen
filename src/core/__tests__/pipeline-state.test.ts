@@ -544,11 +544,22 @@ describe("PipelineStateStore pipeline_repos", () => {
     expect(store.get("PROJ-1")?.prNumber).toBe(5);
   });
 
-  it("updateBranchInfo on an unknown row upserts it in scope", () => {
+  it("updateBranchInfo seeds the first row of an issue in scope", () => {
     store.create("PROJ-1");
     const row = store.updateBranchInfo("PROJ-1", "web", { branchName: "b" });
     expect(row.inScope).toBe(true);
     expect(row.branchName).toBe("b");
+  });
+
+  it("updateBranchInfo never adds a repo to an issue that already has rows", () => {
+    store.create("PROJ-1", "coding");
+    store.setScope("PROJ-1", ["app"]);
+    expect(() => store.updateBranchInfo("PROJ-1", "web", { branchName: "b" })).toThrow(
+      /PROJ-1.*"web".*setScope/,
+    );
+    expect(store.getRepo("PROJ-1", "web")).toBeNull();
+    store.setScope("PROJ-1", []);
+    expect(() => store.updateBranchInfo("PROJ-1", "web", { branchName: "b" })).toThrow(/setScope/);
   });
 
   it("updateBranchInfo throws when the pipeline record is missing", () => {
@@ -900,6 +911,7 @@ describe("PipelineStateStore.reconcileRepoNames", () => {
   it("legacy mode refuses to merge two rows of one issue into the sole repo", () => {
     const before = new PipelineStateStore(db, ["old-name", "new-name"]);
     before.create("SPLIT", "coding");
+    before.setScope("SPLIT", ["old-name", "new-name"]);
     before.updateBranch("SPLIT", "old-name", "feature/SPLIT");
     before.updateBranch("SPLIT", "new-name", "feature/SPLIT");
 
@@ -974,6 +986,7 @@ describe("PipelineStateStore.reconcileRepoNames", () => {
   it("deleteRepo drops one row and re-points the issue at what remains", () => {
     store = new PipelineStateStore(db, ["api", "web"]);
     store.create("OPEN", "coding");
+    store.setScope("OPEN", ["api", "web"]);
     store.updatePrNumber("OPEN", "api", 3, "main");
     store.updatePrNumber("OPEN", "web", 4, "main");
 

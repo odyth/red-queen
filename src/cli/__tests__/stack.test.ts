@@ -337,6 +337,7 @@ describe("executeStackSetup (fake git)", () => {
   it("workspace: preserves each selected row's existing branch name", async () => {
     const h = mkWorkspaceHarness(tmp);
     h.pipelineState.create("#2", "coding");
+    h.pipelineState.setScope("#2", ["api", "web"]);
     h.pipelineState.updateBranchInfo("#2", "api", { branchName: "custom/api" });
     h.pipelineState.updateBranchInfo("#2", "web", { branchName: "custom/web" });
     const result = await executeStackSetup({ ...h.io, git: fakeGit().run });
@@ -437,6 +438,7 @@ describe("executeStackSetup (fake git)", () => {
     h.issueTracker.blockedBy.set("#2", [{ id: "#1", closed: false }]);
     h.issueTracker.phases.set("#1", "human-review");
     h.pipelineState.create("#1", "human-review");
+    h.pipelineState.setScope("#1", ["api", "web"]);
     h.pipelineState.updateBranchInfo("#1", "api", { branchName: "feature/api", prNumber: 5 });
     h.pipelineState.updateBranchInfo("#1", "web", { branchName: "feature/web", prNumber: 6 });
     const git = fakeGit([

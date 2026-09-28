@@ -66,6 +66,10 @@ beforeEach(() => {
     return true;
   });
   ctx.pipelineState.create("ISSUE-1", "human-review");
+  ctx.pipelineState.setScope(
+    "ISSUE-1",
+    repos.map((repo) => repo.name),
+  );
   for (const repo of repos) {
     ctx.pipelineState.updateBranchInfo("ISSUE-1", repo.name, {
       branchName: `feature/${repo.name}`,
@@ -206,6 +210,7 @@ describe("pipeline cleanup across repositories", () => {
   );
 
   it("drops a row whose repo left the config, without running git for it", async () => {
+    ctx.pipelineState.setScope("ISSUE-1", ["api", "web", "removed"]);
     ctx.pipelineState.updateBranchInfo("ISSUE-1", "removed", {
       branchName: "feature/removed",
       prNumber: 9,

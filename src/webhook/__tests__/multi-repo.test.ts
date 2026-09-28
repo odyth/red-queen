@@ -123,6 +123,13 @@ describe("WebhookServer repository routing", () => {
     if (store.get(issueId) === null) {
       store.create(issueId, "human-review");
     }
+    if (store.getRepo(issueId, repo) === null) {
+      const scoped = store
+        .listRepos(issueId)
+        .filter((row) => row.inScope)
+        .map((row) => row.repo);
+      store.setScope(issueId, [...scoped, repo]);
+    }
     store.updateBranchInfo(issueId, repo, {
       branchName: `feature/${issueId}`,
       prNumber,

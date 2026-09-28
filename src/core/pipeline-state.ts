@@ -234,13 +234,21 @@ export class PipelineStateStore {
     return this.db.transaction((): PipelineRepoRecord => {
       this.assertRecord(issueId);
       const now = new Date().toISOString();
+      // The first write seeds the row, which is how a legacy install's sole
+      // repo enters scope. Once an issue has rows, only setScope adds one.
       this.db
         .prepare(
           `INSERT INTO pipeline_repos (issue_id, repo, in_scope, created_at, updated_at)
-           VALUES (?, ?, 1, ?, ?)
-           ON CONFLICT(issue_id, repo) DO NOTHING`,
+           SELECT ?, ?, 1, ?, ?
+           WHERE NOT EXISTS (SELECT 1 FROM pipeline_repos WHERE issue_id = ?)`,
         )
-        .run(issueId, repo, now, now);
+        .run(issueId, repo, now, now, issueId);
+      const previous = this.getRepo(issueId, repo);
+      if (previous === null) {
+        throw new Error(
+          `Cannot update branch info for ${issueId}: it has no row for repo "${repo}", and only setScope adds a repo to an issue`,
+        );
+      }
 
       const sets: string[] = [];
       const params: (string | number | null)[] = [];
@@ -262,10 +270,9 @@ export class PipelineStateStore {
       }
       // A replacement PR/branch starts fresh work; clearing cleanup artifacts
       // must retain completion while this issue waits for its sibling repos.
-      const previous = this.getRepo(issueId, repo);
       if (
-        (info.prNumber != null && info.prNumber !== previous?.prNumber) ||
-        (info.branchName != null && info.branchName !== previous?.branchName)
+        (info.prNumber != null && info.prNumber !== previous.prNumber) ||
+        (info.branchName != null && info.branchName !== previous.branchName)
       ) {
         sets.push("merge_completed = 0");
       }

@@ -1728,6 +1728,7 @@ describe("RedQueen orchestrator", () => {
       },
     );
     h.pipelineState.create("PROJ-MULTI", "code-feedback");
+    h.pipelineState.setScope("PROJ-MULTI", ["app", "web", "docs"]);
     for (const name of ["app", "web", "docs"]) {
       h.pipelineState.updatePrNumber("PROJ-MULTI", name, 77, null);
     }
