@@ -1080,6 +1080,36 @@ project:
     expect(() => parseConfig(yaml)).toThrow(/Duplicate repo name.*alignsmart/);
   });
 
+  it("rejects duplicate owner/repo identities case-insensitively", () => {
+    const yaml = workspaceYaml.replace(
+      "owner: alignsmart\n      repo: App",
+      "owner: AlignSmart\n      repo: alignsmart",
+    );
+    expect(() => parseConfig(yaml)).toThrow(
+      /Duplicate upstream repository.*AlignSmart\/alignsmart/,
+    );
+  });
+
+  it.each(["./AlignSmart", "AlignSmart", "AlignSmart/", "./App/../AlignSmart"])(
+    "rejects a duplicate repo path spelled %s",
+    (path) => {
+      const yaml = workspaceYaml.replace("path: ./App", `path: ${path}`);
+      expect(() => parseConfig(yaml)).toThrow(/Duplicate repo path/);
+    },
+  );
+
+  it("rejects an absolute repo path that matches a relative one under an absolute directory", () => {
+    const yaml = workspaceYaml
+      .replace("project:\n  repos:", "project:\n  directory: /srv/ws\n  repos:")
+      .replace("path: ./App", "path: /srv/ws/AlignSmart");
+    expect(() => parseConfig(yaml)).toThrow(/Duplicate repo path/);
+  });
+
+  it("does not guess at absolute-vs-relative collisions when directory is relative", () => {
+    const yaml = workspaceYaml.replace("path: ./App", "path: /AlignSmart");
+    expect(parseConfig(yaml).project.repos[1]?.path).toBe("/AlignSmart");
+  });
+
   it("rejects an empty repos list", () => {
     const yaml = `
 issueTracker:

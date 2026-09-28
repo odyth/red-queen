@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { levenshtein } from "./strings.js";
 import { PhaseGraph } from "./types.js";
@@ -317,6 +317,8 @@ function refineRepos(config: RawConfig, ctx: z.RefinementCtx): void {
     }
   }
   const seen = new Set<string>();
+  const upstreams = new Map<string, string>();
+  const paths = new Map<string, string>();
   repos.forEach((repo, index) => {
     if (seen.has(repo.name)) {
       ctx.addIssue({
@@ -326,6 +328,35 @@ function refineRepos(config: RawConfig, ctx: z.RefinementCtx): void {
       });
     }
     seen.add(repo.name);
+    // Case-insensitive to match createSourceControlRegistry, which would otherwise
+    // be the first thing to reject this at daemon start.
+    const upstream = `${repo.owner}/${repo.repo}`.toLowerCase();
+    const upstreamHolder = upstreams.get(upstream);
+    if (upstreamHolder === undefined) {
+      upstreams.set(upstream, repo.name);
+    } else {
+      ctx.addIssue({
+        code: "custom",
+        path: ["project", "repos", index, "repo"],
+        message: `Duplicate upstream repository "${repo.owner}/${repo.repo}" — already declared by repo "${upstreamHolder}"`,
+      });
+    }
+    // The parser is filesystem-free, so this compares normalized spellings only:
+    // symlinks, case-insensitive volumes, and an absolute path aliasing a relative
+    // one under a relative project.directory all get through.
+    const path = normalize(
+      isAbsolute(repo.path) ? repo.path : join(config.project.directory, repo.path),
+    ).replace(/(?<=.)[\\/]+$/, "");
+    const pathHolder = paths.get(path);
+    if (pathHolder === undefined) {
+      paths.set(path, repo.name);
+    } else {
+      ctx.addIssue({
+        code: "custom",
+        path: ["project", "repos", index, "path"],
+        message: `Duplicate repo path "${repo.path}" — same directory as repo "${pathHolder}"`,
+      });
+    }
   });
   const auth = config.sourceControl.config.auth;
   const authType =
