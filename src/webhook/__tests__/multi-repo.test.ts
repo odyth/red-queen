@@ -222,6 +222,41 @@ describe("WebhookServer repository routing", () => {
     expect(store.get("PROJ-1")?.currentPhase).toBe("human-review");
   });
 
+  it("completes an issue whose unmerged sibling was descoped after the other merged", async () => {
+    seed("PROJ-1", "api");
+    seed("PROJ-1", "web");
+    await merge("PROJ-1", "acme/api");
+    const pending = queue.enqueue({ issueId: "PROJ-1", type: "coding" });
+    store.setScope("PROJ-1", ["api"]);
+
+    await server.reconcileMergedPrs();
+
+    expect(store.get("PROJ-1")?.currentPhase).toBe("done");
+    expect(queue.getTask(pending.id)?.status).toBe("cancelled");
+    expect(store.getRepo("PROJ-1", "web")).toMatchObject({ inScope: false, prNumber: 7 });
+    expect(
+      audit
+        .query({ issueId: "PROJ-1" })
+        .some((entry) => entry.message.includes("every in-scope PR had already merged")),
+    ).toBe(true);
+  });
+
+  it("waits for the worker that shrank scope before completing the issue", async () => {
+    seed("PROJ-1", "api");
+    seed("PROJ-1", "web");
+    await merge("PROJ-1", "acme/api");
+    const worker = queue.enqueue({ issueId: "PROJ-1", type: "spec-writing" });
+    queue.markWorking(worker.id);
+    store.setScope("PROJ-1", ["api"]);
+
+    await server.reconcileMergedPrs();
+    expect(store.get("PROJ-1")?.currentPhase).toBe("human-review");
+
+    queue.markComplete(worker.id, "finished");
+    await server.retryPendingMergeCleanup("PROJ-1");
+    expect(store.get("PROJ-1")?.currentPhase).toBe("done");
+  });
+
   it.each(["someone/else", "missing"])("audits and drops unknown repository %s", async (repo) => {
     seed("PROJ-1", "api");
     await dispatch({

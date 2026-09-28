@@ -599,6 +599,37 @@ describe("PipelineStateStore pipeline_repos", () => {
     expect(store.getRepo("PROJ-1", "app")?.terminalPrNumber).toBe(1);
   });
 
+  it("completeIfMerged finishes an issue whose unmerged sibling was descoped", () => {
+    store.create("PROJ-1", "coding");
+    store.setScope("PROJ-1", ["app", "web"]);
+    store.updatePrNumber("PROJ-1", "app", 1, "main");
+    store.updatePrNumber("PROJ-1", "web", 2, "main");
+    expect(store.markPrMerged("PROJ-1", "app", 1)).toBe("pending-others");
+    expect(store.completeIfMerged("PROJ-1")).toBe(false);
+
+    store.setScope("PROJ-1", ["app"]);
+    expect(store.markPrMerged("PROJ-1", "app", 1)).toBe("already-processed");
+    expect(store.get("PROJ-1")?.currentPhase).toBe("coding");
+
+    expect(store.completeIfMerged("PROJ-1")).toBe(true);
+    expect(store.get("PROJ-1")).toMatchObject({ currentPhase: "done", priorPhase: "coding" });
+    expect(store.completeIfMerged("PROJ-1")).toBe(false);
+    expect(store.get("PROJ-1")?.priorPhase).toBe("coding");
+  });
+
+  it("completeIfMerged needs at least one in-scope row", () => {
+    store.create("PROJ-1", "coding");
+    expect(store.completeIfMerged("PROJ-1")).toBe(false);
+    store.setScope("PROJ-1", ["app"]);
+    store.updatePrNumber("PROJ-1", "app", 1, "main");
+    store.markPrMerged("PROJ-1", "app", 1);
+    store.updatePhase("PROJ-1", "coding");
+    store.setScope("PROJ-1", []);
+    expect(store.completeIfMerged("PROJ-1")).toBe(false);
+    expect(store.completeIfMerged("missing")).toBe(false);
+    expect(store.get("PROJ-1")?.currentPhase).toBe("coding");
+  });
+
   it("rescoping a repo that merged while descoped requires fresh work there", () => {
     store.create("PROJ-1", "human-review");
     store.setScope("PROJ-1", ["app", "web"]);

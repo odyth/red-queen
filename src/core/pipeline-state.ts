@@ -199,8 +199,9 @@ export class PipelineStateStore {
       const now = new Date().toISOString();
       // Bringing a repo back into scope asks for fresh work there. The row does
       // not record whether its merge landed before or after it was descoped,
-      // so both are cleared; descoping the repo again lets the issue finish.
-      // Rows that stay in scope keep theirs while siblings catch up.
+      // so both are cleared; descoping the repo again lets completeIfMerged
+      // finish the issue. Rows that stay in scope keep theirs while siblings
+      // catch up.
       const upsert = this.db.prepare(
         `INSERT INTO pipeline_repos (issue_id, repo, in_scope, created_at, updated_at)
          VALUES (?, ?, 1, ?, ?)
@@ -419,6 +420,33 @@ export class PipelineStateStore {
         .run(now, issueId);
       this.refreshMirror(issueId, now);
       return "processed";
+    })();
+  }
+
+  // Shrinking scope can leave every in-scope row merged with no merge event
+  // left to finish the issue, and a replay of the merged row is a duplicate.
+  // Callers must hold this back while a worker owns the issue: its phase
+  // advance out of done would reopen the cycle and clear the merges.
+  completeIfMerged(issueId: string): boolean {
+    return this.db.transaction((): boolean => {
+      const scope = this.db
+        .prepare(
+          `SELECT COUNT(*) AS scoped, COALESCE(SUM(merge_completed = 0), 0) AS remaining
+           FROM pipeline_repos WHERE issue_id = ? AND in_scope = 1`,
+        )
+        .get(issueId) as { scoped: number; remaining: number };
+      if (scope.scoped === 0 || scope.remaining > 0) {
+        return false;
+      }
+      const now = new Date().toISOString();
+      const result = this.db
+        .prepare(
+          `UPDATE pipeline_state
+           SET prior_phase = current_phase, current_phase = 'done', updated_at = ?
+           WHERE issue_id = ? AND (current_phase IS NULL OR current_phase <> 'done')`,
+        )
+        .run(now, issueId);
+      return result.changes > 0;
     })();
   }
 

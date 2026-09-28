@@ -626,6 +626,31 @@ export class WebhookServer {
       this.pendingMergeCleanup.delete(key);
       await this.dispatchEvent(pending.event, "webhook-reconcile");
     }
+    // The worker that just finished may have shrunk the issue's scope.
+    this.completeIfMerged(issueId, "webhook-reconcile");
+  }
+
+  // A scope change can leave nothing to wait for without a merge event to say
+  // so. Held back under a working task like merge cleanup is: the worker's
+  // phase advance would reopen the issue.
+  private completeIfMerged(issueId: string, component: string): void {
+    if (
+      this.hasWorkingTask(issueId) ||
+      this.deps.pipelineState.completeIfMerged(issueId) === false
+    ) {
+      return;
+    }
+    const cancelledTasks = this.deps.queue.cancelPendingForIssue(
+      issueId,
+      "Cancelled — every in-scope pull request merged",
+    );
+    safeAudit(this.deps.audit, {
+      component,
+      issueId,
+      message: "Issue complete — every in-scope PR had already merged when its scope changed",
+      metadata: { cancelledTasks },
+    });
+    this.deps.queue.releaseDeferred();
   }
 
   async drain(): Promise<void> {
@@ -789,6 +814,9 @@ export class WebhookServer {
     for (const record of all) {
       if (this.hasWorkingTask(record.issueId)) {
         continue;
+      }
+      if (record.currentPhase !== "done") {
+        this.completeIfMerged(record.issueId, component);
       }
       for (const row of record.repos) {
         const leaked =
