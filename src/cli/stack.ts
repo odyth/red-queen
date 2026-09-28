@@ -10,6 +10,7 @@ import type { StackProblem, StackRepoResolution } from "../core/stack.js";
 import { gitCwdFor, worktreePathFor } from "../core/worktree-layout.js";
 import type { IssueTracker } from "../integrations/issue-tracker.js";
 import { loadCliContext } from "./context.js";
+import type { CliContext } from "./context.js";
 import { CliError } from "./errors.js";
 import { writeJson } from "./io.js";
 
@@ -291,7 +292,16 @@ export async function cmdStack(args: string[]): Promise<void> {
     throw new CliError("stack setup: <issueId> is required");
   }
 
-  const ctx = loadCliContext();
+  let ctx: CliContext;
+  try {
+    ctx = loadCliContext();
+  } catch (err) {
+    // A refused context (config, database, repo-name check) hits the same
+    // exit-code collision as the failures below.
+    const message = err instanceof Error ? err.message : String(err);
+    writeJson({ status: "error", message }, values.pretty === true);
+    throw new CliError(`stack setup: ${message}`, 1);
+  }
   let result: StackSetupOutput;
   try {
     result = await executeStackSetup({
