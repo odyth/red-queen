@@ -197,10 +197,15 @@ export class PipelineStateStore {
     return this.db.transaction((): PipelineRepoRecord[] => {
       this.assertRecord(issueId);
       const now = new Date().toISOString();
+      // A merge that landed while the repo was descoped is not this scope's
+      // work; rows that stay in scope keep theirs while siblings catch up.
       const upsert = this.db.prepare(
         `INSERT INTO pipeline_repos (issue_id, repo, in_scope, created_at, updated_at)
          VALUES (?, ?, 1, ?, ?)
-         ON CONFLICT(issue_id, repo) DO UPDATE SET in_scope = 1, updated_at = excluded.updated_at`,
+         ON CONFLICT(issue_id, repo) DO UPDATE SET
+           merge_completed = CASE WHEN in_scope = 0 THEN 0 ELSE merge_completed END,
+           in_scope = 1,
+           updated_at = excluded.updated_at`,
       );
       for (const name of repoNames) {
         upsert.run(issueId, name, now, now);

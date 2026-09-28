@@ -588,6 +588,35 @@ describe("PipelineStateStore pipeline_repos", () => {
     expect(store.getRepo("PROJ-1", "app")?.terminalPrNumber).toBe(1);
   });
 
+  it("rescoping a repo that merged while descoped requires fresh work there", () => {
+    store.create("PROJ-1", "human-review");
+    store.setScope("PROJ-1", ["app", "web"]);
+    store.updatePrNumber("PROJ-1", "app", 1, "main");
+    store.updatePrNumber("PROJ-1", "web", 2, "main");
+    store.setScope("PROJ-1", ["web"]);
+    store.markPrMerged("PROJ-1", "app", 1);
+
+    store.setScope("PROJ-1", ["app", "web"]);
+    expect(store.getRepo("PROJ-1", "app")).toMatchObject({
+      inScope: true,
+      mergeCompleted: false,
+      terminalPrNumber: 1,
+    });
+    expect(store.markPrMerged("PROJ-1", "web", 2)).toBe("pending-others");
+    expect(store.get("PROJ-1")?.currentPhase).toBe("human-review");
+    expect(store.markPrMerged("PROJ-1", "app", 1)).toBe("stale");
+  });
+
+  it("re-asserting scope keeps a sibling's completed merge", () => {
+    store.create("PROJ-1", "human-review");
+    store.setScope("PROJ-1", ["app", "web"]);
+    store.updatePrNumber("PROJ-1", "app", 1, "main");
+    store.markPrMerged("PROJ-1", "app", 1);
+
+    store.setScope("PROJ-1", ["app", "web"]);
+    expect(store.getRepo("PROJ-1", "app")?.mergeCompleted).toBe(true);
+  });
+
   it("waits for an in-scope sibling that has not produced a PR yet", () => {
     store.create("PROJ-1", "human-review");
     store.setScope("PROJ-1", ["app", "web"]);
