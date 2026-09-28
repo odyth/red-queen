@@ -39,6 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The default worker effort is now `max` (previously `high`). Upgraders who
   don't pin `pipeline.effort` (or a per-phase `effort`) get longer, more
   expensive runs; set `effort: high` to keep the old behavior.
+- `redqueen init` creates `.env` with mode `0600`. An existing `.env` keeps
+  its mode; `redqueen migrate` warns when the one it moves is readable by
+  other users, and adds the Red Queen ignore rules when the new install root
+  sits inside a git work tree.
 
 ### Fixed
 

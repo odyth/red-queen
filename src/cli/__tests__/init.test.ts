@@ -104,6 +104,12 @@ describe("cmdInit --yes", () => {
     expect(gitignore).toContain(".env");
   });
 
+  it("scaffolds a .env only its owner can read", async () => {
+    writeFileSync(join(tmp, "package.json"), "{}");
+    await cmdInit(["--yes"]);
+    expect(statSync(join(tmp, ".env")).mode & 0o777).toBe(0o600);
+  });
+
   it("appends the log rule to a pre-existing Red Queen gitignore", async () => {
     writeFileSync(join(tmp, "package.json"), "{}");
     // A gitignore that has the base block but predates the log rule.

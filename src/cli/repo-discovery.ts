@@ -172,6 +172,20 @@ export function isGitWorkTreeRoot(dir: string): boolean {
   }
 }
 
+export function isInsideGitWorkTree(dir: string): boolean {
+  try {
+    return (
+      execFileSync("git", ["rev-parse", "--is-inside-work-tree"], {
+        cwd: dir,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim() === "true"
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function readGitRemote(dir: string): string | null {
   try {
     const remote = execFileSync("git", ["remote", "get-url", "origin"], {

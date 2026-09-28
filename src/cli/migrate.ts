@@ -51,7 +51,12 @@ import { detectLanguages } from "./detect.js";
 import { CliError } from "./errors.js";
 import { printHelp } from "./help.js";
 import { isProcessAlive, readPidFile, resolvePidPath } from "./pid.js";
-import { isGitWorkTreeRoot, listRegisteredWorktrees } from "./repo-discovery.js";
+import { updateGitignore } from "./init.js";
+import {
+  isGitWorkTreeRoot,
+  isInsideGitWorkTree,
+  listRegisteredWorktrees,
+} from "./repo-discovery.js";
 import { resolveRedqueenBinPath } from "./service.js";
 
 interface IPathMove {
@@ -68,6 +73,8 @@ export interface MigrationPlan {
   staleRefreshWorktrees: string[];
   fileMoves: IPathMove[];
   preservedWorktreeEntries: string[];
+  parentInGit: boolean;
+  envMode: number | null;
   serviceInstalled: boolean;
   serviceEnabled: boolean;
   oldService: ServiceInstallContext;
@@ -515,7 +522,8 @@ export function planMigration(cwd: string): MigrationPlan {
         hash.update(path).update(readFileSync(path));
       }
     }
-    hash.update(JSON.stringify({ ...worktrees, fileMoves, config: doc.toString() }));
+    const parentInGit = isInsideGitWorkTree(parentDir);
+    hash.update(JSON.stringify({ ...worktrees, fileMoves, parentInGit, config: doc.toString() }));
     const binary = resolveRedqueenBinPath();
     return {
       installDir,
@@ -524,6 +532,8 @@ export function planMigration(cwd: string): MigrationPlan {
       repoName: entry.name,
       ...worktrees,
       fileMoves,
+      parentInGit,
+      envMode: present(envPath) ? lstatSync(envPath).mode & 0o777 : null,
       serviceInstalled: false,
       serviceEnabled: before.service.enabled,
       oldService: contextFromConfig(before, installDir, binary),
@@ -650,6 +660,10 @@ export function executeMigration(plan: MigrationPlan, io: IMigrationIO = {}): vo
       moveFile(move.from, move.to);
       files.push(move);
     }
+    if (plan.parentInGit) {
+      step = "gitignore update";
+      updateGitignore(plan.parentDir);
+    }
     step = "database rewrite and legacy adoption";
     rewriteDatabase(plan);
     step = "config rewrite";
@@ -703,6 +717,16 @@ function printPlan(plan: MigrationPlan): void {
     "Config: convert project.repos and preserve referenced paths and comments.",
     "State: rewrite recorded worktree paths, adopt legacy rows, and preserve map notes.",
   );
+  if (plan.parentInGit) {
+    lines.push(
+      `Gitignore: add .env and Red Queen state to ${join(plan.parentDir, ".gitignore")} (the destination is inside a git work tree).`,
+    );
+  }
+  if (plan.envMode !== null && (plan.envMode & 0o077) !== 0) {
+    lines.push(
+      `Warning: .env is readable by other users (mode ${plan.envMode.toString(8)}) and keeps that mode; chmod 600 it unless the service account needs group access.`,
+    );
+  }
   if (plan.serviceInstalled) {
     lines.push(
       plan.serviceEnabled

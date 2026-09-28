@@ -319,6 +319,44 @@ describe("migration", () => {
     });
   });
 
+  it("ignores the moved secrets and state when the destination is inside a git work tree", async () => {
+    git(["init", "-q"], parent);
+    const stdout = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+    await cmdMigrate(["--dry-run"]);
+    expect(stdout.mock.calls.map(([text]) => String(text)).join("")).toContain(
+      join(parent, ".gitignore"),
+    );
+    expect(existsSync(join(parent, ".gitignore"))).toBe(false);
+
+    await cmdMigrate(["--yes"]);
+    for (const path of [".env", ".redqueen/redqueen.db", ".redqueen/worktrees/PROJ-1"]) {
+      expect(git(["check-ignore", path], parent).trim()).toBe(path);
+    }
+  });
+
+  it("leaves a destination outside git without a .gitignore", async () => {
+    await cmdMigrate(["--yes"]);
+    expect(existsSync(join(parent, ".gitignore"))).toBe(false);
+  });
+
+  it("warns about a .env other users can read and keeps its mode", async () => {
+    chmodSync(join(install, ".env"), 0o644);
+    const stdout = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+    await cmdMigrate(["--yes"]);
+    expect(stdout.mock.calls.map(([text]) => String(text)).join("")).toMatch(
+      /\.env is readable by other users \(mode 644\)/,
+    );
+    expect(statSync(join(parent, ".env")).mode & 0o777).toBe(0o644);
+  });
+
+  it("does not warn about a private .env", async () => {
+    const stdout = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+    await cmdMigrate(["--dry-run"]);
+    expect(stdout.mock.calls.map(([text]) => String(text)).join("")).not.toContain(
+      "readable by other users",
+    );
+  });
+
   it("preserves unknown files and unregistered refresh folders in the old worktree root", async () => {
     const unknown = join(stateRoot, "worktrees", "refresh-user-notes");
     mkdirSync(unknown);

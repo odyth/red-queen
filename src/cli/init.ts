@@ -1210,7 +1210,7 @@ function writeDotEnvScaffold(
   ];
 
   if (existsSync(envPath) === false) {
-    writeFileSync(envPath, lines.join("\n"), { encoding: "utf8" });
+    writeFileSync(envPath, lines.join("\n"), { encoding: "utf8", mode: 0o600 });
     return;
   }
   const existing = readFileSync(envPath, "utf8");
@@ -1303,7 +1303,7 @@ function copyTemplate(kind: TemplateKind, choice: string, destPath: string): voi
   copyFileSync(source, destPath);
 }
 
-function updateGitignore(projectDir: string): void {
+export function updateGitignore(projectDir: string): void {
   const gitignorePath = join(projectDir, ".gitignore");
   const block = [
     "",
