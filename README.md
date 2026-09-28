@@ -340,7 +340,8 @@ It accepts a nonempty comma-separated list of configured names and saves
 scope together with the open-question count. Downstream skills use that
 explicit scope; they do not infer repos or select the first one when scope
 is missing. Every `redqueen pr` helper and `redqueen pipeline update` call
-also requires `--repo`, even in a one-repo workspace. For example, read
+also requires `--repo`, even in a one-repo workspace, and `pr create` and
+`pipeline update` refuse a repo outside the ticket's scope. For example, read
 PR #42 from the `api` repo with:
 
 ```bash
