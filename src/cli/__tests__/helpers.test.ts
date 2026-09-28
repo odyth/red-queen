@@ -452,6 +452,32 @@ project:
     },
   );
 
+  it("CLI helpers re-key legacy rows stored under a previous repo name", () => {
+    const initial = loadCliContext();
+    initial.pipelineState.create("RENAMED", "coding");
+    initial.pipelineState.updateBranch("RENAMED", "old-name", "feature/RENAMED");
+    initial.cleanup();
+
+    const reloaded = loadCliContext();
+    try {
+      expect(reloaded.pipelineState.get("RENAMED")?.repos).toEqual([
+        expect.objectContaining({ repo: "default", branchName: "feature/RENAMED" }),
+      ]);
+    } finally {
+      reloaded.cleanup();
+    }
+  });
+
+  it("CLI helpers refuse a workspace whose unfinished issues name an unconfigured repo", () => {
+    writeWorkspaceConfig();
+    const initial = loadCliContext();
+    initial.pipelineState.create("GONE", "coding");
+    initial.pipelineState.updateBranch("GONE", "removed", "feature/GONE");
+    initial.cleanup();
+
+    expect(() => loadCliContext()).toThrow(/GONE → removed/);
+  });
+
   it("records the open-question count on the pipeline record", async () => {
     await cmdPipeline(["update", "META-1"]);
     stdoutCapture = [];

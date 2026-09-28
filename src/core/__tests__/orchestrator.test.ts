@@ -1770,6 +1770,49 @@ describe("RedQueen orchestrator", () => {
     expect(h.pipelineState.get("PROJ-NEW")?.repos).toEqual([]);
   });
 
+  it("startup re-keys legacy rows stored under a previous repo name", async () => {
+    const h = setupHarness(() =>
+      Promise.resolve(
+        makeWorkerResult({ success: true, exitCode: 0, elapsed: 1, summary: "done", error: null }),
+      ),
+    );
+    h.pipelineState.create("PROJ-RENAMED", "spec-review");
+    h.pipelineState.updateBranchInfo("PROJ-RENAMED", "old-app", {
+      branchName: "feature/PROJ-RENAMED",
+      prNumber: 12,
+    });
+    h.issueTracker.phases.set("PROJ-RENAMED", "spec-review");
+
+    await runUntil(h, () => h.pipelineState.getRepo("PROJ-RENAMED", "app") !== null);
+
+    expect(h.pipelineState.get("PROJ-RENAMED")?.repos).toEqual([
+      expect.objectContaining({ repo: "app", branchName: "feature/PROJ-RENAMED", prNumber: 12 }),
+    ]);
+    expect(readFileSync(auditPath, "utf8")).toContain("Re-keyed 1 pipeline record(s) to repo app");
+  });
+
+  it("refuses to start a workspace whose unfinished issues name an unconfigured repo", async () => {
+    const repos = makeTestConfig({ project: { directory: tempDir } }).project.repos;
+    const h = setupHarness(
+      () =>
+        Promise.resolve(
+          makeWorkerResult({
+            success: true,
+            exitCode: 0,
+            elapsed: 1,
+            summary: "done",
+            error: null,
+          }),
+        ),
+      { repos },
+    );
+    h.pipelineState.create("PROJ-GONE", "coding");
+    h.pipelineState.updateBranch("PROJ-GONE", "removed", "feature/PROJ-GONE");
+
+    await expect(h.rq.start()).rejects.toThrow(/PROJ-GONE → removed/);
+    expect(h.orchestratorState.get().status).toBe("stopped");
+  });
+
   it("skips dismissStaleReviews when phase does not require PR", async () => {
     // coding succeeds but does not have requiresPr: true
     let runCount = 0;

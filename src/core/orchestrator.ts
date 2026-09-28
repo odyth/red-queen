@@ -140,6 +140,7 @@ export class RedQueen {
     // reaps /tmp entries after ~10 days, deleting it under a long-running daemon. The
     // per-write mkdirSync in dispatchWorkerForTask self-heals it if it vanishes anyway.
     this.tempDir = join(this.deps.runtime.config.project.directory, ".redqueen", "tmp");
+    this.reconcileRepoNames();
     this.performCrashRecovery();
 
     await this.startDashboardIfEnabled();
@@ -2038,6 +2039,23 @@ export class RedQueen {
         issueId: null,
         message: `Adopted ${String(adopted.length)} legacy pipeline record(s) into repo ${primary.name}`,
         metadata: { repo: primary.name, issueIds: adopted },
+      });
+    }
+  }
+
+  // Runs before anything binds or dispatches: a row keyed by a repo name the
+  // config no longer declares would otherwise read as a repo with no work yet.
+  private reconcileRepoNames(): void {
+    const rekeyed = this.deps.pipelineState.reconcileRepoNames(
+      this.deps.runtime.config.project.workspaceMode === false,
+    );
+    if (rekeyed.length > 0) {
+      const repo = this.deps.pipelineState.defaultRepo;
+      this.deps.audit.log({
+        component: "orchestrator",
+        issueId: null,
+        message: `Re-keyed ${String(rekeyed.length)} pipeline record(s) to repo ${repo}`,
+        metadata: { repo, issueIds: rekeyed },
       });
     }
   }

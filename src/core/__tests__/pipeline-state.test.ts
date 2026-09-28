@@ -834,3 +834,75 @@ describe("PipelineStateStore.adoptLegacyRows", () => {
     expect(store.get("merged")?.currentPhase).toBe("coding");
   });
 });
+
+describe("PipelineStateStore.reconcileRepoNames", () => {
+  beforeEach(() => {
+    db = createTestDb();
+  });
+  afterEach(() => {
+    db.close();
+  });
+
+  it("legacy mode re-keys rows stored under a previous repo name, including done issues", () => {
+    const before = new PipelineStateStore(db, ["old-name"]);
+    before.create("OPEN", "coding");
+    before.updateBranchInfo("OPEN", "old-name", { branchName: "feature/OPEN", prNumber: 4 });
+    before.create("DONE", "human-review");
+    before.updatePrNumber("DONE", "old-name", 5, "main");
+    before.markPrMerged("DONE", "old-name", 5);
+
+    store = new PipelineStateStore(db, ["new-name"]);
+    expect(store.reconcileRepoNames(true).sort()).toEqual(["DONE", "OPEN"]);
+    expect(store.reconcileRepoNames(true)).toEqual([]);
+
+    expect(store.getRepo("OPEN", "old-name")).toBeNull();
+    expect(store.getRepo("OPEN", "new-name")).toMatchObject({
+      inScope: true,
+      branchName: "feature/OPEN",
+      prNumber: 4,
+    });
+    expect(store.getRepo("DONE", "new-name")).toMatchObject({
+      terminalPrNumber: 5,
+      mergeCompleted: true,
+    });
+    expect(store.findByPr("new-name", 4)?.issueId).toBe("OPEN");
+  });
+
+  it("legacy mode refuses to merge two rows of one issue into the sole repo", () => {
+    const before = new PipelineStateStore(db, ["old-name", "new-name"]);
+    before.create("SPLIT", "coding");
+    before.updateBranch("SPLIT", "old-name", "feature/SPLIT");
+    before.updateBranch("SPLIT", "new-name", "feature/SPLIT");
+
+    store = new PipelineStateStore(db, ["new-name"]);
+    expect(() => store.reconcileRepoNames(true)).toThrow(/SPLIT.*old-name/);
+    expect(store.getRepo("SPLIT", "old-name")?.branchName).toBe("feature/SPLIT");
+  });
+
+  it("workspace mode rejects unfinished issues whose rows name an unconfigured repo", () => {
+    const before = new PipelineStateStore(db, ["api", "web"]);
+    before.create("OPEN", "coding");
+    before.setScope("OPEN", ["api", "web"]);
+    before.create("UNSTARTED");
+    before.setScope("UNSTARTED", ["web"]);
+
+    store = new PipelineStateStore(db, ["api", "site"]);
+    expect(() => store.reconcileRepoNames(false)).toThrow(
+      /OPEN → web, UNSTARTED → web.*configured: api, site/s,
+    );
+    expect(store.getRepo("OPEN", "web")?.inScope).toBe(true);
+  });
+
+  it("workspace mode leaves finished issues and configured rows alone", () => {
+    const before = new PipelineStateStore(db, ["api", "web"]);
+    before.create("DONE", "human-review");
+    before.updatePrNumber("DONE", "web", 5, "main");
+    before.markPrMerged("DONE", "web", 5);
+    before.create("OPEN", "coding");
+    before.setScope("OPEN", ["api"]);
+
+    store = new PipelineStateStore(db, ["api"]);
+    expect(store.reconcileRepoNames(false)).toEqual([]);
+    expect(store.getRepo("DONE", "web")?.terminalPrNumber).toBe(5);
+  });
+});

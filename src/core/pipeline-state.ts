@@ -450,6 +450,52 @@ export class PipelineStateStore {
     })();
   }
 
+  // Rows are keyed by config repo name. A legacy install has exactly one repo,
+  // so a row under any other name is that repo under a previous derived name.
+  // A workspace cannot tell a rename from a removal and refuses to guess.
+  reconcileRepoNames(legacyMode: boolean): string[] {
+    return this.db.transaction((): string[] => {
+      const describe = (rows: { issue_id: string; repo: string }[]): string =>
+        rows.map((row) => `${row.issue_id} → ${row.repo}`).join(", ");
+      if (legacyMode === false) {
+        const placeholders = this.repoNames.map(() => "?").join(", ");
+        const unknown = this.db
+          .prepare(
+            `SELECT pr.issue_id, pr.repo FROM pipeline_repos pr
+             JOIN pipeline_state ps ON ps.issue_id = pr.issue_id
+             WHERE pr.repo NOT IN (${placeholders})
+               AND (ps.current_phase IS NULL OR ps.current_phase <> 'done')
+             ORDER BY pr.issue_id, pr.repo`,
+          )
+          .all(...this.repoNames) as { issue_id: string; repo: string }[];
+        if (unknown.length > 0) {
+          throw new Error(
+            `Unfinished issues reference repos missing from project.repos: ${describe(unknown)} (configured: ${this.repoNames.join(", ")}). Restore each entry under its previous name until these issues finish.`,
+          );
+        }
+        return [];
+      }
+      const target = this.defaultRepo;
+      const stale = this.db
+        .prepare(
+          `SELECT issue_id, repo,
+                  (SELECT COUNT(*) FROM pipeline_repos o WHERE o.issue_id = pr.issue_id) AS siblings
+           FROM pipeline_repos pr WHERE repo <> ? ORDER BY issue_id, repo`,
+        )
+        .all(target) as { issue_id: string; repo: string; siblings: number }[];
+      const ambiguous = stale.filter((row) => row.siblings > 1);
+      if (ambiguous.length > 0) {
+        throw new Error(
+          `Cannot re-key pipeline rows to the sole repo "${target}": ${describe(ambiguous)} belong to issues with more than one repo row. Restore the project.repos list this database was last run with.`,
+        );
+      }
+      this.db
+        .prepare("UPDATE pipeline_repos SET repo = ?, updated_at = ? WHERE repo <> ?")
+        .run(target, new Date().toISOString(), target);
+      return stale.map((row) => row.issue_id);
+    })();
+  }
+
   incrementReviewIterations(issueId: string): number {
     const now = new Date().toISOString();
     this.db

@@ -41,6 +41,13 @@ export function loadCliContext(): CliContext {
   if (primary !== undefined) {
     pipelineState.adoptLegacyRows(primary, config.project.workspaceMode === false);
   }
+  // Helpers enforce the same state/config agreement the daemon does at start.
+  try {
+    pipelineState.reconcileRepoNames(config.project.workspaceMode === false);
+  } catch (err) {
+    database.close();
+    throw err;
+  }
 
   const pair = buildAdapterPair(
     {
