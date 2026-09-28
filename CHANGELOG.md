@@ -55,7 +55,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Renaming or removing a `project.repos[]` entry while issues that use it are
   unfinished stops `redqueen start` and the skill helpers, naming each issue
   and repo; restore the entry until those issues finish. Legacy installs
-  follow a changed `sourceControl.config.repo` on their own.
+  follow a changed `sourceControl.config.repo` at the next `redqueen start`;
+  until then the skill helpers refuse to run rather than write under a name
+  the running daemon does not know.
 
 ### Fixed
 

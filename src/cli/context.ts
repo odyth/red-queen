@@ -41,9 +41,10 @@ export function loadCliContext(): CliContext {
   if (primary !== undefined) {
     pipelineState.adoptLegacyRows(primary, config.project.workspaceMode === false);
   }
-  // Helpers enforce the same state/config agreement the daemon does at start.
+  // Helpers enforce the state/config agreement the daemon does at start, but
+  // only the daemon may re-key: this config can be ahead of a running one.
   try {
-    pipelineState.reconcileRepoNames(config.project.workspaceMode === false);
+    pipelineState.assertRepoNames(config.project.workspaceMode === false);
   } catch (err) {
     database.close();
     throw err;

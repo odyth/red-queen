@@ -455,31 +455,48 @@ export class PipelineStateStore {
     })();
   }
 
-  // Rows are keyed by config repo name. A legacy install has exactly one repo,
-  // so a row under any other name is that repo under a previous derived name.
-  // A workspace cannot tell a rename from a removal and refuses to guess.
-  reconcileRepoNames(legacyMode: boolean): string[] {
-    return this.db.transaction((): string[] => {
-      const describe = (rows: { issue_id: string; repo: string }[]): string =>
-        rows.map((row) => `${row.issue_id} → ${row.repo}`).join(", ");
-      if (legacyMode === false) {
-        const placeholders = this.repoNames.map(() => "?").join(", ");
-        const unknown = this.db
-          .prepare(
-            `SELECT pr.issue_id, pr.repo FROM pipeline_repos pr
-             JOIN pipeline_state ps ON ps.issue_id = pr.issue_id
-             WHERE pr.repo NOT IN (${placeholders})
-               AND (ps.current_phase IS NULL OR ps.current_phase <> 'done')
-             ORDER BY pr.issue_id, pr.repo`,
-          )
-          .all(...this.repoNames) as { issue_id: string; repo: string }[];
-        if (unknown.length > 0) {
-          throw new Error(
-            `Unfinished issues reference repos missing from project.repos: ${describe(unknown)} (configured: ${this.repoNames.join(", ")}). Restore each entry under its previous name until these issues finish.`,
-          );
-        }
-        return [];
+  // Rows are keyed by config repo name. Helpers read the config file, which can
+  // be ahead of a running daemon, so they only verify: re-keying under a live
+  // daemon would strand every in-flight issue at once.
+  assertRepoNames(legacyMode: boolean): void {
+    if (legacyMode) {
+      const target = this.defaultRepo;
+      const stale = this.db
+        .prepare("SELECT DISTINCT repo FROM pipeline_repos WHERE repo <> ? ORDER BY repo")
+        .all(target) as { repo: string }[];
+      if (stale.length > 0) {
+        throw new Error(
+          `Pipeline state is keyed to repo ${stale.map((row) => `"${row.repo}"`).join(", ")} but the config now names "${target}". Restart Red Queen to re-key it, or restore the previous sourceControl.config.repo.`,
+        );
       }
+      return;
+    }
+    const placeholders = this.repoNames.map(() => "?").join(", ");
+    const unknown = this.db
+      .prepare(
+        `SELECT pr.issue_id, pr.repo FROM pipeline_repos pr
+         JOIN pipeline_state ps ON ps.issue_id = pr.issue_id
+         WHERE pr.repo NOT IN (${placeholders})
+           AND (ps.current_phase IS NULL OR ps.current_phase <> 'done')
+         ORDER BY pr.issue_id, pr.repo`,
+      )
+      .all(...this.repoNames) as { issue_id: string; repo: string }[];
+    if (unknown.length > 0) {
+      throw new Error(
+        `Unfinished issues reference repos missing from project.repos: ${describeRepoRows(unknown)} (configured: ${this.repoNames.join(", ")}). Restore each entry under its previous name until these issues finish.`,
+      );
+    }
+  }
+
+  // Start-only. A legacy install has exactly one repo, so a row under any other
+  // name is that repo under a previous derived name. A workspace cannot tell a
+  // rename from a removal and refuses to guess.
+  reconcileRepoNames(legacyMode: boolean): string[] {
+    if (legacyMode === false) {
+      this.assertRepoNames(false);
+      return [];
+    }
+    return this.db.transaction((): string[] => {
       const target = this.defaultRepo;
       const stale = this.db
         .prepare(
@@ -491,7 +508,7 @@ export class PipelineStateStore {
       const ambiguous = stale.filter((row) => row.siblings > 1);
       if (ambiguous.length > 0) {
         throw new Error(
-          `Cannot re-key pipeline rows to the sole repo "${target}": ${describe(ambiguous)} belong to issues with more than one repo row. Restore the project.repos list this database was last run with.`,
+          `Cannot re-key pipeline rows to the sole repo "${target}": ${describeRepoRows(ambiguous)} belong to issues that hold another repo row, and a single-repo install keeps one row per issue. If this database last ran as a workspace, restore project.repos; otherwise delete the stale pipeline_repos row for each listed issue.`,
         );
       }
       this.db
@@ -756,6 +773,10 @@ export class OrchestratorStateStore {
       .prepare("INSERT OR REPLACE INTO orchestrator_state (key, value) VALUES (?, ?)")
       .run(key, value);
   }
+}
+
+function describeRepoRows(rows: { issue_id: string; repo: string }[]): string {
+  return rows.map((row) => `${row.issue_id} → ${row.repo}`).join(", ");
 }
 
 function toRepoRecord(row: PipelineRepoRow): PipelineRepoRecord {

@@ -904,8 +904,31 @@ describe("PipelineStateStore.reconcileRepoNames", () => {
     before.updateBranch("SPLIT", "new-name", "feature/SPLIT");
 
     store = new PipelineStateStore(db, ["new-name"]);
-    expect(() => store.reconcileRepoNames(true)).toThrow(/SPLIT.*old-name/);
+    expect(() => store.reconcileRepoNames(true)).toThrow(/SPLIT → old-name.*one row per issue/s);
+    expect(() => store.reconcileRepoNames(true)).not.toThrow(/Restore the project\.repos list/);
     expect(store.getRepo("SPLIT", "old-name")?.branchName).toBe("feature/SPLIT");
+  });
+
+  it("assertRepoNames reports legacy rows under a previous name without moving them", () => {
+    const before = new PipelineStateStore(db, ["old-name"]);
+    before.create("OPEN", "coding");
+    before.updateBranch("OPEN", "old-name", "feature/OPEN");
+
+    store = new PipelineStateStore(db, ["new-name"]);
+    expect(() => {
+      store.assertRepoNames(true);
+    }).toThrow(/"old-name".*"new-name".*Restart Red Queen.*sourceControl\.config\.repo/s);
+    expect(store.getRepo("OPEN", "old-name")?.branchName).toBe("feature/OPEN");
+    expect(store.getRepo("OPEN", "new-name")).toBeNull();
+  });
+
+  it("assertRepoNames accepts legacy rows under the configured name", () => {
+    store = new PipelineStateStore(db, ["new-name"]);
+    store.create("OPEN", "coding");
+    store.updateBranch("OPEN", "new-name", "feature/OPEN");
+    expect(() => {
+      store.assertRepoNames(true);
+    }).not.toThrow();
   });
 
   it("workspace mode rejects unfinished issues whose rows name an unconfigured repo", () => {

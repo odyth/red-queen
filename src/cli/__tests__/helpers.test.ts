@@ -452,19 +452,22 @@ project:
     },
   );
 
-  it("CLI helpers re-key legacy rows stored under a previous repo name", () => {
+  it("CLI helpers leave legacy rows under a previous name for the daemon to re-key", async () => {
     const initial = loadCliContext();
     initial.pipelineState.create("RENAMED", "coding");
     initial.pipelineState.updateBranch("RENAMED", "old-name", "feature/RENAMED");
     initial.cleanup();
 
-    const reloaded = loadCliContext();
+    await expect(
+      cmdPipeline(["update", "RENAMED", "--repo", "default", "--branch", "feature/other"]),
+    ).rejects.toThrow(/"old-name".*Restart Red Queen/s);
+    const database = new RedQueenDatabase(join(tmp, ".redqueen", "redqueen.db"));
     try {
-      expect(reloaded.pipelineState.get("RENAMED")?.repos).toEqual([
-        expect.objectContaining({ repo: "default", branchName: "feature/RENAMED" }),
+      expect(database.db.prepare("SELECT repo, branch_name FROM pipeline_repos").all()).toEqual([
+        { repo: "old-name", branch_name: "feature/RENAMED" },
       ]);
     } finally {
-      reloaded.cleanup();
+      database.close();
     }
   });
 
