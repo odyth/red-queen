@@ -61,9 +61,33 @@ export function readmeSummary(repoPath: string): string | null {
   } catch {
     return null;
   }
-  const paragraphs = readme.split(/\r?\n\s*\r?\n/).map((paragraph) => paragraph.trim());
+  // The summary lands in a map whose sections are found by heading and fence,
+  // so neither may be part of it: a fence it opens and never closes would
+  // swallow every section after it.
+  const paragraphs: string[][] = [[]];
+  let fence: string | null = null;
+  for (const line of readme.split(/\r?\n/)) {
+    const fenceMatch = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    const delimiter = fenceMatch?.[1];
+    if (fence !== null) {
+      if (
+        delimiter !== undefined &&
+        delimiter.startsWith(fence) &&
+        fenceMatch?.[2]?.trim() === ""
+      ) {
+        fence = null;
+      }
+    } else if (delimiter !== undefined) {
+      fence = delimiter;
+      paragraphs.push([]);
+    } else if (line.trim() === "" || /^ {0,3}#{1,6}(\s|$)/.test(line)) {
+      paragraphs.push([]);
+    } else {
+      paragraphs.at(-1)?.push(line);
+    }
+  }
   return (
-    paragraphs.find((paragraph) => paragraph !== "" && paragraph.startsWith("#") === false) ?? null
+    paragraphs.map((lines) => lines.join("\n").trim()).find((paragraph) => paragraph !== "") ?? null
   );
 }
 
@@ -243,9 +267,12 @@ function editBlockRange(body: string, header: string): { start: number; end: num
 
 function replaceEditBlock(body: string, header: string, replacement: string): string {
   const range = editBlockRange(body, header);
-  return range === null
-    ? body
-    : `${body.slice(0, range.start)}${replacement}${body.slice(range.end)}`;
+  if (range === null) {
+    throw new Error(
+      `Cannot regenerate: the generated map has no '${header}' block to carry the existing one into.`,
+    );
+  }
+  return `${body.slice(0, range.start)}${replacement}${body.slice(range.end)}`;
 }
 
 function mergeWorkspaceMap(existing: string, regenerated: string): string {

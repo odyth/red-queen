@@ -219,6 +219,25 @@ describe("readmeSummary", () => {
     expect(readmeSummary(tmp)).toBe("[badge](x)");
   });
 
+  it.each(["```bash", "~~~"])(
+    "skips a %s block that opens the README, blank lines included",
+    (fence) => {
+      writeFileSync(
+        join(tmp, "README.md"),
+        `# Title\n\n${fence}\nnpm install\n\nnpm start\n${fence.slice(0, 3)}\n\nReal summary.\n`,
+      );
+      expect(readmeSummary(tmp)).toBe("Real summary.");
+    },
+  );
+
+  it.each(["## Install", "```", "~~~sh"])(
+    "ends the summary at a %s line that follows it without a blank line",
+    (line) => {
+      writeFileSync(join(tmp, "README.md"), `# Title\n\nSummary line.\n${line}\nnpm install\n`);
+      expect(readmeSummary(tmp)).toBe("Summary line.");
+    },
+  );
+
   it("returns null for missing and unreadable README files", () => {
     expect(readmeSummary(tmp)).toBeNull();
     mkdirSync(join(tmp, "README.md"));
@@ -354,6 +373,32 @@ describe("mergeRegeneratedMap (sectioned)", () => {
     expect(firstRegeneration).toBe(migrated);
     expect(secondRegeneration).toBe(migrated);
   });
+
+  it("keeps flat Key Notes when the README opens with a code block", () => {
+    mkdirSync(join(tmp, "api"));
+    writeFileSync(
+      join(tmp, "api", "README.md"),
+      "# Api\n\n```bash\nnpm install\n\nnpm start\n```\n\nThe API.\n",
+    );
+    const existing = "# Codebase Map\n\n## Key Notes (edit me)\n- Keep my note.\n";
+    const merged = mergeRegeneratedMap(existing, workspaceMap([sampleRepo("api")]));
+    expect(merged).toContain("### What this repo is (edit me)\nThe API.\n");
+    expect(merged).toContain("### Key Notes (edit me)\n- Keep my note.\n");
+  });
+
+  it.each(["flat", "workspace"])(
+    "refuses to drop %s notes when the generated map has no block to carry them into",
+    (kind) => {
+      const generated = workspaceMap([sampleRepo("api")]);
+      const existing =
+        kind === "flat"
+          ? "# Codebase Map\n\n## Key Notes (edit me)\n- Keep my note.\n"
+          : generated.replace("- Describe the module structure here.", "- Keep my note.");
+      expect(() =>
+        mergeRegeneratedMap(existing, generated.replace("### Key Notes (edit me)", "### Notes")),
+      ).toThrow(/no '### Key Notes \(edit me\)' block/);
+    },
+  );
 
   it("refuses to guess which repo owns flat notes in a multi-repo conversion", () => {
     const existing = "# Codebase Map\n\n## Key Notes (edit me)\n- Keep my note.\n";
