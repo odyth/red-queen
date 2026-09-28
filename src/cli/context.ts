@@ -23,7 +23,12 @@ export interface CliContext {
   cleanup: () => void;
 }
 
-export function loadCliContext(): CliContext {
+export interface ICliContextOptions {
+  // Administrative commands that clean up after a repo left project.repos.
+  allowUnconfiguredRepos?: boolean;
+}
+
+export function loadCliContext(options: ICliContextOptions = {}): CliContext {
   const loaded = loadConfigFromProject(process.cwd());
   const config = resolveProjectPaths(loaded.config, loaded.projectRoot);
   const projectDir = config.project.directory;
@@ -43,11 +48,15 @@ export function loadCliContext(): CliContext {
   }
   // Helpers enforce the state/config agreement the daemon does at start, but
   // only the daemon may re-key: this config can be ahead of a running one.
-  try {
-    pipelineState.assertRepoNames(config.project.workspaceMode === false);
-  } catch (err) {
-    database.close();
-    throw err;
+  // Legacy rows under another name are never orphans, so they always wait.
+  const legacyMode = config.project.workspaceMode === false;
+  if (legacyMode || options.allowUnconfiguredRepos !== true) {
+    try {
+      pipelineState.assertRepoNames(legacyMode);
+    } catch (err) {
+      database.close();
+      throw err;
+    }
   }
 
   const pair = buildAdapterPair(

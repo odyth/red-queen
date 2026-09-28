@@ -457,7 +457,8 @@ export class PipelineStateStore {
 
   // Rows are keyed by config repo name. Helpers read the config file, which can
   // be ahead of a running daemon, so they only verify: re-keying under a live
-  // daemon would strand every in-flight issue at once.
+  // daemon would strand every in-flight issue at once. A descoped row holding
+  // nothing is inert in a workspace: no skill, event, or sweep can reach it.
   assertRepoNames(legacyMode: boolean): void {
     if (legacyMode) {
       const target = this.defaultRepo;
@@ -478,12 +479,14 @@ export class PipelineStateStore {
          JOIN pipeline_state ps ON ps.issue_id = pr.issue_id
          WHERE pr.repo NOT IN (${placeholders})
            AND (ps.current_phase IS NULL OR ps.current_phase <> 'done')
+           AND (pr.in_scope = 1 OR pr.branch_name IS NOT NULL
+                OR pr.pr_number IS NOT NULL OR pr.worktree_path IS NOT NULL)
          ORDER BY pr.issue_id, pr.repo`,
       )
       .all(...this.repoNames) as { issue_id: string; repo: string }[];
     if (unknown.length > 0) {
       throw new Error(
-        `Unfinished issues reference repos missing from project.repos: ${describeRepoRows(unknown)} (configured: ${this.repoNames.join(", ")}). Restore each entry under its previous name until these issues finish.`,
+        `Unfinished issues reference repos missing from project.repos: ${describeRepoRows(unknown)} (configured: ${this.repoNames.join(", ")}). Restore each entry under its previous name until these issues finish, or drop an abandoned issue's rows with redqueen pipeline cleanup <issueId>.`,
       );
     }
   }
@@ -625,6 +628,18 @@ export class PipelineStateStore {
       this.assertRecord(issueId);
       this.setOpenQuestionCount(issueId, count);
       return repoNames === undefined ? this.listRepos(issueId) : this.setScope(issueId, repoNames);
+    })();
+  }
+
+  deleteRepo(issueId: string, repo: string): boolean {
+    return this.db.transaction((): boolean => {
+      const result = this.db
+        .prepare("DELETE FROM pipeline_repos WHERE issue_id = ? AND repo = ?")
+        .run(issueId, repo);
+      if (result.changes > 0) {
+        this.refreshMirror(issueId, new Date().toISOString());
+      }
+      return result.changes > 0;
     })();
   }
 

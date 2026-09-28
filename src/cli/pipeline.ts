@@ -107,7 +107,7 @@ function cmdPipelineCleanup(args: string[]): Promise<void> {
     throw new CliError("pipeline cleanup: <issueId> is required");
   }
 
-  const ctx = loadCliContext();
+  const ctx = loadCliContext({ allowUnconfiguredRepos: true });
   const removed: string[] = [];
   try {
     const record = ctx.pipelineState.get(issueId);
@@ -115,8 +115,28 @@ function cmdPipelineCleanup(args: string[]): Promise<void> {
       throw new CliError(`pipeline cleanup: no pipeline record for ${issueId}`);
     }
     const branchDeleted: string[] = [];
+    const dropped: string[] = [];
+    const configured = ctx.config.project.repos.map((repo) => repo.name);
     // This explicit administrative command also cleans descoped orphan rows.
     for (const row of record.repos) {
+      if (configured.includes(row.repo) === false) {
+        // No repo path is left to run git in, so the artifacts are reported
+        // for a human and only the row is removed.
+        ctx.pipelineState.deleteRepo(issueId, row.repo);
+        ctx.audit.log({
+          component: "helper:pipeline",
+          issueId,
+          message: `Dropped the row for ${row.repo}, which project.repos no longer names; its branch, PR, and worktree were left in place`,
+          metadata: {
+            repo: row.repo,
+            branchName: row.branchName,
+            prNumber: row.prNumber,
+            worktreePath: row.worktreePath,
+          },
+        });
+        dropped.push(row.repo);
+        continue;
+      }
       const cwd = gitCwdFor(ctx.config, row.repo);
       const { worktreePath, branchName } = row;
       let worktreeRemoved = true;
@@ -183,9 +203,12 @@ function cmdPipelineCleanup(args: string[]): Promise<void> {
       component: "helper:pipeline",
       issueId,
       message: "Pipeline cleanup attempted for every recorded repository",
-      metadata: { removed, branchDeleted },
+      metadata: { removed, branchDeleted, dropped },
     });
-    writeJson({ ok: true, removed, branchDeleted }, values.pretty === true);
+    writeJson(
+      { ok: true, removed, branchDeleted, ...(dropped.length > 0 ? { dropped } : {}) },
+      values.pretty === true,
+    );
     return Promise.resolve();
   } finally {
     ctx.cleanup();

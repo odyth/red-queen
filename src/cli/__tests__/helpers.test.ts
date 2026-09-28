@@ -481,6 +481,32 @@ project:
     expect(() => loadCliContext()).toThrow(/GONE → removed/);
   });
 
+  it("pipeline cleanup drops an abandoned issue's rows for a removed repo", async () => {
+    writeWorkspaceConfig();
+    const initial = loadCliContext();
+    initial.pipelineState.create("GONE", "coding");
+    initial.pipelineState.updateBranch("GONE", "removed", "feature/GONE");
+    initial.cleanup();
+
+    await cmdPipeline(["cleanup", "GONE"]);
+
+    const reloaded = loadCliContext();
+    try {
+      expect(reloaded.pipelineState.get("GONE")?.repos).toEqual([]);
+    } finally {
+      reloaded.cleanup();
+    }
+  });
+
+  it("pipeline cleanup still waits for the daemon to re-key legacy rows", async () => {
+    const initial = loadCliContext();
+    initial.pipelineState.create("RENAMED", "coding");
+    initial.pipelineState.updateBranch("RENAMED", "old-name", "feature/RENAMED");
+    initial.cleanup();
+
+    await expect(cmdPipeline(["cleanup", "RENAMED"])).rejects.toThrow(/Restart Red Queen/);
+  });
+
   it("records the open-question count on the pipeline record", async () => {
     await cmdPipeline(["update", "META-1"]);
     stdoutCapture = [];

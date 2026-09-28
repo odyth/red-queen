@@ -54,7 +54,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   other `project` edit back until then.
 - Renaming or removing a `project.repos[]` entry while issues that use it are
   unfinished stops `redqueen start` and the skill helpers, naming each issue
-  and repo; restore the entry until those issues finish. Legacy installs
+  and repo; restore the entry until those issues finish, or run
+  `redqueen pipeline cleanup <issueId>` to drop an abandoned issue's rows for
+  the missing repo (its branch, PR, and worktree are left for you to remove).
+  Descoped rows that hold no branch, PR, or worktree never block. Legacy installs
   follow a changed `sourceControl.config.repo` at the next `redqueen start`;
   until then the skill helpers refuse to run rather than write under a name
   the running daemon does not know.

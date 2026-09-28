@@ -945,6 +945,47 @@ describe("PipelineStateStore.reconcileRepoNames", () => {
     expect(store.getRepo("OPEN", "web")?.inScope).toBe(true);
   });
 
+  it("workspace mode ignores a descoped row that holds no branch, PR, or worktree", () => {
+    const before = new PipelineStateStore(db, ["api", "web"]);
+    before.create("OPEN", "coding");
+    before.setScope("OPEN", ["api", "web"]);
+    before.setScope("OPEN", ["api"]);
+
+    store = new PipelineStateStore(db, ["api"]);
+    expect(store.reconcileRepoNames(false)).toEqual([]);
+    expect(store.getRepo("OPEN", "web")?.inScope).toBe(false);
+  });
+
+  it.each([{ branchName: "feature/OPEN" }, { prNumber: 7 }, { worktreePath: "/w/OPEN/web" }])(
+    "workspace mode still rejects a descoped row holding %o",
+    (held) => {
+      const before = new PipelineStateStore(db, ["api", "web"]);
+      before.create("OPEN", "coding");
+      before.updateBranchInfo("OPEN", "web", held);
+      before.setScope("OPEN", ["api"]);
+
+      store = new PipelineStateStore(db, ["api"]);
+      expect(() => store.reconcileRepoNames(false)).toThrow(
+        /OPEN → web.*redqueen pipeline cleanup/s,
+      );
+    },
+  );
+
+  it("deleteRepo drops one row and re-points the issue at what remains", () => {
+    store = new PipelineStateStore(db, ["api", "web"]);
+    store.create("OPEN", "coding");
+    store.updatePrNumber("OPEN", "api", 3, "main");
+    store.updatePrNumber("OPEN", "web", 4, "main");
+
+    expect(store.deleteRepo("OPEN", "api")).toBe(true);
+    expect(store.deleteRepo("OPEN", "api")).toBe(false);
+    expect(store.listRepos("OPEN").map((row) => row.repo)).toEqual(["web"]);
+    expect(store.get("OPEN")?.prNumber).toBe(4);
+    expect(
+      db.prepare("SELECT pr_number FROM pipeline_state WHERE issue_id = ?").get("OPEN"),
+    ).toEqual({ pr_number: 4 });
+  });
+
   it("workspace mode leaves finished issues and configured rows alone", () => {
     const before = new PipelineStateStore(db, ["api", "web"]);
     before.create("DONE", "human-review");

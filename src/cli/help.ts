@@ -31,7 +31,8 @@ Helper commands (called by skills):
   pr comment <number>         Post a PR-level comment (--body or stdin) [--repo]
   pr reply <number> <id>      Reply to a review comment (--body or stdin) [--repo]
   pipeline update <issueId>   Update a repo row (--repo --branch --pr --worktree --clear-pr --clear-worktree)
-  pipeline cleanup <issueId>  Remove worktrees and local branches for every repo (--keep-branch)
+  pipeline cleanup <issueId>  Remove worktrees and local branches for every repo (--keep-branch);
+                              drops rows for repos no longer in project.repos
   stack setup <issueId>       Assemble stacked worktrees for unfinished in-scope repos
                               (--spec = detached exploration worktrees for every repo).
                               Exit 2 = merge conflict (JSON names the repo), 3 = blocked.

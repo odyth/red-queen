@@ -205,6 +205,39 @@ describe("pipeline cleanup across repositories", () => {
     },
   );
 
+  it("drops a row whose repo left the config, without running git for it", async () => {
+    ctx.pipelineState.updateBranchInfo("ISSUE-1", "removed", {
+      branchName: "feature/removed",
+      prNumber: 9,
+      worktreePath: "/worktrees/ISSUE-1/removed",
+    });
+
+    await cmdPipeline(["cleanup", "ISSUE-1"]);
+
+    expect(loadCliContext).toHaveBeenCalledWith({ allowUnconfiguredRepos: true });
+    expect(execFileSync).toHaveBeenCalledTimes(4);
+    expect(ctx.pipelineState.getRepo("ISSUE-1", "removed")).toBeNull();
+    expect(
+      auditLog.mock.calls
+        .map(([entry]) => entry)
+        .find((entry) => entry.message.includes("Dropped")),
+    ).toMatchObject({
+      issueId: "ISSUE-1",
+      metadata: {
+        repo: "removed",
+        branchName: "feature/removed",
+        prNumber: 9,
+        worktreePath: "/worktrees/ISSUE-1/removed",
+      },
+    });
+    expect(output()).toEqual({
+      ok: true,
+      removed: ["/worktrees/ISSUE-1/api", "/worktrees/ISSUE-1/web"],
+      branchDeleted: ["api:feature/api", "web:feature/web"],
+      dropped: ["removed"],
+    });
+  });
+
   it("retains completed merge evidence when clearing artifacts", async () => {
     ctx.pipelineState.updateBranchInfo("ISSUE-1", "api", { prNumber: 5 });
     ctx.pipelineState.markPrMerged("ISSUE-1", "api", 5);
