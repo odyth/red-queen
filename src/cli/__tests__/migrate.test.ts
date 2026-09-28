@@ -357,6 +357,60 @@ describe("migration", () => {
     );
   });
 
+  it("warns that tracked files it moves show as deleted in the repo", async () => {
+    git(["add", "-f", "redqueen.yaml", ".redqueen/codebase-map.md"]);
+    git(["commit", "-qm", "track the install files"]);
+    const stdout = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+    await cmdMigrate(["--yes"]);
+    const output = stdout.mock.calls.map(([text]) => String(text)).join("");
+    expect(output).toContain(
+      `Warning: these files are tracked in ${install} and move out of it, so git reports them deleted there:\n  .redqueen/codebase-map.md\n  redqueen.yaml\n`,
+    );
+    expect(output).toContain("Restoring redqueen.yaml");
+    expect(output).toContain(
+      `Commit the deleted files in ${install}: .redqueen/codebase-map.md, redqueen.yaml.`,
+    );
+    expect(git(["status", "--porcelain"]).split("\n")).toEqual(
+      expect.arrayContaining([" D .redqueen/codebase-map.md", " D redqueen.yaml"]),
+    );
+  });
+
+  it("does not warn when the files it moves are untracked", async () => {
+    const stdout = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+    await cmdMigrate(["--yes"]);
+    const output = stdout.mock.calls.map(([text]) => String(text)).join("");
+    expect(output).not.toContain("are tracked in");
+    expect(output).not.toContain("Commit the deleted files");
+  });
+
+  it("warns that skills under the repo's .agents/skills stop resolving", async () => {
+    vi.stubEnv("HOME", parent);
+    mkdirSync(join(install, ".agents", "skills", "security-audit"), { recursive: true });
+    writeFileSync(join(install, ".agents", "skills", "security-audit", "SKILL.md"), "# custom\n");
+    mkdirSync(join(install, ".agents", "skills", "not-a-skill"));
+    const stdout = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+    await cmdMigrate(["--dry-run"]);
+    const output = stdout.mock.calls.map(([text]) => String(text)).join("");
+    expect(output).toContain(
+      `Warning: skills in ${join(install, ".agents", "skills")} stop resolving after migration. The workspace looks in ${join(parent, ".agents", "skills")}; copy the ones it should run:\n  security-audit\n`,
+    );
+    expect(output).not.toContain("not-a-skill");
+  });
+
+  it("does not warn about .agents/skills when the config points at it", async () => {
+    vi.stubEnv("HOME", parent);
+    mkdirSync(join(install, ".agents", "skills", "security-audit"), { recursive: true });
+    writeFileSync(join(install, ".agents", "skills", "security-audit", "SKILL.md"), "# custom\n");
+    editConfig((doc) => {
+      doc.setIn(["skills", "directory"], ".agents/skills");
+    });
+    const stdout = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+    await cmdMigrate(["--dry-run"]);
+    expect(stdout.mock.calls.map(([text]) => String(text)).join("")).not.toContain(
+      "stop resolving after migration",
+    );
+  });
+
   it("warns about single-repo skill overrides the workspace stops running", async () => {
     vi.stubEnv("HOME", parent);
     for (const name of ["coder", "reviewer", "reviewer-workspace", "security-audit"]) {

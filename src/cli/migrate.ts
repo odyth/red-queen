@@ -85,6 +85,8 @@ export interface MigrationPlan {
   fileMoves: IPathMove[];
   preservedWorktreeEntries: string[];
   staleSkillOverrides: ISkillOverride[];
+  repoSkills: string[];
+  trackedFiles: string[];
   parentInGit: boolean;
   envMode: number | null;
   serviceInstalled: boolean;
@@ -566,6 +568,16 @@ export function planMigration(cwd: string): MigrationPlan {
     const parentInGit = isInsideGitWorkTree(parentDir);
     hash.update(JSON.stringify({ ...worktrees, fileMoves, parentInGit, config: doc.toString() }));
     const binary = resolveRedqueenBinPath();
+    // The workspace searches <root>/.agents/skills, which stops being this
+    // repo's. A configured skills directory is rewritten and keeps resolving.
+    const repoSkillsDir = join(installDir, ".agents", "skills");
+    const repoSkills =
+      resolve(installDir, before.skills.directory) !== repoSkillsDir &&
+      lstatSync(repoSkillsDir, { throwIfNoEntry: false })?.isDirectory() === true
+        ? readdirSync(repoSkillsDir)
+            .sort()
+            .filter((name) => existsSync(join(repoSkillsDir, name, "SKILL.md")))
+        : [];
     return {
       installDir,
       parentDir,
@@ -574,6 +586,20 @@ export function planMigration(cwd: string): MigrationPlan {
       ...worktrees,
       fileMoves,
       staleSkillOverrides: findStaleSkillOverrides(installDir, before.skills.directory),
+      repoSkills,
+      // A moved path is a name, never a glob.
+      trackedFiles: git(
+        [
+          "--literal-pathspecs",
+          "ls-files",
+          "-z",
+          "--",
+          ...fileMoves.map((move) => relative(installDir, move.from)),
+        ],
+        installDir,
+      )
+        .split("\0")
+        .filter((path) => path !== ""),
       parentInGit,
       envMode: present(envPath) ? lstatSync(envPath).mode & 0o777 : null,
       serviceInstalled: false,
@@ -805,6 +831,24 @@ function printPlan(plan: MigrationPlan): void {
       "  To keep a customization, port it into an override named <skill>-workspace.",
     );
   }
+  if (plan.repoSkills.length > 0) {
+    lines.push(
+      `Warning: skills in ${join(plan.installDir, ".agents", "skills")} stop resolving after migration. The workspace looks in ${join(plan.parentDir, ".agents", "skills")}; copy the ones it should run:`,
+      ...plan.repoSkills.map((name) => `  ${name}`),
+    );
+  }
+  if (plan.trackedFiles.length > 0) {
+    lines.push(
+      `Warning: these files are tracked in ${plan.installDir} and move out of it, so git reports them deleted there:`,
+      ...plan.trackedFiles.map((path) => `  ${path}`),
+      "  Commit the deletions after migrating.",
+    );
+    if (plan.trackedFiles.includes("redqueen.yaml")) {
+      lines.push(
+        "  Restoring redqueen.yaml brings back a single-repo config that commands run inside the repo find before the workspace one.",
+      );
+    }
+  }
   if (plan.serviceInstalled) {
     lines.push(
       plan.serviceEnabled
@@ -927,6 +971,9 @@ export async function cmdMigrate(args: string[]): Promise<void> {
         ? "  4. The reinstalled service has started; check redqueen service status."
         : "  4. redqueen start   # when ready",
       ...plan.preservedWorktreeEntries.map((path) => `Preserved unregistered data at ${path}.`),
+      ...(plan.trackedFiles.length > 0
+        ? [`Commit the deleted files in ${plan.installDir}: ${plan.trackedFiles.join(", ")}.`]
+        : []),
       "",
     ].join("\n"),
   );
