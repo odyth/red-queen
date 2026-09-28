@@ -108,7 +108,12 @@ export interface SkillEntry {
   name: string;
   origin: SkillOrigin;
   disabled: boolean;
+  // Phases that run this skill in the install's mode.
   referencedBy: string[];
+  // The base skill this is the "-workspace" variant of. Phases name the base.
+  variantOf: string | null;
+  // False for the half of a base/variant pair the install's mode does not run.
+  active: boolean;
 }
 
 export interface SkillGetResponse {

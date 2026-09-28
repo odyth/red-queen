@@ -60,10 +60,9 @@ describe("default skills are tracker-neutral", () => {
     });
   }
 
-  it("ships exactly the five default skills (+ README)", () => {
+  it("ships exactly the five default skills and their workspace variants (+ README)", () => {
     const names = files.map((f) => f.split("/").at(-2));
-    expect(new Set(names)).toEqual(
-      new Set(["prompt-writer", "coder", "reviewer", "tester", "comment-handler"]),
-    );
+    const base = ["prompt-writer", "coder", "reviewer", "tester", "comment-handler"];
+    expect(new Set(names)).toEqual(new Set([...base, ...base.map((name) => `${name}-workspace`)]));
   });
 });

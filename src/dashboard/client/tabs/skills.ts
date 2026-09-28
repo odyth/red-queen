@@ -26,7 +26,11 @@ function renderRows(rows: SkillEntry[]): void {
   }
   tbody.innerHTML = rows
     .map((r) => {
-      const refs = r.referencedBy.map(escapeHtml).join(", ");
+      const refs = r.active
+        ? r.referencedBy.map(escapeHtml).join(", ")
+        : r.variantOf === null
+          ? `not used — this workspace runs ${escapeHtml(r.name)}-workspace`
+          : "not used — workspace installs only";
       const disabled = r.disabled
         ? '<span class="err">yes</span>'
         : '<span class="muted">no</span>';

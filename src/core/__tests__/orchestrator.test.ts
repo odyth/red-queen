@@ -251,6 +251,39 @@ describe("RedQueen orchestrator", () => {
     },
   );
 
+  it.each([
+    { mode: "legacy", expected: "# prompt-writer\n" },
+    { mode: "workspace", expected: "# prompt-writer-workspace\n" },
+  ])("dispatches the $mode prompt for a phase's skill", async ({ mode, expected }) => {
+    writeSkill("prompt-writer-workspace");
+    const options: HarnessOptions = {};
+    if (mode === "workspace") {
+      options.repos = makeTestConfig({
+        project: { directory: join(tempDir, "app") },
+      }).project.repos;
+    }
+
+    let capturedPrompt: string | null = null;
+    const h = setupHarness((opts) => {
+      capturedPrompt = readDispatchedPrompt(opts);
+      return Promise.resolve(
+        makeWorkerResult({ success: true, exitCode: 0, elapsed: 1, summary: "ok", error: null }),
+      );
+    }, options);
+    h.pipelineState.create("PROJ-MODE", "spec-writing");
+    h.issueTracker.phases.set("PROJ-MODE", "spec-writing");
+    h.issueTracker.specs.set("PROJ-MODE", "spec");
+    h.queue.enqueue({ type: "spec-writing", issueId: "PROJ-MODE" });
+
+    await runUntilAfterRuns(h, 1);
+
+    expect(capturedPrompt).toMatch(/```\n\n# prompt-writer(-workspace)?\n$/);
+    expect(capturedPrompt).toContain(expected);
+    expect(capturedPrompt).not.toContain(
+      mode === "workspace" ? "# prompt-writer\n" : "# prompt-writer-workspace\n",
+    );
+  });
+
   it("processes a task end-to-end and advances phase", async () => {
     // Worker fails on subsequent runs so we don't cascade through the whole pipeline
     let runCount = 0;

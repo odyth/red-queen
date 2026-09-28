@@ -607,6 +607,22 @@ skills:
     expect(() => parseConfig(yaml)).toThrow(/skills\.disabled/);
   });
 
+  it("ignores a disabled workspace variant outside workspace mode", () => {
+    const yaml = `
+issueTracker:
+  type: jira
+sourceControl:
+  type: github
+project:
+  buildCommand: "npm run build"
+  testCommand: "npm test"
+skills:
+  disabled:
+    - coder-workspace
+`;
+    expect(parseConfig(yaml).skills.disabled).toEqual(["coder-workspace"]);
+  });
+
   it("loadConfig rejects configs where a phase references a disabled skill", () => {
     const yaml = `
 issueTracker:
@@ -1056,6 +1072,12 @@ project:
       buildCommand: npm run build
       testCommand: npm test
 `;
+
+  it("rejects a disabled workspace variant of a skill a phase runs", () => {
+    const yaml = `${workspaceYaml}skills:\n  disabled:\n    - coder-workspace\n`;
+    expect(() => parseConfig(yaml)).toThrow(ConfigError);
+    expect(() => parseConfig(yaml)).toThrow(/"coder-workspace" in workspace mode/);
+  });
 
   it("parses repos with nested modules and defaults baseBranch to pipeline.baseBranch", () => {
     const config = parseConfig(workspaceYaml);

@@ -49,33 +49,12 @@ Read the YAML context block at the top of this prompt. Fields you rely on:
   this one is blocked by. When present, create the exploration worktree via
   `redqueen stack setup --spec` (Step 4) so ancestor branches are included,
   and write the spec against that combined state.
-- `repos` — **present only in workspace mode**: every configured repo as
-  `{name, path, baseBranch, buildCommand, testCommand, inScope, branchName,
-prNumber, terminalPrNumber, mergeCompleted, module}`. `path` is absolute.
-  Before scope is first recorded, every repo has `inScope: false`; on revision,
-  these flags reflect the previously recorded scope. You choose scope and
-  publish it in Step 8 with `redqueen spec meta … --repos`.
-  When `repos` is present, `projectDir` is the workspace root and is **not** a
-  git repository. Scalar `baseBranch`, `buildCommands`, `testCommands`,
-  `repoOwner`, and `repoName` describe the first in-scope repo, falling back to
-  the first configured repo when none is in scope; use each repo's own fields.
-  The workspace instructions below replace the single-repo worktree and
-  metadata commands. Scope reads to each repo's `path` for orientation and
-  then to its spec worktree. When `repos` is absent, follow the legacy flow
-  unchanged. Never rebase a stacked worktree.
 
 ## Shared setup (both flows)
 
 Before either flow, do these in order:
 
 1. If `codebaseMapPath` is not null, read it. It is your architecture guide.
-   **Workspace mode (`repos` present):** the map has one `## Repo: <name>`
-   section per repo. Use it and the ticket context to identify candidate repos
-   the change could plausibly touch; start generously. If the map or ticket
-   context is insufficient, start with all repos as candidates. For each
-   candidate, explicitly read `<repo.path>/CLAUDE.md` and
-   `<repo.path>/AGENTS.md` when present, at most about 200 lines each, before
-   any grep. Do not rely on on-demand instruction loading for this orientation.
 2. If `.redqueen/references/spec-template.md` exists under `projectDir`,
    read it. Your spec follows that structure.
 3. Fetch the issue:
@@ -151,76 +130,6 @@ guessing.
 
 Work against the latest `baseBranch`, not the main working tree.
 
-**Workspace mode (`repos` present):** prepare an exploration worktree for
-**every** configured repo, including repos outside the current candidates or
-previously recorded scope. Follow this workspace setup, then skip the legacy
-stacked and non-stacked commands below and continue to Step 5. Run raw git
-from the selected repo or its worktree, never from the workspace root.
-
-For commands that operate on one entry of `repos`, bind the following shell
-variables to that entry's literal context values, with proper shell quoting;
-`projectDir` and `issueId` also come from the context. Rebind for each repo:
-
-```sh
-repo_name='<name>'
-repo_path='<absolute path>'
-repo_base='<baseBranch>'
-repo_worktree="${projectDir}/.redqueen/worktrees/spec-${issueId}/${repo_name}"
-bare_base="${repo_base#origin/}"
-```
-
-**Workspace mode, stacked (`stackBlockedBy` present):** run:
-
-```sh
-redqueen stack setup "${issueId}" --spec
-```
-
-Inspect both its exit code and JSON:
-
-- Exit 0 (`status: "ok"`) prepares a detached spec worktree for every repo at
-  `${projectDir}/.redqueen/worktrees/spec-${issueId}/<repo.name>`. The JSON
-  `repos` array lists the prepared worktrees and merged ancestor refs.
-- Exit 2 (`status: "conflict"`) stops at the **first** conflicting repo. The
-  JSON `repo` names it and `files` names the conflict files; `repos` contains
-  only successfully prepared earlier repos. Preserve those worktrees and the
-  conflicting repo's worktree, which contains base plus the ancestors merged
-  cleanly before the aborted merge. For **every remaining, unattempted repo**,
-  create or refresh a detached **base-only** worktree with the non-stacked
-  workspace procedure below, even if an old worktree already exists. Confirm
-  every repo now has an exploration worktree. In **Risks & Pitfalls**, name
-  the conflicted repo and files, the missing conflicting/later ancestor
-  contributions there, and every base-only fallback repo whose ancestor
-  contributions were not assembled. Treat these as exploration limits, not
-  evidence that a repo is out of scope; retain uncertainty in Open Questions.
-- Exit 3 (`status: "blocked"`) means unsatisfied dependencies or a stack
-  configuration problem. Follow **When to set Blocked**, using the JSON
-  `unsatisfied`, `problems`, and `cycle` details. Do not substitute base-only
-  exploration for this dependency gate.
-- Exit 1 (`status: "error"`) or any unexpected failure is an operational
-  error. Report it in stdout and exit non-zero for retry or escalation. Do
-  not treat it as a content conflict or continue with stale worktrees.
-
-**Workspace mode, non-stacked:** for every repo, fetch its base and create a
-detached spec worktree. This procedure also supplies the base-only fallback
-for unattempted repos after a stacked content conflict:
-
-```sh
-git -C "${repo_path}" fetch origin "+refs/heads/${bare_base}:refs/remotes/origin/${bare_base}"
-git -C "${repo_path}" worktree add --detach "${repo_worktree}" "${repo_base}"
-```
-
-If that repo's spec worktree already exists, refresh it instead:
-
-```sh
-git -C "${repo_path}" fetch origin "+refs/heads/${bare_base}:refs/remotes/origin/${bare_base}"
-git -C "${repo_worktree}" checkout --detach "${repo_base}"
-git -C "${repo_worktree}" reset --hard "${repo_base}"
-```
-
-Check each command succeeds before continuing; a setup failure must not lead
-to exploration of a stale or missing path. Use these refresh commands only
-for the disposable spec worktrees, never a repo checkout or coding worktree.
-
 **Stacked issue (`stackBlockedBy` present in the context):** the issue
 builds on unmerged ancestor branches, so the exploration worktree must
 include them. Create it with:
@@ -267,13 +176,6 @@ Use Glob / Grep / Read against the worktree to find:
 - Existing patterns and naming conventions in that area.
 - Test files that need updating.
 
-**Workspace mode (`repos` present):** grep only the candidate repos' spec
-worktrees from shared setup. Drop candidates when the code proves them
-irrelevant. Add a previously excluded repo only when code you read points to
-it, such as an endpoint, event, or template reference; first read its
-`CLAUDE.md` and `AGENTS.md` as in shared setup, then explore its spec worktree.
-The candidates that survive this exploration become the ticket's scope.
-
 ### Step 6: Write the spec
 
 Follow `.redqueen/references/spec-template.md` if present, or the structure
@@ -284,16 +186,7 @@ Required sections:
 
 - **Problem** — one paragraph on what needs to change and why.
 - **Root Cause / Context** — the existing code area that plugs in.
-- **Repos in Scope** — required when `repos` is present, omit otherwise. Name
-  every in-scope repo with one line explaining why it is touched, and every
-  dropped candidate with one line explaining its exclusion. Clearly label
-  inclusions and exclusions; only the included repos will be coded, reviewed,
-  and tested for this ticket.
 - **Files to Change** — exhaustive, concrete, with function / class names.
-  When `repos` is present, group files under a `### <repo.name>` heading for
-  each in-scope repo. Spell out cross-repo contracts (endpoint shapes, event
-  names, template references, shared config keys) and each repo's part so the
-  changes can be implemented and reviewed together.
 - **Implementation Steps** — numbered, atomic.
 - **Test Plan** — each acceptance criterion maps to a verification step.
 - **Non-Goals** — explicit out-of-scope items.
@@ -301,10 +194,6 @@ Required sections:
   spec review. If there are none, say so explicitly.
 - **Risks & Pitfalls** — non-obvious traps for the coder.
 - **Attachment Analysis** — omit if there are no attachments.
-
-**Workspace mode (`repos` present):** include **Repos in Scope** and the
-per-repo **Files to Change** groups even when the custom spec template omits
-them. Keep the named scope and planned changes consistent.
 
 ### Step 7: Save the spec
 
@@ -329,45 +218,12 @@ goes straight to coding.
 redqueen spec meta <issueId> --open-questions <N>
 ```
 
-**Workspace mode (`repos` present):** replace the command above with:
-
-```
-redqueen spec meta <issueId> --open-questions <N> --repos <name>[,<name>…]
-```
-
-`--repos` is required. Pass exactly the repos marked **in scope** in the spec's
-**Repos in Scope** section, comma-separated, using `name` values copied from
-the context; omit dropped candidates. The helper rejects unknown names and
-empty scope and records scope together with the open-question count for all
-downstream skills. If exploration leaves no repo in scope, use **When to set
-Blocked** instead of inventing scope. Check the command succeeds before
-reporting completion.
-
 `<N>` is a non-negative integer. Always call this — pass `0` when the spec
 has no open questions, or the actual count otherwise. Do not skip the call
 to "force" the human gate; the orchestrator only skips when the project
 opts in via config.
 
 ### Step 9: Clean up the worktree
-
-**Workspace mode (`repos` present):** skip the legacy command below. Rebind
-`repo_path` and `repo_worktree` as in Step 4 for every entry of `repos`, and
-remove each spec worktree from its owning repo:
-
-```sh
-git -C "${repo_path}" worktree remove "${repo_worktree}"
-```
-
-Apply the removal retry rule below to each worktree, including dropped
-candidates and base-only fallbacks. Then remove the parent directory **only
-if empty**:
-
-```sh
-rmdir "${projectDir}/.redqueen/worktrees/spec-${issueId}"
-```
-
-If a worktree still could not be removed, preserve its directory for the next
-run and mention the cleanup failure in the summary.
 
 ```
 git worktree remove "${projectDir}/.redqueen/worktrees/spec-${issueId}"
@@ -412,10 +268,6 @@ For each point, classify it:
 Create or refresh the worktree the same way as Fresh Write Flow Step 4
 (including the stacked-issue `redqueen stack setup --spec` conditional).
 
-**Workspace mode (`repos` present):** refresh one spec worktree per configured
-repo as in Fresh Write Flow Step 4, including conflict fallback and error
-handling. Use the candidate-only exploration rules from Step 5.
-
 ### Rev Step 4: Re-verify everything against the current code
 
 The codebase may have moved since the original spec. Re-verify file paths
@@ -426,11 +278,6 @@ and function names even for sections the feedback did not touch.
 Produce a complete replacement spec. Do not leave "FEEDBACK:" markers or
 track-changes annotations. Follow the same structure as the fresh-write
 spec.
-
-**Workspace mode (`repos` present):** re-evaluate **Repos in Scope** against
-the feedback and current code. Feedback may add or drop repos. Read newly
-added candidates' instructions before exploring them, and keep the scope
-section and per-repo **Files to Change** groups consistent.
 
 ### Rev Step 6: Save the revised spec
 
@@ -448,18 +295,6 @@ Open Questions section and publish:
 ```
 redqueen spec meta <issueId> --open-questions <N>
 ```
-
-**Workspace mode (`repos` present):** replace the command above with the
-workspace variant from Fresh Write Flow Step 8, including its validation and
-empty-scope handling:
-
-```
-redqueen spec meta <issueId> --open-questions <N> --repos <name>[,<name>…]
-```
-
-Record the complete revised in-scope set. A dropped repo keeps any existing
-branch or PR; `redqueen status` shows an outstanding PR as orphaned for a
-human to close. Do not close its PR or delete its branch or coding worktree.
 
 ### Rev Step 8: Clean up and summarize
 

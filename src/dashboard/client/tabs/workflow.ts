@@ -233,7 +233,8 @@ async function load(): Promise<void> {
   try {
     const [wf, skills] = await Promise.all([api.getWorkflow(), api.getSkills()]);
     phases = wf.phases;
-    skillsList = skills;
+    // Phases name the base skill; its workspace variant is picked at dispatch.
+    skillsList = skills.filter((s) => s.variantOf === null);
     const skillsRow = qs("#workflow-skills");
     if (skillsRow) {
       skillsRow.innerHTML =

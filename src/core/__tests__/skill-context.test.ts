@@ -679,6 +679,59 @@ describe("resolveSkillPath", () => {
     });
     expect(resolveSkillPath(dirs, "interop-skill", [])).toBe(filePath);
   });
+
+  describe("workspace mode", () => {
+    it("runs the workspace variant instead of the base skill", () => {
+      const builtIn = join(tempDir, "builtin");
+      writeSkill(builtIn, "coder");
+      const variant = writeSkill(builtIn, "coder-workspace");
+      expect(resolveSkillPath([builtIn], "coder", [], true)).toBe(variant);
+    });
+
+    it("ignores the workspace variant outside workspace mode", () => {
+      const builtIn = join(tempDir, "builtin");
+      const base = writeSkill(builtIn, "coder");
+      writeSkill(builtIn, "coder-workspace");
+      expect(resolveSkillPath([builtIn], "coder", [], false)).toBe(base);
+      expect(resolveSkillPath([builtIn], "coder", [])).toBe(base);
+    });
+
+    it("prefers the bundled variant over a user override of the base skill", () => {
+      const userDir = join(tempDir, "user");
+      const builtIn = join(tempDir, "builtin");
+      writeSkill(userDir, "coder");
+      writeSkill(builtIn, "coder");
+      const variant = writeSkill(builtIn, "coder-workspace");
+      expect(resolveSkillPath([userDir, builtIn], "coder", [], true)).toBe(variant);
+    });
+
+    it("lets a user override the workspace variant", () => {
+      const userDir = join(tempDir, "user");
+      const builtIn = join(tempDir, "builtin");
+      const userVariant = writeSkill(userDir, "coder-workspace");
+      writeSkill(builtIn, "coder-workspace");
+      expect(resolveSkillPath([userDir, builtIn], "coder", [], true)).toBe(userVariant);
+    });
+
+    it("falls back to the base skill when no variant exists", () => {
+      const userDir = join(tempDir, "user");
+      const custom = writeSkill(userDir, "security-audit");
+      expect(resolveSkillPath([userDir], "security-audit", [], true)).toBe(custom);
+    });
+
+    it("never falls back to the base skill when the variant is disabled", () => {
+      const builtIn = join(tempDir, "builtin");
+      writeSkill(builtIn, "coder");
+      writeSkill(builtIn, "coder-workspace");
+      expect(resolveSkillPath([builtIn], "coder", ["coder-workspace"], true)).toBeNull();
+    });
+
+    it("returns null when the base skill is disabled, even if the variant exists", () => {
+      const builtIn = join(tempDir, "builtin");
+      writeSkill(builtIn, "coder-workspace");
+      expect(resolveSkillPath([builtIn], "coder", ["coder"], true)).toBeNull();
+    });
+  });
 });
 
 describe("buildSkillSearchDirs", () => {

@@ -1212,6 +1212,7 @@ export class RedQueen {
       searchDirs,
       skillName,
       this.deps.runtime.config.skills.disabled,
+      this.deps.runtime.config.project.workspaceMode,
     );
     if (skillPath === null) {
       this.deps.queue.markWorking(task.id);

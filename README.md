@@ -363,6 +363,12 @@ Custom skills should use `repos[]` and its `inScope` and `mergeCompleted`
 fields; a historical `terminalPrNumber` alone does not prove completion in
 a reopened cycle. See the [skill context contract](./src/skills/README.md).
 
+Workspaces run their own prompts. A phase that names `coder` dispatches
+`coder-workspace`, so override `.redqueen/skills/coder-workspace/SKILL.md`,
+not `coder`. An override of `coder` is a single-repo prompt and does not run
+in a workspace; `redqueen migrate` lists the ones you need to port. A custom
+skill with no `-workspace` variant runs in both modes.
+
 A repo dropped from scope by a later spec revision keeps its PR for a human
 to close. `redqueen status` and the dashboard's **Status** and **Workflow**
 tabs show per-issue repo, branch, PR, and scope lists and label these retained

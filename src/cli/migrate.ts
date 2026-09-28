@@ -38,6 +38,11 @@ import { RedQueenDatabase } from "../core/database.js";
 import { loadDotEnv } from "../core/env.js";
 import { PipelineStateStore } from "../core/pipeline-state.js";
 import {
+  buildSkillSearchDirs,
+  resolveSkillPath,
+  workspaceSkillName,
+} from "../core/skill-context.js";
+import {
   contextFromConfig,
   createServiceManager,
   shellSingleQuote,
@@ -58,10 +63,16 @@ import {
   listRegisteredWorktrees,
 } from "./repo-discovery.js";
 import { resolveRedqueenBinPath } from "./service.js";
+import { resolveSkillsDir } from "./templates.js";
 
 interface IPathMove {
   from: string;
   to: string;
+}
+
+interface ISkillOverride {
+  name: string;
+  path: string;
 }
 
 export interface MigrationPlan {
@@ -73,6 +84,7 @@ export interface MigrationPlan {
   staleRefreshWorktrees: string[];
   fileMoves: IPathMove[];
   preservedWorktreeEntries: string[];
+  staleSkillOverrides: ISkillOverride[];
   parentInGit: boolean;
   envMode: number | null;
   serviceInstalled: boolean;
@@ -362,6 +374,29 @@ function plannedWorktrees(
   return { worktreeMoves, staleRefreshWorktrees, preservedWorktreeEntries };
 }
 
+// An override named after a bundled skill is a single-repo prompt. The workspace
+// runs "<skill>-workspace" instead, so it stops applying unless it was ported.
+function findStaleSkillOverrides(installDir: string, skillsDirectory: string): ISkillOverride[] {
+  const bundledDir = resolveSkillsDir();
+  const userDirs = buildSkillSearchDirs({
+    userSkillsDir: skillsDirectory,
+    projectRoot: installDir,
+  });
+  const stale: ISkillOverride[] = [];
+  for (const name of readdirSync(bundledDir).sort()) {
+    const variant = workspaceSkillName(name);
+    const path = resolveSkillPath(userDirs, name, []);
+    if (
+      path !== null &&
+      existsSync(join(bundledDir, variant, "SKILL.md")) &&
+      resolveSkillPath(userDirs, variant, []) === null
+    ) {
+      stale.push({ name, path });
+    }
+  }
+  return stale;
+}
+
 function checkDatabase(path: string, repoName: string): void {
   if (present(path) === false) {
     return;
@@ -532,6 +567,7 @@ export function planMigration(cwd: string): MigrationPlan {
       repoName: entry.name,
       ...worktrees,
       fileMoves,
+      staleSkillOverrides: findStaleSkillOverrides(installDir, before.skills.directory),
       parentInGit,
       envMode: present(envPath) ? lstatSync(envPath).mode & 0o777 : null,
       serviceInstalled: false,
@@ -725,6 +761,13 @@ function printPlan(plan: MigrationPlan): void {
   if (plan.envMode !== null && (plan.envMode & 0o077) !== 0) {
     lines.push(
       `Warning: .env is readable by other users (mode ${plan.envMode.toString(8)}) and keeps that mode; chmod 600 it unless the service account needs group access.`,
+    );
+  }
+  if (plan.staleSkillOverrides.length > 0) {
+    lines.push(
+      "Warning: these skill overrides are single-repo prompts and stop running after migration. The workspace runs the bundled <skill>-workspace prompts instead:",
+      ...plan.staleSkillOverrides.map((override) => `  ${override.name}: ${override.path}`),
+      "  To keep a customization, port it into an override named <skill>-workspace.",
     );
   }
   if (plan.serviceInstalled) {

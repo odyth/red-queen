@@ -109,6 +109,63 @@ describe("Dashboard skills API", () => {
     expect(byName.get("coder")?.referencedBy).toContain("coding");
   });
 
+  describe("workspace variants", () => {
+    interface ListedSkill {
+      name: string;
+      referencedBy: string[];
+      variantOf: string | null;
+      active: boolean;
+    }
+
+    async function listSkills(): Promise<Map<string, ListedSkill>> {
+      const res = await fetch(`http://127.0.0.1:${String(port)}/api/skills`);
+      const body = (await res.json()) as ListedSkill[];
+      return new Map(body.map((b) => [b.name, b]));
+    }
+
+    beforeEach(() => {
+      writeSkill(join(tempDir, "bundled-skills"), "coder-workspace", "# bundled workspace\n");
+    });
+
+    it("marks the variant unused in a single-repo install", async () => {
+      const byName = await listSkills();
+      expect(byName.get("coder")).toMatchObject({
+        referencedBy: ["coding"],
+        variantOf: null,
+        active: true,
+      });
+      expect(byName.get("coder-workspace")).toMatchObject({
+        referencedBy: [],
+        variantOf: "coder",
+        active: false,
+      });
+    });
+
+    it("attributes phases to the variant in a workspace install", async () => {
+      runtime.config = makeTestConfig({
+        phases: DEFAULT_PHASES,
+        project: { repos: runtime.config.project.repos, workspaceMode: true },
+      });
+      const byName = await listSkills();
+      // The user's single-repo override of coder no longer runs.
+      expect(byName.get("coder")).toMatchObject({
+        referencedBy: [],
+        variantOf: null,
+        active: false,
+      });
+      expect(byName.get("coder-workspace")).toMatchObject({
+        referencedBy: ["coding"],
+        variantOf: "coder",
+        active: true,
+      });
+      // No variant exists, so the base skill serves the workspace too.
+      expect(byName.get("reviewer")).toMatchObject({
+        referencedBy: ["code-review"],
+        active: true,
+      });
+    });
+  });
+
   it("GET /api/skills/coder returns user override content (user takes precedence)", async () => {
     const res = await fetch(`http://127.0.0.1:${String(port)}/api/skills/coder`);
     const body = (await res.json()) as { content: string };

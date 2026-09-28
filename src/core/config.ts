@@ -2,6 +2,7 @@ import { z } from "zod";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
+import { workspaceSkillName } from "./skill-context.js";
 import { levenshtein } from "./strings.js";
 import { PhaseGraph } from "./types.js";
 import type { PhaseDefinition, ValidationResult } from "./types.js";
@@ -546,10 +547,20 @@ export function resolveProjectPaths(config: RedQueenConfig, projectRoot: string)
 
 function checkDisabledSkills(config: RawConfig): void {
   const disabled = new Set(config.skills.disabled);
+  const workspaceMode = config.project.repos !== undefined;
   for (const phase of config.phases) {
-    if (phase.skill !== undefined && disabled.has(phase.skill)) {
+    if (phase.skill === undefined) {
+      continue;
+    }
+    if (disabled.has(phase.skill)) {
       throw new ConfigError(
         `Phase "${phase.name}" references skill "${phase.skill}" which is listed in skills.disabled. Remove from skills.disabled or change the phase.`,
+      );
+    }
+    const variant = workspaceSkillName(phase.skill);
+    if (workspaceMode && disabled.has(variant)) {
+      throw new ConfigError(
+        `Phase "${phase.name}" runs skill "${variant}" in workspace mode, which is listed in skills.disabled. Remove from skills.disabled or change the phase.`,
       );
     }
   }

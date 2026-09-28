@@ -11,6 +11,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import type { RuntimeState } from "../../core/runtime-state.js";
+import { workspaceSkillName } from "../../core/skill-context.js";
 
 export interface SkillsApiDeps {
   runtime: RuntimeState;
@@ -91,6 +92,8 @@ interface SkillEntry {
   origin: "bundled" | "user" | "both";
   disabled: boolean;
   referencedBy: string[];
+  variantOf: string | null;
+  active: boolean;
 }
 
 function buildSkillList(deps: SkillsApiDeps): SkillEntry[] {
@@ -109,18 +112,28 @@ function buildSkillList(deps: SkillsApiDeps): SkillEntry[] {
   const disabled = new Set(deps.runtime.config.skills.disabled);
   const all = new Set([...bundled, ...nonBundled]);
   const phases = deps.runtime.config.phases;
+  const workspaceMode = deps.runtime.config.project.workspaceMode;
+  // Mirrors resolveSkillPath: a workspace install runs the variant when one exists.
+  const runs = (skill: string): string => {
+    const variant = workspaceSkillName(skill);
+    return workspaceMode && all.has(variant) ? variant : skill;
+  };
   const entries: SkillEntry[] = [];
   for (const name of [...all].sort()) {
     const inBundled = bundled.has(name);
     const inNonBundled = nonBundled.has(name);
     const origin: SkillEntry["origin"] =
       inBundled && inNonBundled ? "both" : inNonBundled ? "user" : "bundled";
-    const referencedBy = phases.filter((p) => p.skill === name).map((p) => p.name);
+    const variantOf = [...all].find((base) => workspaceSkillName(base) === name) ?? null;
     entries.push({
       name,
       origin,
       disabled: disabled.has(name),
-      referencedBy,
+      referencedBy: phases
+        .filter((p) => p.skill !== undefined && runs(p.skill) === name)
+        .map((p) => p.name),
+      variantOf,
+      active: variantOf === null ? runs(name) === name : workspaceMode,
     });
   }
   return entries;

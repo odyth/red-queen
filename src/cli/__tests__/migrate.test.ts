@@ -357,6 +357,31 @@ describe("migration", () => {
     );
   });
 
+  it("warns about single-repo skill overrides the workspace stops running", async () => {
+    vi.stubEnv("HOME", parent);
+    for (const name of ["coder", "reviewer", "reviewer-workspace", "security-audit"]) {
+      mkdirSync(join(stateRoot, "skills", name), { recursive: true });
+      writeFileSync(join(stateRoot, "skills", name, "SKILL.md"), `# custom ${name}\n`);
+    }
+    const stdout = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+    await cmdMigrate(["--dry-run"]);
+    const output = stdout.mock.calls.map(([text]) => String(text)).join("");
+    expect(output).toContain("single-repo prompts and stop running after migration");
+    expect(output).toContain(`  coder: ${join(stateRoot, "skills", "coder", "SKILL.md")}`);
+    // Already ported, and a custom skill with no bundled variant, keep running.
+    expect(output).not.toContain("  reviewer: ");
+    expect(output).not.toContain("security-audit");
+  });
+
+  it("does not warn when no bundled skill is overridden", async () => {
+    vi.stubEnv("HOME", parent);
+    const stdout = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+    await cmdMigrate(["--dry-run"]);
+    expect(stdout.mock.calls.map(([text]) => String(text)).join("")).not.toContain(
+      "single-repo prompts",
+    );
+  });
+
   it("preserves unknown files and unregistered refresh folders in the old worktree root", async () => {
     const unknown = join(stateRoot, "worktrees", "refresh-user-notes");
     mkdirSync(unknown);

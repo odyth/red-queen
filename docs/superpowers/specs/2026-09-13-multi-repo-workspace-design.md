@@ -352,8 +352,14 @@ inside a repo directory find the workspace `redqueen.yaml`.
 
 ### 9. Skills
 
-All five skills gain one rule: _if `repos` is absent, behave exactly as
-today; if present, use it as described here._ Worktree paths follow §4.
+Each of the five skills ships as two prompts: `<skill>/SKILL.md` stays
+byte-identical to the pre-workspace prompt, and `<skill>-workspace/SKILL.md`
+carries the workspace behavior described here. `resolveSkillPath` picks the
+variant at dispatch when `workspaceMode` is true and falls back to `<skill>`
+for skills that ship no variant, so an agent never reads both sets of
+instructions. A `<skill>` user override is a single-repo prompt and never
+outranks the variant; `redqueen migrate` lists the overrides that stop
+running. Worktree paths follow §4.
 
 **prompt-writer** (the only skill with new judgement):
 

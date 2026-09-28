@@ -14,11 +14,33 @@ Each skill is a single `SKILL.md` file. The orchestrator reads it, prepends a
 prompt to a Claude Code worker via stdin. Skills are natural-language
 instructions — they do not run as Node code.
 
+## Single-repo and workspace prompts
+
+Every default skill ships twice: `<skill>/` for single-repo installs and
+`<skill>-workspace/` for multi-repo workspaces (`project.repos[]`). Phases
+name the base skill (`skill: coder`); a workspace dispatches
+`coder-workspace` instead. Each prompt is written for one mode only, so a
+worker never reads instructions for the mode it is not running in.
+
+Keep it that way when editing: a single-repo prompt never mentions `repos`
+or workspaces, and a workspace prompt never describes single-repo behavior
+or branches on whether `repos` is present. A change to text both prompts
+share has to be made in both files. `__tests__/mode-split.test.ts` enforces
+the separation.
+
+A skill with no `-workspace` variant runs in both modes and has to branch on
+`repos` itself (see the contract below), or ship its own variant.
+
 ## User overrides
 
 A user can override any built-in skill by placing a file at
 `.redqueen/skills/<skill-name>/SKILL.md` in their project. The orchestrator
 prefers the user file when it exists, falling back to the built-in.
+
+In a workspace, override the variant
+(`.redqueen/skills/coder-workspace/SKILL.md`). An override of the base name
+is a single-repo prompt: the workspace variant always outranks it, including
+the built-in one. `redqueen migrate` lists the overrides that stop running.
 
 ## Skill context contract (read before authoring a custom skill)
 
@@ -52,12 +74,12 @@ changed without a major version bump.
 | `stackPrBase`     | string _(omitted when absent)_                                 | Present only with `stackBlockedBy`: the branch the PR must target.                                                                                                                                                                                                                                                         |
 | `repos`           | `SkillContextRepo[]` _(omitted in legacy mode)_                | Workspace mode only: every configured repo, in config order — `{name, path, baseBranch, buildCommand, testCommand, inScope, branchName, prNumber, terminalPrNumber, mergeCompleted, module, stackPrBase?}`. `path` is absolute. `inScope` is `false` until the prompt-writer sets scope with `redqueen spec meta --repos`. |
 
-**Workspace mode:** when `repos` is absent, keep the legacy single-repo
-behavior. When `repos` is present, `buildCommands`, `testCommands`,
-`baseBranch`, `repoOwner`, `repoName`, `module`, `branchName`, `prNumber`, and
-`stackPrBase` are **deprecated** and describe only the first in-scope repo (or
-`repos[0]` before scope is set). Multi-repo-aware skills loop over `repos`
-instead. `projectDir` is the workspace root, which is not itself a git
+**Workspace mode:** a skill that serves both modes keeps the single-repo
+behavior when `repos` is absent. When `repos` is present, `buildCommands`,
+`testCommands`, `baseBranch`, `repoOwner`, `repoName`, `module`,
+`branchName`, `prNumber`, and `stackPrBase` are **deprecated** and describe
+only the first in-scope repo (or `repos[0]` before scope is set).
+Multi-repo-aware skills loop over `repos` instead. `projectDir` is the workspace root, which is not itself a git
 repository — run git with `-C <repo.path>` or inside a worktree.
 
 Only the prompt-writer decides scope and records it with

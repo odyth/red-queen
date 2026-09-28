@@ -208,18 +208,31 @@ export function buildSkillSearchDirs(args: SkillSearchDirsArgs): string[] {
   return dirs;
 }
 
+export function workspaceSkillName(skillName: string): string {
+  return `${skillName}-workspace`;
+}
+
+// Workspace installs run "<skill>-workspace" when any search dir has one, so a
+// prompt only carries instructions for the mode it runs in. The variant outranks
+// every "<skill>" file, user overrides included: those are single-repo prompts.
+// Skills without a variant serve both modes.
 export function resolveSkillPath(
   searchDirs: readonly string[],
   skillName: string,
   disabled: readonly string[],
+  workspaceMode = false,
 ): string | null {
-  if (disabled.includes(skillName)) {
+  const names = workspaceMode ? [workspaceSkillName(skillName), skillName] : [skillName];
+  // A disabled variant must not fall back to the single-repo prompt.
+  if (names.some((name) => disabled.includes(name))) {
     return null;
   }
-  for (const dir of searchDirs) {
-    const candidate = join(dir, skillName, "SKILL.md");
-    if (existsSync(candidate)) {
-      return candidate;
+  for (const name of names) {
+    for (const dir of searchDirs) {
+      const candidate = join(dir, name, "SKILL.md");
+      if (existsSync(candidate)) {
+        return candidate;
+      }
     }
   }
   return null;
