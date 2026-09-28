@@ -24,6 +24,7 @@ import { loadDotEnv } from "../core/env.js";
 import { PipelineStateStore } from "../core/pipeline-state.js";
 import { contextFromConfig, createServiceManager } from "../core/service/index.js";
 import {
+  droppedRepoSections,
   generateCodebaseMap,
   generateWorkspaceMap,
   isWorkspaceMap,
@@ -1397,8 +1398,17 @@ async function regenerateMapOnly(projectDir: string): Promise<void> {
   }
   const existing = readFileSync(mapPath, "utf8");
   const merged = mergeRegeneratedMap(existing, regenerated);
+  const dropped = droppedRepoSections(existing, regenerated);
+  if (dropped.length > 0) {
+    writeFileSync(`${mapPath}.bak`, existing);
+  }
   writeFileSync(mapPath, merged);
   process.stdout.write("Regenerated .redqueen/codebase-map.md (edit-me sections preserved).\n");
+  if (dropped.length > 0) {
+    process.stdout.write(
+      `Dropped the sections for repos no longer in project.repos: ${dropped.join(", ")}. The previous map is saved at ${mapPath}.bak; move any notes you still need into the new sections.\n`,
+    );
+  }
   return Promise.resolve();
 }
 

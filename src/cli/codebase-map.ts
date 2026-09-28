@@ -248,6 +248,15 @@ function splitRepoSections(markdown: string): { head: string; sections: IRepoSec
   };
 }
 
+// A renamed repo is indistinguishable from a removed one, so the merge drops
+// its section; callers use this to say so and keep the notes recoverable.
+export function droppedRepoSections(existing: string, regenerated: string): string[] {
+  const kept = new Set(splitRepoSections(regenerated).sections.map((section) => section.name));
+  return splitRepoSections(existing)
+    .sections.map((section) => section.name)
+    .filter((name) => kept.has(name) === false);
+}
+
 function editBlockRange(body: string, header: string): { start: number; end: number } | null {
   const headings = mapHeadings(body);
   const index = headings.findIndex((heading) => heading.text === header);

@@ -810,6 +810,33 @@ describe("cmdInit workspace mode", () => {
     expect(regenerated.match(/- Human repo note\./g)).toHaveLength(2);
     expect(regenerated).toContain("npm run changed");
     expect(readFileSync(configPath, "utf8")).toBe(doc.toString());
+    expect(existsSync(`${mapPath}.bak`)).toBe(false);
+  });
+
+  it("backs up the map and names the sections a renamed repo leaves behind", async () => {
+    const root = workspace();
+    await cmdInit(["--yes"]);
+    vi.stubEnv("GITHUB_PAT", undefined);
+    const mapPath = join(root, ".redqueen", "codebase-map.md");
+    const edited = readFileSync(mapPath, "utf8").replaceAll(
+      "- Describe the module structure here.",
+      "- Human repo note.",
+    );
+    writeFileSync(mapPath, edited);
+    const configPath = join(root, "redqueen.yaml");
+    const doc = parseDocument(readFileSync(configPath, "utf8"));
+    const previousName = String(doc.getIn(["project", "repos", 0, "name"]));
+    doc.setIn(["project", "repos", 0, "name"], "renamed");
+    writeFileSync(configPath, doc.toString());
+    const stdout = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+
+    await cmdInit(["--map-only"]);
+
+    expect(readFileSync(`${mapPath}.bak`, "utf8")).toBe(edited);
+    expect(readFileSync(mapPath, "utf8")).toContain("## Repo: renamed");
+    const output = stdout.mock.calls.map(([text]) => String(text)).join("");
+    expect(output).toContain(`no longer in project.repos: ${previousName}`);
+    expect(output).toContain("codebase-map.md.bak");
   });
 
   it("resolves map paths and commands from project.directory and local .env", async () => {
