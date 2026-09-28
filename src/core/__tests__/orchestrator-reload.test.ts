@@ -201,6 +201,89 @@ project:
     expect(runtime.config.project.workspaceMode).toBe(false);
   });
 
+  it("applies legacy build, test, and module edits without a restart", () => {
+    const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
+    const orchestrator = buildOrchestrator(runtime, join(tempDir, "skills"));
+    const modules = [
+      { name: "web", paths: ["src/web/**"], buildCommand: "b", testCommandTargeted: "t" },
+    ];
+
+    const result = orchestrator.reload(
+      makeTestConfig({ project: { buildCommand: "make", testCommand: "make test", modules } }),
+    );
+
+    expect(result.applied).toContain("project.commands");
+    expect(result.restartRequired).toEqual([]);
+    expect(runtime.config.project).toMatchObject({
+      buildCommand: "make",
+      testCommand: "make test",
+    });
+    expect(runtime.config.project.repos[0]).toMatchObject({
+      buildCommand: "make",
+      testCommand: "make test",
+      modules,
+    });
+  });
+
+  it("applies a workspace repo's command edits without a restart", () => {
+    const config = resolveProjectPaths(
+      makeTestConfig({
+        project: {
+          directory: tempDir,
+          repos: [
+            {
+              name: "api",
+              path: "./api",
+              owner: "acme",
+              repo: "api",
+              baseBranch: "origin/main",
+              buildCommand: "build",
+              testCommand: "test",
+              modules: [],
+            },
+          ],
+        },
+      }),
+      tempDir,
+    );
+    const runtime = new RuntimeState(buildPhaseGraph(config.phases), config);
+    const orchestrator = buildOrchestrator(runtime, join(tempDir, "skills"));
+
+    const result = orchestrator.reload({
+      ...config,
+      project: {
+        ...config.project,
+        repos: config.project.repos.map((repo) => ({ ...repo, testCommand: "test --ci" })),
+      },
+    });
+
+    expect(result.applied).toContain("project.commands");
+    expect(result.restartRequired).toEqual([]);
+    expect(runtime.config.project.repos[0]?.testCommand).toBe("test --ci");
+  });
+
+  it("holds command edits back when the same reload changes what a repo is bound to", () => {
+    const config = resolveProjectPaths(makeTestConfig(), tempDir);
+    const runtime = new RuntimeState(buildPhaseGraph(config.phases), config);
+    const orchestrator = buildOrchestrator(runtime, join(tempDir, "skills"));
+
+    const result = orchestrator.reload({
+      ...config,
+      project: {
+        ...config.project,
+        repos: config.project.repos.map((repo) => ({
+          ...repo,
+          baseBranch: "origin/develop",
+          buildCommand: "make",
+        })),
+      },
+    });
+
+    expect(result.restartRequired).toContain("project.repos");
+    expect(result.applied).not.toContain("project.commands");
+    expect(runtime.config.project).toEqual(config.project);
+  });
+
   it("leaves runtime untouched when new config has an invalid phase graph", () => {
     const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
     const orchestrator = buildOrchestrator(runtime, join(tempDir, "skills"));

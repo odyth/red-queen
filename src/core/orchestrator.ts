@@ -8,7 +8,7 @@ import {
 } from "./assignment-router.js";
 import { withTimeout } from "./async.js";
 import { buildPhaseGraph, resolveProjectPaths } from "./config.js";
-import type { RedQueenConfig } from "./config.js";
+import type { RedQueenConfig, RepoConfig } from "./config.js";
 import type { OrchestratorStateStore, PipelineStateStore } from "./pipeline-state.js";
 import type { PhaseUsageStore } from "./phase-usage.js";
 import { computeCost } from "./cost.js";
@@ -297,14 +297,19 @@ export class RedQueen {
     if (JSON.stringify(oldConfig.sourceControl) !== JSON.stringify(newConfig.sourceControl)) {
       restartRequired.push("sourceControl");
     }
-    if (JSON.stringify(activeProject.repos) !== JSON.stringify(resolvedConfig.project.repos)) {
+    const newProject = resolvedConfig.project;
+    if (boundRepoFields(activeProject.repos) !== boundRepoFields(newProject.repos)) {
       restartRequired.push("project.repos");
     }
-    if (activeProject.workspaceMode !== resolvedConfig.project.workspaceMode) {
+    if (activeProject.workspaceMode !== newProject.workspaceMode) {
       restartRequired.push("project.workspaceMode");
     }
-    if (activeProject.directory !== resolvedConfig.project.directory) {
+    if (activeProject.directory !== newProject.directory) {
       restartRequired.push("project.directory");
+    }
+    const projectPinned = restartRequired.some((section) => section.startsWith("project."));
+    if (projectPinned === false && JSON.stringify(activeProject) !== JSON.stringify(newProject)) {
+      applied.push("project.commands");
     }
     if (JSON.stringify(oldConfig.pipeline) !== JSON.stringify(newConfig.pipeline)) {
       restartRequired.push("pipeline");
@@ -323,10 +328,10 @@ export class RedQueen {
     // fields sees a consistent (graph, config) pair.
     this.deps.runtime.phaseGraph = newGraph;
     // The registry, store and worktree layout retain their startup configuration.
-    // Keep the active project coherent with them until the daemon restarts.
+    // A project that rebinds any of them stays whole until the daemon restarts.
     this.deps.runtime.config = {
       ...resolvedConfig,
-      project: activeProject,
+      project: projectPinned ? activeProject : newProject,
     };
 
     this.deps.audit.log({
@@ -2397,6 +2402,14 @@ function killWorkerPid(pid: number, signal: NodeJS.Signals): void {
       // Worker already exited
     }
   }
+}
+
+// The repo fields captured at startup by the registry, store, and worktree
+// layout. Commands and modules are read per dispatch, so they reload live.
+function boundRepoFields(repos: readonly RepoConfig[]): string {
+  return JSON.stringify(
+    repos.map(({ name, path, owner, repo, baseBranch }) => [name, path, owner, repo, baseBranch]),
+  );
 }
 
 // Cosmetic header label: the workspace root's basename in workspace mode, the

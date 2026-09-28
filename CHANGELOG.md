@@ -43,6 +43,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its mode; `redqueen migrate` warns when the one it moves is readable by
   other users, and adds the Red Queen ignore rules when the new install root
   sits inside a git work tree.
+- Config reload reports build, test, and module command edits as applied
+  under `project.commands`. Changing a repo's `name`, `path`, `owner`, `repo`,
+  or `baseBranch`, or `project.directory`, needs a restart and holds every
+  other `project` edit back until then.
 
 ### Fixed
 
