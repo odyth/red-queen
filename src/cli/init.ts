@@ -47,6 +47,7 @@ import {
   detectDefaultBranch,
   discoverRepoChildren,
   isGitWorkTreeRoot,
+  isInsideGitWorkTree,
   listRegisteredWorktrees,
   readGitRemote,
 } from "./repo-discovery.js";
@@ -690,11 +691,12 @@ function writeWorkspaceFiles(rootDir: string, answers: IWorkspaceInitAnswers): v
     join(referencesDir, "review-checklist.md"),
   );
   copyTemplate("spec-template", answers.specTemplate, join(referencesDir, "spec-template.md"));
-  const rootIsRepo = isGitWorkTreeRoot(rootDir);
-  if (rootIsRepo) {
+  // A workspace root is never a git root itself, but it can sit inside one.
+  const rootInGit = isInsideGitWorkTree(rootDir);
+  if (rootInGit) {
     updateGitignore(rootDir);
   }
-  writeDotEnvScaffold(rootDir, answers, rootIsRepo);
+  writeDotEnvScaffold(rootDir, answers, rootInGit);
 }
 
 function printWorkspaceNextSteps(answers: IWorkspaceInitAnswers): void {

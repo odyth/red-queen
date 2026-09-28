@@ -600,7 +600,21 @@ describe("cmdInit workspace mode", () => {
     }
   }
 
+  it("ignores secrets and state when the workspace root sits inside a git work tree", async () => {
+    const root = workspace();
+    await cmdInit(["--yes"]);
+
+    for (const path of [".env", ".redqueen/redqueen.db"]) {
+      expect(
+        execFileSync("git", ["check-ignore", path], { cwd: root, encoding: "utf8" }).trim(),
+      ).toBe(path);
+    }
+    expect(readFileSync(join(root, ".env"), "utf8")).toContain("gitignored");
+  });
+
   it("scaffolds each repo and one tracker with --yes without needing credentials", async () => {
+    // Outside any git work tree there is nothing to ignore the secrets from.
+    rmSync(join(tmp, ".git"), { recursive: true });
     const root = workspace();
     vi.stubEnv("GITHUB_PAT", undefined);
     const stdout = vi.spyOn(process.stdout, "write").mockReturnValue(true);

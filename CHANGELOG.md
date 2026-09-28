@@ -46,8 +46,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   expensive runs; set `effort: high` to keep the old behavior.
 - `redqueen init` creates `.env` with mode `0600`. An existing `.env` keeps
   its mode; `redqueen migrate` warns when the one it moves is readable by
-  other users, and adds the Red Queen ignore rules when the new install root
-  sits inside a git work tree.
+  other users. `migrate` and workspace `init` add the Red Queen ignore rules
+  when the install root sits inside a git work tree.
 - Config reload reports build, test, and module command edits as applied
   under `project.commands`. Changing a repo's `name`, `path`, `owner`, `repo`,
   or `baseBranch`, or `project.directory`, needs a restart and holds every
