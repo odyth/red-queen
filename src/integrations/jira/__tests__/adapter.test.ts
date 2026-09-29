@@ -180,7 +180,7 @@ describe("JiraIssueTrackerAdapter", () => {
         customfield_10039: { id: "10027", value: "App" },
         customfield_10040: "Platform",
         customfield_10041: 5,
-        customfield_10042: { accountId: "u1", name: "alice", displayName: "Alice" },
+        customfield_10042: { accountId: "u1", displayName: "Alice" },
         customfield_10043: [
           { id: "1", value: "ios" },
           { id: "2", value: "android" },
@@ -193,11 +193,28 @@ describe("JiraIssueTrackerAdapter", () => {
       product: "App",
       team: "Platform",
       points: "5",
-      owner: "alice",
+      owner: "Alice",
       tags: "ios, android",
       missing: null,
       weird: null,
     });
+  });
+
+  it("getIssue flattens multi-user fields and preserves named objects", async () => {
+    h.setResponse((c) => c.url.endsWith("/issue/RQ-1") && c.method === "GET", {
+      id: "10000",
+      key: "RQ-1",
+      fields: {
+        customfield_10040: { name: "Platform" },
+        customfield_10042: [
+          { accountId: "u1", displayName: "Alice" },
+          { accountId: "u2", displayName: "Bob" },
+        ],
+      },
+    });
+    const issue = await h.adapter.getIssue("RQ-1");
+    expect(issue.fields.owner).toBe("Alice, Bob");
+    expect(issue.fields.team).toBe("Platform");
   });
 
   it("listIssuesByPhase requests description and every extra field id", async () => {

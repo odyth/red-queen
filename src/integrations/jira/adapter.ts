@@ -714,9 +714,20 @@ function flattenJiraField(value: unknown): string | null {
     return parts.length > 0 ? parts.join(", ") : null;
   }
   if (typeof value === "object") {
-    const { value: optionValue, name } = value as { value?: unknown; name?: unknown };
+    const {
+      value: optionValue,
+      displayName,
+      name,
+    } = value as {
+      value?: unknown;
+      displayName?: unknown;
+      name?: unknown;
+    };
     if (typeof optionValue === "string") {
       return optionValue;
+    }
+    if (typeof displayName === "string") {
+      return displayName;
     }
     if (typeof name === "string") {
       return name;

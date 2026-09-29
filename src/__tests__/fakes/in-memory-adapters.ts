@@ -363,5 +363,7 @@ export function makeIssue(overrides: Partial<Issue> & Pick<Issue, "id">): Issue 
     labels: overrides.labels ?? [],
     createdAt: overrides.createdAt ?? now,
     updatedAt: overrides.updatedAt ?? now,
+    description: overrides.description ?? null,
+    fields: overrides.fields ?? {},
   };
 }

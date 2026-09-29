@@ -2,6 +2,13 @@ import { describe, it, expect } from "vitest";
 import { fromAdf, toAdf } from "../adf.js";
 import type { AdfNode } from "../adf.js";
 
+function tableCell(text: string, header = false): AdfNode {
+  return {
+    type: header ? "tableHeader" : "tableCell",
+    content: [{ type: "paragraph", content: [{ type: "text", text }] }],
+  };
+}
+
 function hasMarks(node: AdfNode, ...types: string[]): boolean {
   const marks = node.marks ?? [];
   return types.every((t) => marks.some((m) => m.type === t));
@@ -476,6 +483,111 @@ describe("fromAdf", () => {
       ],
     });
     expect(out).toBe("[docs](https://example.com)");
+  });
+
+  it("preserves inline smart-link URLs among surrounding text", () => {
+    const out = fromAdf({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: "See " },
+            { type: "inlineCard", attrs: { url: "https://example.com/design" } },
+            { type: "text", text: " for the design." },
+          ],
+        },
+      ],
+    });
+    expect(out).toBe("See https://example.com/design for the design.");
+  });
+
+  it.each([undefined, {}, { url: null }, { url: 42 }])(
+    "tolerates smart links without a string URL: %j",
+    (attrs) => {
+      expect(
+        fromAdf({
+          type: "doc",
+          content: [{ type: "paragraph", content: [{ type: "inlineCard", attrs }] }],
+        }),
+      ).toBe("");
+    },
+  );
+
+  it("renders table headers and keeps rows and empty cells separate", () => {
+    const out = fromAdf({
+      type: "doc",
+      content: [
+        {
+          type: "table",
+          content: [
+            {
+              type: "tableRow",
+              content: [tableCell("Product", true), tableCell("Platform", true)],
+            },
+            { type: "tableRow", content: [tableCell("Mobile"), tableCell("iOS")] },
+            { type: "tableRow", content: [tableCell("Web"), { type: "tableCell", content: [] }] },
+          ],
+        },
+      ],
+    });
+    expect(out).toBe("| Product | Platform |\n| --- | --- |\n| Mobile | iOS |\n| Web |  |");
+  });
+
+  it("preserves every data row when a table has no header", () => {
+    const out = fromAdf({
+      type: "doc",
+      content: [
+        {
+          type: "table",
+          content: [
+            { type: "tableRow", content: [tableCell("Mobile"), tableCell("iOS")] },
+            { type: "tableRow", content: [tableCell("Web"), tableCell("Browser")] },
+          ],
+        },
+      ],
+    });
+    expect(out).toBe("|  |  |\n| --- | --- |\n| Mobile | iOS |\n| Web | Browser |");
+  });
+
+  it("preserves cell paragraphs, smart links, formatting, and literal pipes", () => {
+    const out = fromAdf({
+      type: "doc",
+      content: [
+        {
+          type: "table",
+          content: [
+            {
+              type: "tableRow",
+              content: [
+                tableCell("Design"),
+                {
+                  type: "tableCell",
+                  content: [
+                    {
+                      type: "paragraph",
+                      content: [
+                        { type: "text", text: "App | Web", marks: [{ type: "strong" }] },
+                        { type: "hardBreak" },
+                        { type: "inlineCard", attrs: { url: "https://example.com/design" } },
+                      ],
+                    },
+                    { type: "paragraph", content: [{ type: "text", text: "Keep both." }] },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    expect(out).toBe(
+      "|  |  |\n| --- | --- |\n| Design | **App \\| Web**<br>https://example.com/design<br><br>Keep both. |",
+    );
+  });
+
+  it("tolerates empty tables", () => {
+    expect(fromAdf({ type: "doc", content: [{ type: "table" }] })).toBe("");
   });
 
   it("renders mentions", () => {
