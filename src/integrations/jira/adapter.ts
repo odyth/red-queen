@@ -28,6 +28,8 @@ export const JiraConfigSchema = z.object({
   customFields: z.object({
     phase: z.string().min(1),
     spec: z.string().min(1),
+    // Tracker-agnostic name → Jira field id, surfaced on Issue.fields.
+    extra: z.record(z.string().min(1), z.string().min(1)).default({}),
   }),
   phaseMapping: z.record(
     z.string(),
@@ -212,8 +214,10 @@ export class JiraIssueTrackerAdapter implements IssueTracker {
       "labels",
       "created",
       "updated",
+      "description",
       this.config.customFields.phase,
       this.config.customFields.spec,
+      ...Object.values(this.config.customFields.extra),
     ].join(",");
 
     const all: Issue[] = [];
@@ -674,8 +678,51 @@ export class JiraIssueTrackerAdapter implements IssueTracker {
       labels: raw.fields.labels ?? [],
       createdAt: raw.fields.created ?? "",
       updatedAt: raw.fields.updated ?? "",
+      description: this.toDescription(raw.fields.description),
+      fields: Object.fromEntries(
+        Object.entries(this.config.customFields.extra).map(([name, fieldId]) => [
+          name,
+          flattenJiraField(raw.fields[fieldId]),
+        ]),
+      ),
     };
   }
+
+  private toDescription(value: unknown): string | null {
+    if (value === null || value === undefined) {
+      return null;
+    }
+    return typeof value === "string" ? value : fromAdf(value as AdfNode);
+  }
+}
+
+// Reduces any Jira field shape to a display string. Never throws: a
+// misconfigured field id or an unrecognised shape yields null, which skills
+// read as "not set".
+function flattenJiraField(value: unknown): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number") {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    const parts = value.map(flattenJiraField).filter((v): v is string => v !== null);
+    return parts.length > 0 ? parts.join(", ") : null;
+  }
+  if (typeof value === "object") {
+    const { value: optionValue, name } = value as { value?: unknown; name?: unknown };
+    if (typeof optionValue === "string") {
+      return optionValue;
+    }
+    if (typeof name === "string") {
+      return name;
+    }
+  }
+  return null;
 }
 
 function escapeJql(input: string): string {

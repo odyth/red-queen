@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { JiraClient } from "../client.js";
-import { JiraIssueTrackerAdapter } from "../adapter.js";
+import { JiraConfigSchema, JiraIssueTrackerAdapter } from "../adapter.js";
 import type { JiraAdapterConfig } from "../adapter.js";
 import type { CostBreakdown } from "../../../core/types.js";
 
@@ -83,6 +83,15 @@ function mkHarness(options: { resolveBotIdentity?: boolean } = {}): {
     customFields: {
       phase: "customfield_10158",
       spec: "customfield_10157",
+      extra: {
+        product: "customfield_10039",
+        team: "customfield_10040",
+        points: "customfield_10041",
+        owner: "customfield_10042",
+        tags: "customfield_10043",
+        missing: "customfield_10044",
+        weird: "customfield_10045",
+      },
     },
     phaseMapping: {
       coding: { optionId: "10056", label: "Coding" },
@@ -131,6 +140,83 @@ describe("JiraIssueTrackerAdapter", () => {
     expect(issue.phase).toBe("coding");
     expect(issue.summary).toBe("test");
     expect(issue.id).toBe("RQ-1");
+  });
+
+  it("getIssue renders an ADF description as markdown", async () => {
+    h.setResponse((c) => c.url.endsWith("/issue/RQ-1") && c.method === "GET", {
+      id: "10000",
+      key: "RQ-1",
+      fields: {
+        summary: "test",
+        description: {
+          type: "doc",
+          version: 1,
+          content: [
+            { type: "paragraph", content: [{ type: "text", text: "Fix the login flow." }] },
+          ],
+        },
+      },
+    });
+    const issue = await h.adapter.getIssue("RQ-1");
+    expect(issue.description).toBe("Fix the login flow.");
+  });
+
+  it("getIssue returns a null description when the ticket body is empty", async () => {
+    h.setResponse((c) => c.url.endsWith("/issue/RQ-1") && c.method === "GET", {
+      id: "10000",
+      key: "RQ-1",
+      fields: { summary: "test", description: null },
+    });
+    const issue = await h.adapter.getIssue("RQ-1");
+    expect(issue.description).toBeNull();
+  });
+
+  it("getIssue flattens configured extra fields to display strings", async () => {
+    h.setResponse((c) => c.url.endsWith("/issue/RQ-1") && c.method === "GET", {
+      id: "10000",
+      key: "RQ-1",
+      fields: {
+        summary: "test",
+        customfield_10039: { id: "10027", value: "App" },
+        customfield_10040: "Platform",
+        customfield_10041: 5,
+        customfield_10042: { accountId: "u1", name: "alice", displayName: "Alice" },
+        customfield_10043: [
+          { id: "1", value: "ios" },
+          { id: "2", value: "android" },
+        ],
+        customfield_10045: { nested: { deep: true } },
+      },
+    });
+    const issue = await h.adapter.getIssue("RQ-1");
+    expect(issue.fields).toEqual({
+      product: "App",
+      team: "Platform",
+      points: "5",
+      owner: "alice",
+      tags: "ios, android",
+      missing: null,
+      weird: null,
+    });
+  });
+
+  it("listIssuesByPhase requests description and every extra field id", async () => {
+    h.setResponse((c) => c.method === "GET" && c.url.includes("fields=summary&maxResults=1"), {
+      issues: [],
+      isLast: true,
+    });
+    h.setResponse((c) => c.method === "GET" && c.url.includes("customfield_10158"), {
+      issues: [],
+      isLast: true,
+    });
+    await h.adapter.listIssuesByPhase("coding");
+    const phaseCall = h.calls.find(
+      (c) => c.url.includes("/rest/api/3/search/jql") && c.url.includes("customfield_10158"),
+    );
+    const fields = new URL(phaseCall?.url ?? "").searchParams.get("fields") ?? "";
+    expect(fields.split(",")).toEqual(
+      expect.arrayContaining(["description", "customfield_10039", "customfield_10045"]),
+    );
   });
 
   it("listIssuesByPhase hits GET /search/jql with query string", async () => {
@@ -527,6 +613,28 @@ describe("JiraIssueTrackerAdapter", () => {
   it("validateConfig reports errors on bad config", () => {
     const result = h.adapter.validateConfig({});
     expect(result.errors.length).toBeGreaterThan(0);
+  });
+
+  it("validateConfig accepts customFields without extra and defaults it to empty", () => {
+    const result = h.adapter.validateConfig({
+      baseUrl: "https://example.atlassian.net",
+      email: "a@b.com",
+      apiToken: "x",
+      projectKey: "RQ",
+      customFields: { phase: "customfield_1", spec: "customfield_2" },
+      phaseMapping: {},
+    });
+    expect(result.errors).toEqual([]);
+    expect(
+      JiraConfigSchema.parse({
+        baseUrl: "https://example.atlassian.net",
+        email: "a@b.com",
+        apiToken: "x",
+        projectKey: "RQ",
+        customFields: { phase: "customfield_1", spec: "customfield_2" },
+        phaseMapping: {},
+      }).customFields.extra,
+    ).toEqual({});
   });
 
   it("validatePhaseMapping errors on unmapped phases", () => {

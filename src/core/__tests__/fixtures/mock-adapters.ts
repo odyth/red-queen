@@ -326,5 +326,7 @@ export function makeIssue(id: string, phase: string | null = null): Issue {
     labels: [],
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
+    description: null,
+    fields: {},
   };
 }

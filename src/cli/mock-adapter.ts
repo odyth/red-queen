@@ -36,6 +36,8 @@ export class MockIssueTrackerAdapter implements IssueTracker {
       labels: [],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
+      description: null,
+      fields: {},
     });
   }
   listIssuesByPhase(): Promise<Issue[]> {

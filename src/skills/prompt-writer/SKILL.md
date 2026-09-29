@@ -76,8 +76,10 @@ Before either flow, do these in order:
 ### Step 1: Read the issue
 
 The issue JSON from `redqueen issue get` is your input. Look at `summary`,
-description (if present in the adapter's JSON), and any prior comments
-fetched via `redqueen issue comments <issueId>`.
+`description` (the ticket body as markdown, `null` when the reporter left it
+empty), `fields` (install-defined ticket attributes such as a product or
+component; may be empty), and any prior comments fetched via
+`redqueen issue comments <issueId>`.
 
 ### Step 2: Assess clarity
 

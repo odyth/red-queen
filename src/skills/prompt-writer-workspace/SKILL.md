@@ -95,9 +95,10 @@ Before either flow, do these in order:
    Write an **ATTACHMENT ANALYSIS** section in the spec describing what
    each image shows.
 5. Identify the candidate repos: the repos the change could plausibly touch.
-   Use the workspace map and the ticket context, and start generously. If
-   the map or ticket context is insufficient, start with all repos as
-   candidates.
+   If the issue's `fields` carry a value that names a repo or product, start
+   with the matching repo. Otherwise use the workspace map and the ticket
+   context, and start generously. If the map or ticket context is
+   insufficient, start with all repos as candidates.
 6. For each candidate, explicitly read `<repo.path>/CLAUDE.md` and
    `<repo.path>/AGENTS.md` when present, at most about 200 lines each,
    before any grep. Do not rely on on-demand instruction loading for this
@@ -108,8 +109,10 @@ Before either flow, do these in order:
 ### Step 1: Read the issue
 
 The issue JSON from `redqueen issue get` is your input. Look at `summary`,
-description (if present in the adapter's JSON), and any prior comments
-fetched via `redqueen issue comments <issueId>`.
+`description` (the ticket body as markdown, `null` when the reporter left it
+empty), `fields` (install-defined ticket attributes such as a product or
+component; may be empty), and any prior comments fetched via
+`redqueen issue comments <issueId>`.
 
 ### Step 2: Assess clarity
 
