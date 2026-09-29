@@ -17,6 +17,8 @@ issueTracker:
     customFields:
       phase: customfield_10158
       spec: customfield_10157
+      extra: # optional: name → field id, surfaced as `fields` on `redqueen issue get`
+        product: customfield_10039
     phaseMapping:
       spec-writing: { optionId: "10054", label: "Prompt Writing" }
       spec-review: { optionId: "10055", label: "Prompt Review" }
@@ -78,6 +80,26 @@ Note the `id` field (e.g., `customfield_10158`).
 
 Do the same for your spec text field (e.g., "Prompt" or "Acceptance
 Criteria").
+
+### Passing extra fields to the prompt writer
+
+Any other field the prompt writer should see goes under
+`customFields.extra` as `<name>: <field id>`. The value is flattened to a
+display string (select option label, user name, number, or a comma-joined
+list for multi-selects) and appears on `redqueen issue get` output as
+`fields.<name>`. A multi-repo workspace can use this to tell the prompt
+writer which product a ticket belongs to:
+
+```yaml
+customFields:
+  phase: customfield_10158
+  spec: customfield_10157
+  extra:
+    product: customfield_10039 # a "Product" select with values like App, Web
+```
+
+A misconfigured id or an unrecognised field shape yields `null`, never an
+error.
 
 ## Finding phase option IDs
 

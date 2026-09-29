@@ -155,6 +155,35 @@ describe("GitHubIssuesAdapter", () => {
     expect(issue.labels).toContain("bug");
   });
 
+  it("getIssue maps the body to description and exposes no passthrough fields", async () => {
+    fake.add("get", () => ({
+      number: 6,
+      title: "t",
+      body: "Steps to reproduce...",
+      state: "open",
+      labels: [],
+      created_at: "2026-01-01",
+      updated_at: "2026-01-02",
+    }));
+    const issue = await adapter.getIssue("#6");
+    expect(issue.description).toBe("Steps to reproduce...");
+    expect(issue.fields).toEqual({});
+  });
+
+  it("getIssue returns a null description when the body is absent", async () => {
+    fake.add("get", () => ({
+      number: 7,
+      title: "t",
+      body: null,
+      state: "open",
+      labels: [],
+      created_at: "2026-01-01",
+      updated_at: "2026-01-02",
+    }));
+    const issue = await adapter.getIssue("#7");
+    expect(issue.description).toBeNull();
+  });
+
   it("listIssuesByPhase lists open non-PR issues with the phase label", async () => {
     fake.setPaginate((_path, args) => {
       expect(args).toMatchObject({

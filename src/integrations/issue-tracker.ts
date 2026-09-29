@@ -12,6 +12,11 @@ export interface Issue {
   labels: string[];
   createdAt: string;
   updatedAt: string;
+  // Ticket body as markdown; null when the tracker has none.
+  description: string | null;
+  // Install-named passthrough values (Jira: customFields.extra). Empty for
+  // trackers that expose nothing.
+  fields: Record<string, string | null>;
 }
 
 export interface AiAssignmentState {

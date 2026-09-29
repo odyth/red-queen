@@ -535,6 +535,7 @@ interface IssueRaw {
   assignee?: { login?: string | null } | null;
   assignees?: { login?: string }[] | null;
   user?: { login?: string | null } | null;
+  body?: string | null;
   created_at: string;
   updated_at: string;
   pull_request?: unknown;
@@ -562,6 +563,8 @@ function toIssue(raw: IssueRaw): Issue {
     labels: labelNames,
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,
+    description: raw.body ?? null,
+    fields: {},
   };
 }
 

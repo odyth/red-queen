@@ -752,9 +752,38 @@ function renderBlock(node: AdfNode, depth: number): string {
       return renderList(node, "1.", depth);
     case "taskList":
       return renderTaskList(node, depth);
+    case "table":
+      return renderTable(node, depth);
     default:
       return renderInline(node.content ?? []);
   }
+}
+
+function renderTable(node: AdfNode, depth: number): string {
+  const rows = node.content ?? [];
+  const columnCount = Math.max(0, ...rows.map((row) => row.content?.length ?? 0));
+  if (columnCount === 0) {
+    return "";
+  }
+
+  const lines = rows.map((row) => {
+    const cells = (row.content ?? []).map((cell) =>
+      (cell.content ?? [])
+        .map((block) => renderBlock(block, depth))
+        .join("\n\n")
+        .replace(/\|/g, "\\|")
+        .replace(/\n/g, "<br>"),
+    );
+    return `| ${cells.join(" | ")} |`;
+  });
+  // Markdown requires a header row. Keep headerless tables as data by adding
+  // an empty header instead of promoting their first row to column labels.
+  const firstRow = rows[0]?.content ?? [];
+  if (firstRow.length === 0 || firstRow.some((cell) => cell.type !== "tableHeader")) {
+    lines.unshift(`| ${Array<string>(columnCount).fill("").join(" | ")} |`);
+  }
+  lines.splice(1, 0, `| ${Array<string>(columnCount).fill("---").join(" | ")} |`);
+  return lines.join("\n");
 }
 
 function renderList(node: AdfNode, marker: string, depth: number): string {
@@ -824,6 +853,8 @@ function renderInlineNode(node: AdfNode): string {
     }
     case "hardBreak":
       return "\n";
+    case "inlineCard":
+      return typeof node.attrs?.url === "string" ? node.attrs.url : "";
     case "mention": {
       const id = typeof node.attrs?.id === "string" ? node.attrs.id : "";
       return `@accountId:${id}`;
