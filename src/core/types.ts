@@ -16,6 +16,8 @@ export interface PhaseDefinition {
   next: string;
   onFail?: string;
   rework?: string;
+  // Maximum automated onFail returns from this phase. Persisted per phase;
+  // reset when this phase passes or a human starts a fresh cycle.
   maxIterations?: number;
   escalateTo?: string;
   assignTo: AssignTo;

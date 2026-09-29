@@ -670,9 +670,10 @@ phases:
 });
 
 describe("validatePhaseGraph", () => {
-  it("validates default phases with zero errors", () => {
+  it("validates default phases without errors or warnings", () => {
     const result = validatePhaseGraph(DEFAULT_PHASES);
     expect(result.errors).toHaveLength(0);
+    expect(result.warnings).toHaveLength(0);
   });
 
   it("catches undefined phase references", () => {
@@ -808,7 +809,7 @@ describe("validatePhaseGraph", () => {
     expect(result.warnings.some((w) => w.includes("orphan"))).toBe(true);
   });
 
-  it("warns about escalateTo without maxIterations", () => {
+  it("allows retry-exhaustion escalation without maxIterations", () => {
     const phases: PhaseDefinition[] = [
       {
         name: "review",
@@ -828,9 +829,13 @@ describe("validatePhaseGraph", () => {
       },
     ];
     const result = validatePhaseGraph(phases);
-    expect(
-      result.warnings.some((w) => w.includes("escalateTo") && w.includes("maxIterations")),
-    ).toBe(true);
+    expect(result.warnings).toHaveLength(0);
+    const looping = phases.map((phase) =>
+      phase.name === "review" ? { ...phase, onFail: "review" } : phase,
+    );
+    expect(validatePhaseGraph(looping).warnings.some((w) => w.includes("maxIterations"))).toBe(
+      true,
+    );
   });
 
   it("accepts 'done' as valid next target", () => {

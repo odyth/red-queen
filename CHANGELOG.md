@@ -67,6 +67,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Codex workers launched from a multi-repo workspace root now receive
+  `--skip-git-repo-check`, allowing the parent directory to be outside Git.
+- Exhausted worker retries no longer restart indefinitely through reconciliation.
+  Default Coding failures escalate to Blocked; custom phases without a failure
+  route remain stopped across sweeps, restarts, and task-history cleanup until
+  explicit re-entry. Reconciled tasks no longer incorrectly say "on startup"
+  when created by a periodic sweep.
+- Pending handoffs respect human moves back to the source phase, bound assignment
+  retries with ticket-visible recovery instructions, and allow assignment-only
+  recovery through `pipeline resume`. Cancelled transitions no longer claim to
+  have moved the ticket. Hot reload protects pending destinations, and exhausted
+  retry budgets are renewed atomically with a successful task claim.
+- Queued PR feedback survives phase handoffs. Delayed source-phase webhooks no
+  longer cancel an unapplied handoff. Failed phase writes use persistent backoff
+  capped at one hour and post one ticket notice after repeated failures.
+  Assignment-failure notices direct polling-only deployments to `pipeline resume`.
+- Delayed or duplicate phase webhooks no longer renew an exhausted phase's budget.
+  Verified gate arrivals still permit subsequent re-entry. Explicit resume saves
+  its guarded task before assigning AI and preserves unrelated queued PR feedback,
+  including feedback deferred behind an assignment handoff.
 - Worker effort is no longer silently clamped between CLI-specific scales.
   Values such as `max`, `ultra`, and future modes now pass through unchanged;
   Claude's legacy `minimal` alias still maps to `low`. Empty, whitespace-only,

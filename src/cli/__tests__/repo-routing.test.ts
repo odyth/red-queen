@@ -13,6 +13,7 @@ import { createSourceControlRegistry } from "../../integrations/source-control-r
 import type { SourceControl } from "../../integrations/source-control.js";
 import { loadCliContext } from "../context.js";
 import type { CliContext } from "../context.js";
+import { SqliteTaskQueue } from "../../core/queue.js";
 import { cmdPipeline } from "../pipeline.js";
 import { cmdPr } from "../pr.js";
 
@@ -127,6 +128,7 @@ beforeEach(() => {
       { name: "web", fullName: "acme/web", adapter: web },
     ]),
     pipelineState: new PipelineStateStore(database.db, ["api", "web"]),
+    queue: new SqliteTaskQueue(database.db),
     subIteration: new SubIterationStore(database.db),
     audit: { log: auditLog, query: () => [], prune: () => 0 },
     cleanup: vi.fn(),

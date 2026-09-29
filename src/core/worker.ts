@@ -38,6 +38,8 @@ export interface WorkerOptions {
   agent?: WorkerAgent;
   prompt: string;
   cwd: string;
+  // Workspace roots contain repositories but need not be Git repositories themselves.
+  workspaceMode?: boolean;
   timeoutMs: number;
   stallThresholdMs: number;
   // null omits the model flag entirely — the CLI's own config decides.
@@ -139,6 +141,7 @@ export function buildWorkerArgs(options: WorkerOptions): string[] {
       "exec",
       "--json",
       "--ephemeral",
+      ...(options.workspaceMode === true ? ["--skip-git-repo-check"] : []),
       "--sandbox",
       "danger-full-access",
       "-c",

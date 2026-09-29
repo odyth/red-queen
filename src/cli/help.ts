@@ -11,6 +11,7 @@ Top-level commands:
   start                       Start the orchestrator (foreground)
   stop                        Stop a running orchestrator
   status                      Show orchestrator status
+  pipeline resume <issueId>    Resume an exhausted ticket in its current automated phase
   service <sub>               Manage the background daemon (install/start/stop/restart/status/uninstall)
   jira <sub>                  Jira helpers (discover)
 

@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { routeAiAssignment } from "../core/assignment-router.js";
+import { cancelPhaseTransition, isPhaseTransitionSuperseded } from "../core/phase-transition.js";
 import { safeAudit } from "../core/audit.js";
 import type { AuditLogger } from "../core/audit.js";
 import { withTimeout } from "../core/async.js";
@@ -235,6 +236,42 @@ export class WebhookServer {
         if (phaseName === null) {
           return;
         }
+        const pending = pipelineState.getPendingTransition(event.issueId);
+        if (pending !== null) {
+          const livePhase = await issueTracker.getPhase(event.issueId);
+          // Ignore delayed delivery and destination echoes. A verified human
+          // move away supersedes the old handoff, including a return to source.
+          if (
+            livePhase !== phaseName ||
+            isPhaseTransitionSuperseded(pending, livePhase) === false
+          ) {
+            break;
+          }
+          cancelPhaseTransition(this.deps, pending, livePhase);
+          if (pipelineState.getPendingTransition(event.issueId) !== null) {
+            break;
+          }
+        }
+        const localPhase = pipelineState.get(event.issueId)?.currentPhase ?? null;
+        if (localPhase !== null && pipelineState.isPhaseExhausted(event.issueId, localPhase)) {
+          const livePhase = await issueTracker.getPhase(event.issueId);
+          // A redelivery is not a fresh human restart. Recheck local state after
+          // the tracker read so an overlapping resume or handoff wins.
+          if (
+            livePhase !== phaseName ||
+            livePhase === localPhase ||
+            pipelineState.getPendingTransition(event.issueId) !== null ||
+            pipelineState.get(event.issueId)?.currentPhase !== localPhase ||
+            pipelineState.isPhaseExhausted(event.issueId, localPhase) === false
+          ) {
+            break;
+          }
+          // Remember a verified gate arrival so its later departure can renew
+          // the budget without accepting same-phase exhausted webhook echoes.
+          if (runtime.phaseGraph.isHumanGate(livePhase)) {
+            pipelineState.updatePhase(event.issueId, livePhase);
+          }
+        }
         const delegator = extractString(event.payload, "delegator");
         if (runtime.phaseGraph.isHumanGate(phaseName)) {
           audit.log({
@@ -364,6 +401,7 @@ export class WebhookServer {
           type: taskType,
           issueId: event.issueId,
           description: "PR feedback",
+          metadata: { trigger: "pr-feedback" },
         });
         audit.log({
           component,
@@ -555,6 +593,7 @@ export class WebhookServer {
             component,
             description: "Assigned to AI",
             delegator,
+            explicitReentry: true,
           },
         );
         break;

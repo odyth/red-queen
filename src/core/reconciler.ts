@@ -5,6 +5,7 @@ import {
 } from "./assignment-router.js";
 import type { AuditLogger } from "./audit.js";
 import { errorMessage } from "./errors.js";
+import { retryPhaseTransition } from "./phase-transition.js";
 import type { PipelineStateStore } from "./pipeline-state.js";
 import type { TaskQueue } from "./queue.js";
 import type { RuntimeState } from "./runtime-state.js";
@@ -40,6 +41,35 @@ export async function reconcile(deps: ReconcilerDeps): Promise<ReconcileResult> 
   let tasksCreated = 0;
   let skipped = 0;
 
+  for (const pending of pipelineState.listPendingTransitions()) {
+    await retryPhaseTransition(deps, pending.issueId);
+  }
+  // Exhausted tickets do not dispatch, so their gate arrivals need an explicit
+  // read. Otherwise polling would never observe a human's move away and back.
+  for (const stopped of pipelineState.listExhaustedPhases()) {
+    if (pipelineState.getPendingTransition(stopped.issueId) !== null) {
+      continue;
+    }
+    try {
+      const livePhase = await issueTracker.getPhase(stopped.issueId);
+      if (
+        livePhase !== null &&
+        runtime.phaseGraph.isHumanGate(livePhase) &&
+        pipelineState.isPhaseExhausted(stopped.issueId, stopped.phase) &&
+        pipelineState.getPendingTransition(stopped.issueId) === null
+      ) {
+        pipelineState.updatePhase(stopped.issueId, livePhase);
+      }
+    } catch (err) {
+      audit.log({
+        component: "reconciler",
+        issueId: stopped.issueId,
+        message: `Could not check exhausted ticket phase: ${errorMessage(err)}`,
+        metadata: {},
+      });
+    }
+  }
+
   const openGuardedNewTickets = collectOpenGuardedNewTickets(queue);
   const seenIssueIds = new Set<string>();
   const automatedPhases = runtime.phaseGraph.getAutomatedPhases();
@@ -67,6 +97,11 @@ export async function reconcile(deps: ReconcilerDeps): Promise<ReconcileResult> 
       issuesFound++;
 
       if (queue.hasOpenTask(issue.id, phase.name)) {
+        skipped++;
+        continue;
+      }
+
+      if (skipExhaustedPhase(deps, issue.id, phase.name)) {
         skipped++;
         continue;
       }
@@ -125,7 +160,7 @@ export async function reconcile(deps: ReconcilerDeps): Promise<ReconcileResult> 
       queue.enqueue({
         type: phase.name,
         issueId: issue.id,
-        description: `Reconciled on startup — ${phase.label}`,
+        description: `Reconciled — ${phase.label}`,
       });
       tasksCreated++;
       audit.log({
@@ -206,6 +241,14 @@ export async function reconcile(deps: ReconcilerDeps): Promise<ReconcileResult> 
           continue;
         }
 
+        if (
+          read.state.phase !== null &&
+          skipExhaustedPhase(deps, read.issue.id, read.state.phase)
+        ) {
+          skipped++;
+          continue;
+        }
+
         const routeResult = await routeAiAssignment(deps, {
           issueId: read.issue.id,
           component: "reconciler",
@@ -233,6 +276,13 @@ export async function reconcile(deps: ReconcilerDeps): Promise<ReconcileResult> 
   });
 
   return { issuesFound, tasksCreated, skipped };
+}
+
+function skipExhaustedPhase(deps: ReconcilerDeps, issueId: string, phase: string): boolean {
+  return (
+    deps.pipelineState.getPendingTransition(issueId) !== null ||
+    deps.pipelineState.isPhaseExhausted(issueId, phase)
+  );
 }
 
 function collectOpenGuardedNewTickets(queue: TaskQueue): Map<string, Task> {

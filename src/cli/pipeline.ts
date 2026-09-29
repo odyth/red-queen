@@ -2,6 +2,8 @@ import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { gitCwdFor } from "../core/worktree-layout.js";
+import { buildPhaseGraph } from "../core/config.js";
+import { resumePipeline } from "../core/pipeline-recovery.js";
 import { loadCliContext } from "./context.js";
 import { CliError } from "./errors.js";
 import { writeJson } from "./io.js";
@@ -10,6 +12,9 @@ import { resolveScopedRepoArg } from "./repo-arg.js";
 export async function cmdPipeline(args: string[]): Promise<void> {
   const [subcommand, ...rest] = args;
   switch (subcommand) {
+    case "resume":
+      await cmdPipelineResume(rest);
+      return;
     case "update":
       await cmdPipelineUpdate(rest);
       return;
@@ -18,8 +23,30 @@ export async function cmdPipeline(args: string[]): Promise<void> {
       return;
     default:
       throw new CliError(
-        `Unknown 'pipeline' subcommand: ${subcommand ?? "(missing)"}. Valid: update, cleanup.`,
+        `Unknown 'pipeline' subcommand: ${subcommand ?? "(missing)"}. Valid: update, cleanup, resume.`,
       );
+  }
+}
+
+async function cmdPipelineResume(args: string[]): Promise<void> {
+  const { positionals, values } = parseArgs({
+    args,
+    options: { pretty: { type: "boolean", default: false } },
+    allowPositionals: true,
+  });
+  const issueId = positionals[0];
+  if (issueId === undefined || positionals.length !== 1) {
+    throw new CliError("pipeline resume: exactly one <issueId> is required");
+  }
+  const ctx = loadCliContext();
+  try {
+    const task = await resumePipeline(
+      { ...ctx, phaseGraph: buildPhaseGraph(ctx.config.phases) },
+      issueId,
+    );
+    writeJson({ ok: true, task }, values.pretty === true);
+  } finally {
+    ctx.cleanup();
   }
 }
 

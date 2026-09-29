@@ -14,7 +14,11 @@ export interface TaskQueue {
   requeueAllWorking(): Task[];
   markDeferred(taskId: string, blockedOn: string[]): boolean;
   releaseDeferred(): number;
-  cancelPendingForIssue(issueId: string, result: string): number;
+  cancelPendingForIssue(
+    issueId: string,
+    result: string,
+    options?: { preserveFeedback?: boolean },
+  ): number;
   hasOpenTask(issueId: string, taskType: string): boolean;
   listByStatus(status: TaskStatus): Task[];
   getTask(taskId: string): Task | null;
@@ -167,13 +171,23 @@ export class SqliteTaskQueue implements TaskQueue {
     return result.changes;
   }
 
-  cancelPendingForIssue(issueId: string, result: string): number {
+  cancelPendingForIssue(
+    issueId: string,
+    result: string,
+    options: { preserveFeedback?: boolean } = {},
+  ): number {
     const now = new Date().toISOString();
+    // Older webhook tasks predate trigger metadata. Preserve their exact
+    // description too, so an upgrade cannot discard already-queued feedback.
+    const feedbackFilter =
+      options.preserveFeedback === true
+        ? "AND COALESCE(json_extract(metadata, '$.trigger'), '') <> 'pr-feedback' AND COALESCE(description, '') <> 'PR feedback'"
+        : "";
     const dbResult = this.db
       .prepare(
         `UPDATE tasks
          SET status = 'cancelled', completed_at = ?, result = ?
-         WHERE issue_id = ? AND status IN ('ready', 'deferred')`,
+         WHERE issue_id = ? AND status IN ('ready', 'deferred') ${feedbackFilter}`,
       )
       .run(now, result, issueId);
     return dbResult.changes;

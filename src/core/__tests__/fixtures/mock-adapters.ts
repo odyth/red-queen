@@ -35,6 +35,8 @@ export class MockIssueTracker implements IssueTracker {
   getSpecThrowsFor = new Set<string>();
   getPhaseThrowsFor = new Set<string>();
   defaultAssignedToAi = false;
+  setPhaseFailures = new Set<string>();
+  assignToHumanFailures = new Set<string>();
   closedIssues = new Set<string>();
 
   async getIssue(issueId: string): Promise<Issue> {
@@ -82,6 +84,9 @@ export class MockIssueTracker implements IssueTracker {
 
   setPhase(issueId: string, phaseName: string): Promise<void> {
     this.calls.push(`setPhase:${issueId}:${phaseName}`);
+    if (this.setPhaseFailures.has(phaseName)) {
+      return Promise.reject(new Error("Phase write denied"));
+    }
     this.phases.set(issueId, phaseName);
     return Promise.resolve();
   }
@@ -94,6 +99,9 @@ export class MockIssueTracker implements IssueTracker {
 
   assignToHuman(issueId: string, preferredAssignee?: string | null): Promise<void> {
     this.calls.push(`assignToHuman:${issueId}:${preferredAssignee ?? "none"}`);
+    if (this.assignToHumanFailures.has(issueId)) {
+      return Promise.reject(new Error("Assignment write denied"));
+    }
     this.assignments.set(issueId, "human");
     return Promise.resolve();
   }

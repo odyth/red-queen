@@ -19,6 +19,7 @@ export interface RouteAiAssignmentOptions {
   description: string;
   delegator?: string | null;
   assignmentState?: AiAssignmentState;
+  explicitReentry?: boolean;
 }
 
 export const ASSIGNMENT_CLAIM_REQUIRED_METADATA_KEY = "requiresAiAssignment";
@@ -33,6 +34,7 @@ export type AssignmentRouteReason =
   | "unknown-phase"
   | "human-gate"
   | "missing-local-state"
+  | "transition-pending"
   | "matching-local-state";
 
 export interface AssignmentRouteResult {
@@ -112,6 +114,48 @@ export async function routeAiAssignment(
   }
 
   const currentPhase = assignmentState.phase;
+  const pending = pipelineState.getPendingTransition(issueId);
+  if (
+    pending?.phaseApplied === 1 &&
+    pending.destination === currentPhase &&
+    assignmentState.closed === false &&
+    assignmentState.assignedToAi &&
+    runtime.phaseGraph.getPhase(currentPhase)?.type === "automated"
+  ) {
+    pipelineState.finishPhaseTransition(
+      issueId,
+      currentPhase,
+      () => {
+        queue.cancelPendingForIssue(issueId, "Assignment handoff recovered", {
+          preserveFeedback: true,
+        });
+        if (queue.hasOpenTask(issueId, currentPhase) === false) {
+          queue.enqueue({
+            type: currentPhase,
+            issueId,
+            description,
+            metadata: { [ASSIGNMENT_CLAIM_REQUIRED_METADATA_KEY]: true },
+          });
+        }
+      },
+      pending.id,
+    );
+    audit.log({
+      component,
+      issueId,
+      message: `assignment-change recovered handoff to ${currentPhase}`,
+      metadata: {},
+    });
+    return { outcome: "enqueued", reason: "enqueued", phase: currentPhase, taskType: currentPhase };
+  }
+  if (pending !== null) {
+    return {
+      outcome: "skipped",
+      reason: "transition-pending",
+      phase: currentPhase,
+      taskType: null,
+    };
+  }
   if (assignmentState.closed) {
     audit.log({
       component,
@@ -208,7 +252,11 @@ export async function routeAiAssignment(
       phase: currentPhase,
       taskType: null,
     };
-  } else if (record.currentPhase === currentPhase) {
+  } else if (
+    record.currentPhase === currentPhase &&
+    (options.explicitReentry !== true ||
+      pipelineState.isPhaseExhausted(issueId, currentPhase) === false)
+  ) {
     audit.log({
       component,
       issueId,

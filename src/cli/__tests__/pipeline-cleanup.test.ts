@@ -9,6 +9,7 @@ import {
 } from "../../core/__tests__/fixtures/mock-adapters.js";
 import { RedQueenDatabase } from "../../core/database.js";
 import { PipelineStateStore } from "../../core/pipeline-state.js";
+import { SqliteTaskQueue } from "../../core/queue.js";
 import { SubIterationStore } from "../../core/sub-iteration.js";
 import { createSourceControlRegistry } from "../../integrations/source-control-registry.js";
 import { loadCliContext } from "../context.js";
@@ -53,6 +54,7 @@ beforeEach(() => {
       })),
     ),
     pipelineState: new PipelineStateStore(database.db, ["api", "web"]),
+    queue: new SqliteTaskQueue(database.db),
     subIteration: new SubIterationStore(database.db),
     audit: { log: auditLog, query: () => [], prune: () => 0 },
     cleanup: vi.fn(),
@@ -86,6 +88,37 @@ afterEach(() => {
 function output(): unknown {
   return JSON.parse(stdoutCapture.at(-1) ?? "null") as unknown;
 }
+
+describe("pipeline resume", () => {
+  it("resumes an exhausted automated phase through the CLI and closes its context", async () => {
+    ctx.pipelineState.updatePhase("ISSUE-1", "coding");
+    ctx.pipelineState.setExhaustedPhase("ISSUE-1", "coding");
+    ctx.issueTracker.getAiAssignmentState = () =>
+      Promise.resolve({ phase: "coding", assignedToAi: false, closed: false });
+    await cmdPipeline(["resume", "ISSUE-1"]);
+    expect(output()).toMatchObject({
+      ok: true,
+      task: { type: "coding", issueId: "ISSUE-1", metadata: { requiresAiAssignment: true } },
+    });
+    expect(ctx.queue.listByStatus("ready")).toHaveLength(1);
+    expect(ctx.cleanup).toHaveBeenCalledOnce();
+  });
+
+  it("refuses a human gate and closes the context on failure", async () => {
+    ctx.pipelineState.setExhaustedPhase("ISSUE-1", "coding");
+    ctx.issueTracker.getAiAssignmentState = () =>
+      Promise.resolve({ phase: "human-review", assignedToAi: false, closed: false });
+    await expect(cmdPipeline(["resume", "ISSUE-1"])).rejects.toThrow("human gates");
+    expect(ctx.queue.listByStatus("ready")).toHaveLength(0);
+    expect(ctx.cleanup).toHaveBeenCalledOnce();
+  });
+
+  it("requires one ticket id", async () => {
+    await expect(cmdPipeline(["resume"])).rejects.toThrow("exactly one");
+    await expect(cmdPipeline(["resume", "A", "B"])).rejects.toThrow("exactly one");
+    expect(loadCliContext).not.toHaveBeenCalled();
+  });
+});
 
 describe("pipeline cleanup across repositories", () => {
   it("cleans each repo at its own path, including descoped administrative orphans", async () => {

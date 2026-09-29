@@ -31,6 +31,42 @@ describe("looksLikeAuthFailure", () => {
 });
 
 describe("buildFailureNotice", () => {
+  it("distinguishes a confirmed gate move from an incomplete assignment", () => {
+    const body = buildFailureNotice({
+      phaseLabel: "Coding",
+      destinationLabel: "Blocked",
+      assignmentIncomplete: true,
+      attempts: 3,
+      result: failure({ error: "boom" }),
+    });
+    expect(body).toContain("reached **Blocked**");
+    expect(body).toContain("human assignment could not be completed");
+    expect(body).not.toContain("has been moved");
+  });
+  it("describes an unrouted stop with a concrete recovery command", () => {
+    const body = buildFailureNotice({
+      phaseLabel: "Coding",
+      destinationLabel: null,
+      issueId: "PROJ-1",
+      attempts: 3,
+      result: failure({ error: "boom" }),
+    });
+    expect(body).toContain("paused in the current phase");
+    expect(body).toContain("redqueen pipeline resume PROJ-1");
+    expect(body).not.toContain("has been moved");
+  });
+
+  it("does not claim a failed tracker handoff succeeded", () => {
+    const body = buildFailureNotice({
+      phaseLabel: "Coding",
+      destinationLabel: "Blocked",
+      transitionPending: true,
+      attempts: 3,
+      result: failure({ error: "boom" }),
+    });
+    expect(body).toContain("has not completed");
+    expect(body).not.toContain("has been moved");
+  });
   it("renders an auth-specific notice with the raw output", () => {
     const body = buildFailureNotice({
       phaseLabel: "Spec Writing",

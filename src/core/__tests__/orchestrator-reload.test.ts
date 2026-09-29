@@ -120,6 +120,20 @@ describe("Orchestrator.reload", () => {
     expect(result.applied).toContain("phases");
   });
 
+  it("rejects removing a pending destination before changing runtime configuration", () => {
+    const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
+    const orchestrator = buildOrchestrator(runtime, join(tempDir, "skills"));
+    const state = new PipelineStateStore(db);
+    state.create("PROJ-1", "coding");
+    state.beginPhaseTransition("PROJ-1", "coding", "blocked");
+    const before = runtime.config;
+    expect(() => orchestrator.reload({ ...runtime.config, phases: SINGLE_PHASE })).toThrow(
+      "PROJ-1 has a pending handoff",
+    );
+    expect(runtime.config).toBe(before);
+    expect(runtime.phaseGraph.getPhase("blocked")).toBeDefined();
+  });
+
   it("splits applied vs restartRequired based on what changed", () => {
     const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
     const orchestrator = buildOrchestrator(runtime, join(tempDir, "skills"));

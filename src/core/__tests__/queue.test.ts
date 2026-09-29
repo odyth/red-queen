@@ -247,6 +247,30 @@ describe("SqliteTaskQueue", () => {
   });
 
   describe("cancelPendingForIssue", () => {
+    it("preserves explicit and legacy feedback during handoffs but cancels it on completion", () => {
+      const feedback = queue.enqueue({
+        type: "code-feedback",
+        issueId: "PROJ-1",
+        metadata: { trigger: "pr-feedback" },
+      });
+      const legacyFeedback = queue.enqueue({
+        type: "spec-feedback",
+        issueId: "PROJ-1",
+        description: "PR feedback",
+      });
+      queue.markDeferred(legacyFeedback.id, ["<pending-transition>"]);
+      const stale = queue.enqueue({ type: "code-feedback", issueId: "PROJ-1" });
+      expect(
+        queue.cancelPendingForIssue("PROJ-1", "Phase advanced", { preserveFeedback: true }),
+      ).toBe(1);
+      expect(queue.getTask(feedback.id)?.status).toBe("ready");
+      expect(queue.getTask(legacyFeedback.id)?.status).toBe("deferred");
+      expect(queue.getTask(stale.id)?.status).toBe("cancelled");
+      expect(queue.cancelPendingForIssue("PROJ-1", "PR merged")).toBe(2);
+      expect(queue.getTask(feedback.id)?.status).toBe("cancelled");
+      expect(queue.getTask(legacyFeedback.id)?.status).toBe("cancelled");
+    });
+
     it("cancels ready and deferred tasks without touching active or unrelated work", () => {
       const ready = queue.enqueue({ type: "coding", issueId: "PROJ-1" });
       const deferred = queue.enqueue({ type: "testing", issueId: "PROJ-1" });

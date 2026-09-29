@@ -71,6 +71,7 @@ export {
   DEFAULT_REPO_NAME,
 } from "./core/pipeline-state.js";
 export type { BranchInfoUpdate, MergeTransitionResult } from "./core/pipeline-state.js";
+export { resumePipeline } from "./core/pipeline-recovery.js";
 
 // Defaults
 export { DEFAULT_PHASES } from "./core/defaults.js";

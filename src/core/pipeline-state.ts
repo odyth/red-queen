@@ -1,4 +1,5 @@
 import type BetterSqlite3 from "better-sqlite3";
+import { randomUUID } from "node:crypto";
 import type {
   OrchestratorState,
   OrchestratorStatus,
@@ -49,6 +50,25 @@ export interface BranchInfoUpdate {
   prBaseBranch?: string | null;
   worktreePath?: string | null;
 }
+
+export interface IPendingPhaseTransition {
+  id: string;
+  issueId: string;
+  sourcePhase: string;
+  destination: string;
+  phaseApplied: number;
+  phaseAttempts: number;
+  phaseRetryAt: number;
+  phaseNoticePosted: number;
+  assignmentAttempts: number;
+  assignmentRetryAt: number;
+}
+
+const TRANSITION_COLUMNS = `transition_id AS id, issue_id AS issueId,
+  source_phase AS sourcePhase, destination, phase_applied AS phaseApplied,
+  phase_attempts AS phaseAttempts, phase_retry_at AS phaseRetryAt,
+  phase_notice_posted AS phaseNoticePosted,
+  assignment_attempts AS assignmentAttempts, assignment_retry_at AS assignmentRetryAt`;
 
 export type MergeTransitionResult =
   | "processed"
@@ -313,9 +333,12 @@ export class PipelineStateStore {
     return true;
   }
 
-  updatePhase(issueId: string, phase: string): boolean {
+  updatePhase(issueId: string, phase: string | null): boolean {
     return this.db.transaction((): boolean => {
       const now = new Date().toISOString();
+      if (phase === "done") {
+        this.db.prepare("DELETE FROM pending_phase_transitions WHERE issue_id = ?").run(issueId);
+      }
       if (phase !== "done") {
         this.db
           .prepare(
@@ -330,9 +353,11 @@ export class PipelineStateStore {
       // outgoing phase for the next dispatched skill.
       const result = this.db
         .prepare(
-          "UPDATE pipeline_state SET prior_phase = current_phase, current_phase = ?, updated_at = ? WHERE issue_id = ?",
+          `UPDATE pipeline_state
+           SET exhausted_phase = CASE WHEN current_phase IS ? THEN exhausted_phase ELSE NULL END,
+               prior_phase = current_phase, current_phase = ?, updated_at = ? WHERE issue_id = ?`,
         )
-        .run(phase, now, issueId);
+        .run(phase, phase, now, issueId);
       if (result.changes > 0) {
         this.refreshMirror(issueId, now);
       }
@@ -340,8 +365,188 @@ export class PipelineStateStore {
     })();
   }
 
+  // Kept independently of task history, which is periodically purged. A new
+  // dispatch or phase transition clears the stop; passive reconciliation cannot.
+  setExhaustedPhase(issueId: string, phase: string | null): boolean {
+    const result = this.db
+      .prepare(
+        `UPDATE pipeline_state SET exhausted_phase = ?, updated_at = ?
+         WHERE issue_id = ? AND exhausted_phase IS NOT ?`,
+      )
+      .run(phase, new Date().toISOString(), issueId, phase);
+    return result.changes > 0;
+  }
+
+  listExhaustedPhases(): { issueId: string; phase: string }[] {
+    return this.db
+      .prepare(
+        "SELECT issue_id AS issueId, exhausted_phase AS phase FROM pipeline_state WHERE exhausted_phase IS NOT NULL",
+      )
+      .all() as { issueId: string; phase: string }[];
+  }
+
+  beginPhaseTransition(issueId: string, sourcePhase: string, destination: string): void {
+    this.db.transaction(() => {
+      this.setExhaustedPhase(issueId, sourcePhase);
+      this.db
+        .prepare(
+          `INSERT INTO pending_phase_transitions (issue_id, source_phase, destination, transition_id)
+           VALUES (?, ?, ?, ?) ON CONFLICT(issue_id) DO NOTHING`,
+        )
+        .run(issueId, sourcePhase, destination, randomUUID());
+    })();
+  }
+
+  getPendingTransition(issueId: string): IPendingPhaseTransition | null {
+    return (
+      (this.db
+        .prepare(`SELECT ${TRANSITION_COLUMNS} FROM pending_phase_transitions WHERE issue_id = ?`)
+        .get(issueId) as IPendingPhaseTransition | undefined) ?? null
+    );
+  }
+
+  listPendingTransitions(): IPendingPhaseTransition[] {
+    return this.db
+      .prepare(`SELECT ${TRANSITION_COLUMNS} FROM pending_phase_transitions ORDER BY issue_id`)
+      .all() as IPendingPhaseTransition[];
+  }
+
+  confirmPhaseTransition(pending: IPendingPhaseTransition, automated: boolean): boolean {
+    return this.db.transaction(() => {
+      if (this.getPendingTransition(pending.issueId)?.id !== pending.id) {
+        return false;
+      }
+      if (this.get(pending.issueId)?.currentPhase !== pending.destination) {
+        this.updatePhase(pending.issueId, pending.destination);
+      }
+      this.db
+        .prepare("UPDATE pending_phase_transitions SET phase_applied = 1 WHERE transition_id = ?")
+        .run(pending.id);
+      if (automated) {
+        this.setExhaustedPhase(pending.issueId, pending.destination);
+      }
+      return true;
+    })();
+  }
+
+  recordPhaseFailure(pending: IPendingPhaseTransition, retryAt: number): void {
+    this.db
+      .prepare(
+        `UPDATE pending_phase_transitions
+         SET phase_attempts = phase_attempts + 1, phase_retry_at = ?
+         WHERE transition_id = ? AND phase_applied = 0`,
+      )
+      .run(retryAt, pending.id);
+  }
+
+  markPhaseNoticePosted(pending: IPendingPhaseTransition): void {
+    this.db
+      .prepare(
+        "UPDATE pending_phase_transitions SET phase_notice_posted = 1 WHERE transition_id = ?",
+      )
+      .run(pending.id);
+  }
+
+  recordAssignmentFailure(pending: IPendingPhaseTransition, retryAt: number): void {
+    this.db
+      .prepare(
+        `UPDATE pending_phase_transitions
+        SET assignment_attempts = assignment_attempts + 1, assignment_retry_at = ?
+        WHERE transition_id = ?`,
+      )
+      .run(retryAt, pending.id);
+  }
+
+  finishPhaseTransition(
+    issueId: string,
+    phase: string | null,
+    enqueue: () => void,
+    expectedId?: string,
+  ): boolean {
+    return this.db.transaction(() => {
+      if (expectedId !== undefined && this.getPendingTransition(issueId)?.id !== expectedId) {
+        return false;
+      }
+      if (this.get(issueId)?.currentPhase !== phase) {
+        this.updatePhase(issueId, phase);
+      }
+      this.setExhaustedPhase(issueId, null);
+      this.db.prepare("DELETE FROM pending_phase_transitions WHERE issue_id = ?").run(issueId);
+      enqueue();
+      return true;
+    })();
+  }
+
+  // Claim and budget renewal share the queue's database transaction. A lost
+  // claim (or a failed counter reset) cannot consume an explicit restart.
+  claimPhaseTask(issueId: string, claim: () => boolean, leavingGate: boolean): boolean {
+    return this.db.transaction(() => {
+      if (this.getPendingTransition(issueId) !== null || claim() === false) {
+        return false;
+      }
+      const wasExhausted = this.setExhaustedPhase(issueId, null);
+      if (wasExhausted || leavingGate) {
+        this.resetIterations(issueId);
+      }
+      return true;
+    })();
+  }
+
+  // The queue callback uses the same database, so a failed enqueue cannot lose
+  // the stop or grant a second budget. Used by the administrative resume action.
+  resumePhase<T>(
+    issueId: string,
+    phase: string,
+    enqueue: () => T,
+    expectedTransitionId: string | null = null,
+  ): T {
+    return this.db.transaction(() => {
+      this.assertRecord(issueId);
+      const pending = this.getPendingTransition(issueId);
+      if ((pending?.id ?? null) !== expectedTransitionId) {
+        throw new Error("The pending handoff changed while resuming; retry from the current state");
+      }
+      if (pending !== null && (pending.phaseApplied === 0 || pending.destination !== phase)) {
+        throw new Error("A phase transition is still pending; repair the tracker write first");
+      }
+      if (this.isPhaseExhausted(issueId, phase) === false && pending === null) {
+        throw new Error(`Phase ${phase} is not exhausted`);
+      }
+      this.resetIterations(issueId);
+      this.setExhaustedPhase(issueId, null);
+      this.db.prepare("DELETE FROM pending_phase_transitions WHERE issue_id = ?").run(issueId);
+      return enqueue();
+    })();
+  }
+
+  incrementPhaseReworks(issueId: string, phase: string): number {
+    const row = this.db
+      .prepare(
+        `INSERT INTO phase_rework_counts (issue_id, phase, iterations) VALUES (?, ?, 1)
+         ON CONFLICT(issue_id, phase) DO UPDATE SET iterations = iterations + 1
+         RETURNING iterations`,
+      )
+      .get(issueId, phase) as { iterations: number };
+    return row.iterations;
+  }
+
+  resetPhaseReworks(issueId: string, phase: string): void {
+    this.db
+      .prepare("DELETE FROM phase_rework_counts WHERE issue_id = ? AND phase = ?")
+      .run(issueId, phase);
+  }
+
+  isPhaseExhausted(issueId: string, phase: string): boolean {
+    return (
+      this.db
+        .prepare("SELECT 1 FROM pipeline_state WHERE issue_id = ? AND exhausted_phase = ?")
+        .get(issueId, phase) !== undefined
+    );
+  }
+
   markDone(issueId: string): boolean {
     return this.db.transaction((): boolean => {
+      this.db.prepare("DELETE FROM pending_phase_transitions WHERE issue_id = ?").run(issueId);
       const state = this.db
         .prepare("SELECT current_phase FROM pipeline_state WHERE issue_id = ?")
         .get(issueId) as { current_phase: string | null } | undefined;
@@ -358,7 +563,7 @@ export class PipelineStateStore {
           .run(now, issueId);
         this.db
           .prepare(
-            `UPDATE pipeline_state SET prior_phase = current_phase, current_phase = 'done', updated_at = ?
+            `UPDATE pipeline_state SET prior_phase = current_phase, current_phase = 'done', exhausted_phase = NULL, updated_at = ?
              WHERE issue_id = ?`,
           )
           .run(now, issueId);
@@ -409,11 +614,13 @@ export class PipelineStateStore {
         this.refreshMirror(issueId, now);
         return "pending-others";
       }
+      this.db.prepare("DELETE FROM pending_phase_transitions WHERE issue_id = ?").run(issueId);
       this.db
         .prepare(
           `UPDATE pipeline_state
            SET prior_phase = CASE WHEN current_phase = 'done' THEN prior_phase ELSE current_phase END,
                current_phase = 'done',
+               exhausted_phase = NULL,
                updated_at = ?
            WHERE issue_id = ?`,
         )
@@ -438,11 +645,12 @@ export class PipelineStateStore {
       if (scope.scoped === 0 || scope.remaining > 0) {
         return false;
       }
+      this.db.prepare("DELETE FROM pending_phase_transitions WHERE issue_id = ?").run(issueId);
       const now = new Date().toISOString();
       const result = this.db
         .prepare(
           `UPDATE pipeline_state
-           SET prior_phase = current_phase, current_phase = 'done', updated_at = ?
+           SET prior_phase = current_phase, current_phase = 'done', exhausted_phase = NULL, updated_at = ?
            WHERE issue_id = ? AND (current_phase IS NULL OR current_phase <> 'done')`,
         )
         .run(now, issueId);
@@ -585,6 +793,7 @@ export class PipelineStateStore {
   }
 
   resetIterations(issueId: string): boolean {
+    this.db.prepare("DELETE FROM phase_rework_counts WHERE issue_id = ?").run(issueId);
     const now = new Date().toISOString();
     // open_question_count is also cleared: it's a per-cycle signal set by
     // each spec-writing run, and a stale value left over from a previous
@@ -682,6 +891,8 @@ export class PipelineStateStore {
 
   delete(issueId: string): boolean {
     return this.db.transaction((): boolean => {
+      this.db.prepare("DELETE FROM pending_phase_transitions WHERE issue_id = ?").run(issueId);
+      this.db.prepare("DELETE FROM phase_rework_counts WHERE issue_id = ?").run(issueId);
       this.db.prepare("DELETE FROM pipeline_repos WHERE issue_id = ?").run(issueId);
       const result = this.db.prepare("DELETE FROM pipeline_state WHERE issue_id = ?").run(issueId);
       return result.changes > 0;

@@ -61,6 +61,44 @@ describe("reconcile", () => {
     expect(result.skipped).toBe(1);
   });
 
+  it("does not recover exhausted entry phases through either discovery path", async () => {
+    const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
+    const issueTracker = new MockIssueTracker();
+    pipelineState.create("PROJ-1", "spec-writing");
+    pipelineState.setExhaustedPhase("PROJ-1", "spec-writing");
+    issueTracker.phases.set("PROJ-1", "spec-writing");
+    issueTracker.assignedToAiResults = [makeIssue("PROJ-1", "spec-writing")];
+    issueTracker.listByPhaseResults.set("spec-writing", [makeIssue("PROJ-1", "spec-writing")]);
+
+    expect(await reconcile({ issueTracker, queue, runtime, pipelineState, audit })).toEqual({
+      issuesFound: 1,
+      tasksCreated: 0,
+      skipped: 1,
+    });
+    // A stale/partial phase listing must not let assignment recovery bypass the stop.
+    issueTracker.listByPhaseResults.clear();
+    expect(await reconcile({ issueTracker, queue, runtime, pipelineState, audit })).toEqual({
+      issuesFound: 1,
+      tasksCreated: 0,
+      skipped: 1,
+    });
+    expect(queue.getOpenCount().ready).toBe(0);
+  });
+
+  it("allows a different phase after an exhausted failure", async () => {
+    const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
+    const issueTracker = new MockIssueTracker();
+    pipelineState.create("PROJ-1", "coding");
+    pipelineState.setExhaustedPhase("PROJ-1", "coding");
+    issueTracker.listByPhaseResults.set("spec-writing", [makeIssue("PROJ-1", "spec-writing")]);
+
+    expect(
+      (await reconcile({ issueTracker, queue, runtime, pipelineState, audit })).tasksCreated,
+    ).toBe(1);
+    expect(queue.hasOpenTask("PROJ-1", "spec-writing")).toBe(true);
+    expect(queue.dequeue()?.description).toBe("Reconciled — Spec Writing");
+  });
+
   it("recovers an unphased issue assigned to AI as a new ticket", async () => {
     const runtime = new RuntimeState(buildPhaseGraph(DEFAULT_PHASES), makeTestConfig());
     const issueTracker = new MockIssueTracker();

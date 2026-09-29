@@ -28,7 +28,10 @@ const DETAIL_MAX = 3000;
 
 export interface FailureNoticeInput {
   phaseLabel: string;
-  destinationLabel: string;
+  destinationLabel: string | null;
+  transitionPending?: boolean;
+  assignmentIncomplete?: boolean;
+  issueId?: string;
   attempts: number;
   result: WorkerResult;
 }
@@ -38,6 +41,18 @@ export interface FailureNoticeInput {
 // toAdf), so the heading and code fence survive the round trip.
 export function buildFailureNotice(input: FailureNoticeInput): string {
   const details = failureDetails(input.result);
+  const disposition =
+    input.destinationLabel === null
+      ? "Automatic work is paused in the current phase because no human failure route is configured."
+      : input.transitionPending === true
+        ? `Automatic work is paused while Red Queen retries the handoff to **${input.destinationLabel}**. The tracker phase or assignment update has not completed.`
+        : input.assignmentIncomplete === true
+          ? `This ticket reached **${input.destinationLabel}**, but the human assignment could not be completed. See the assignment failure notice for recovery instructions.`
+          : `This ticket has been moved to **${input.destinationLabel}** for a human to take a look.`;
+  const recovery =
+    input.destinationLabel === null && input.issueId !== undefined
+      ? `After fixing the problem, run \`redqueen pipeline resume ${input.issueId}\` from the project directory, or move the ticket through a human gate and back. Without webhooks, leave it at the gate for a reconciliation sweep.`
+      : "Resolve the failure, then move the ticket from its human gate to an automated phase to retry. Pending tracker writes are retried during reconciliation.";
 
   if (looksLikeAuthFailure(details)) {
     return [
@@ -47,7 +62,9 @@ export function buildFailureNotice(input: FailureNoticeInput): string {
       "",
       "Check the Claude credentials where Red Queen runs (API key / `claude` login / Bedrock access).",
       "",
-      `This ticket has been parked in **${input.destinationLabel}** in the meantime.`,
+      disposition,
+      "",
+      recovery,
       "",
       "Worker output:",
       codeBlock(details),
@@ -58,9 +75,9 @@ export function buildFailureNotice(input: FailureNoticeInput): string {
   return [
     `## ⚠️ ${input.phaseLabel} didn't complete`,
     "",
-    `Red Queen's **${input.phaseLabel}** worker failed${attemptsNote}, so this ticket has been moved to **${input.destinationLabel}** for a human to take a look.`,
+    `Red Queen's **${input.phaseLabel}** worker failed${attemptsNote}. ${disposition}`,
     "",
-    "This was routed here by the failure handler; it is not, by itself, a request for clarification from the reporter. If the error looks transient (e.g. a worker stall or LLM/network timeout), hand the ticket back to the AI to retry — otherwise it needs a human to resolve.",
+    recovery,
     "",
     "Worker output:",
     codeBlock(details),

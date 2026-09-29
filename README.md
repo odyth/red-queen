@@ -124,6 +124,51 @@ A few things worth knowing about how the loop behaves:
   routes back to `Coding` and pushes to the _same PR_. The coder reads
   the prior phase from its context and either addresses reviewer
   blockers or reproduces the test failure locally before pushing.
+- **Worker retry exhaustion** stops automatic retries. Default Coding escalates
+  to `Blocked`; if your config declares its own phases, add `escalateTo: blocked`
+  to its Coding entry to use that gate. A phase with no failure route stays
+  stopped across reconciliation and restarts, posts a failure notice, and hands
+  ownership back to a human. After resolving the failure, run
+  `redqueen pipeline resume <issueId>` from the project directory to enqueue one
+  fresh attempt budget. The ticket must be open and in an automated phase;
+  this command cannot bypass a human gate or an unconfirmed tracker phase write.
+  Moving a stopped ticket through a human gate and back also permits recovery
+  once a webhook or reconciliation observes it at the gate. Without webhooks,
+  leave it at the gate for a reconciliation sweep (300 seconds by default).
+  An unobserved round trip requires `pipeline resume` or explicit reassignment
+  to AI with a delivered assignment webhook. Phase-change webhooks verify moves
+  away from an exhausted phase; same-phase redeliveries never renew its budget.
+  Passive polling alone never renews its budget.
+- **Failed tracker handoffs** are persisted and retried during reconciliation,
+  without launching another worker. Phase writes and assignment writes recover
+  separately. Failed phase writes back off for five, ten, twenty, forty, then
+  sixty minutes between attempts, subject to the reconciliation interval, and
+  keep retrying at that cap. After three failures, a single ticket notice asks
+  for tracker repairs; failed notice delivery is retried with the next attempt.
+  The retry schedule and delivered-notice flag survive restarts.
+  Once the phase write is confirmed, a manual move away takes
+  precedence, including a return to the source phase. Assignment failures post
+  a ticket notice and get at most three attempts, with delays of five and ten
+  minutes between attempts (subject to the reconciliation interval). After that,
+  human gates remain available for manual review; automated phases stay paused
+  until explicit recovery. `pipeline resume` can repair an assignment-only hold,
+  and reassignment to AI through a delivered assignment webhook also recovers it.
+  Polling-only deployments must use `pipeline resume`. AI ownership is
+  checked again before recovered work starts. Resume saves its guarded task
+  before assigning AI; if assignment fails, assign the ticket to AI manually
+  and the saved task will recheck ownership before running. Queued or deferred
+  PR feedback for another phase is preserved and does not block resume; working
+  tasks and existing destination tasks still do. Hot reload refuses to remove
+  a phase while a handoff to it remains pending.
+- **Queued PR feedback** survives phase handoffs, including feedback received
+  while Testing finishes and the ticket moves to Human Review. Stale phase tasks
+  are still cancelled, and normal dispatch guards apply to the preserved feedback.
+- **Setup failures**, including missing binaries, unavailable skills, and prompt
+  file write errors, use bounded retries before a human handoff or durable stop.
+- **Testing rework** allows three returns to Coding before escalating to Human
+  Review. Rework counts are stored per failing phase and survive restarts and
+  successful intermediate phases; that phase succeeding or an explicit human
+  restart resets its count.
 - **Code Review and Testing both comment on the PR every run.** Review
   verdicts and an append-only test history land on the PR so you can
   see what each iteration produced without digging through logs.

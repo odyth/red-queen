@@ -208,6 +208,19 @@ project:
     expect(claudeArgs).not.toContain("--model");
   });
 
+  it("skips Codex's Git repository check only in workspace mode", () => {
+    const options = { ...base, agent: "codex" as const };
+    expect(buildWorkerArgs({ ...options, workspaceMode: true })).toContain("--skip-git-repo-check");
+    expect(buildWorkerArgs({ ...options, workspaceMode: false })).not.toContain(
+      "--skip-git-repo-check",
+    );
+    expect(buildWorkerArgs(options)).not.toContain("--skip-git-repo-check");
+  });
+
+  it("preserves Claude arguments in workspace mode", () => {
+    expect(buildWorkerArgs({ ...base, workspaceMode: true })).toEqual(buildWorkerArgs(base));
+  });
+
   it.each(["max", "ultra", "future-mode"])("passes %s through unchanged for codex", (effort) => {
     const args = buildWorkerArgs({ ...base, agent: "codex", effort });
     expect(args).toContain(`model_reasoning_effort=${effort}`);

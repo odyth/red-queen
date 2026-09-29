@@ -1,5 +1,5 @@
 import { createSourceControlRegistry } from "../../integrations/source-control-registry.js";
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import type BetterSqlite3 from "better-sqlite3";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -12,6 +12,7 @@ import { DualWriteAuditLogger } from "../../core/audit.js";
 import { buildPhaseGraph } from "../../core/config.js";
 import { DEFAULT_PHASES } from "../../core/defaults.js";
 import { reconcile } from "../../core/reconciler.js";
+import { retryPhaseTransition } from "../../core/phase-transition.js";
 import { RuntimeState } from "../../core/runtime-state.js";
 import { DashboardServer } from "../../dashboard/server.js";
 import { WebhookServer } from "../server.js";
@@ -136,6 +137,226 @@ describe("WebhookServer", () => {
     await postWebhook("/webhook/issue-tracker", "{}");
     await new Promise((r) => setTimeout(r, 30));
     expect(queue.hasOpenTask("PROJ-1", "spec-review")).toBe(false);
+  });
+
+  it("honors a human move back to the source while gate assignment is pending", async () => {
+    pipelineState.create("PROJ-1", "coding");
+    issueTracker.phases.set("PROJ-1", "coding");
+    pipelineState.beginPhaseTransition("PROJ-1", "coding", "blocked");
+    issueTracker.assignToHumanFailures.add("PROJ-1");
+    await retryPhaseTransition({ issueTracker, pipelineState, queue, runtime, audit }, "PROJ-1");
+    issueTracker.phases.set("PROJ-1", "coding");
+    const event: PipelineEvent = {
+      source: "webhook",
+      type: "phase-change",
+      issueId: "PROJ-1",
+      timestamp: new Date().toISOString(),
+      payload: { phase: "coding", delegator: "human-2" },
+    };
+    issueTracker.parseResult = event;
+    await postWebhook("/webhook/issue-tracker", "{}");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(pipelineState.getPendingTransition("PROJ-1")).toBeNull();
+    expect(pipelineState.get("PROJ-1")?.delegatorAccountId).toBe("human-2");
+    expect(queue.listByStatus("ready")).toHaveLength(1);
+    await reconcile({ issueTracker, pipelineState, queue, runtime, audit });
+    expect(issueTracker.phases.get("PROJ-1")).toBe("coding");
+  });
+
+  it.each(["coding", "spec-writing"])(
+    "keeps exhausted %s stopped after same-phase redeliveries",
+    async (phase) => {
+      pipelineState.create("PROJ-1", phase);
+      pipelineState.setExhaustedPhase("PROJ-1", phase);
+      pipelineState.incrementReviewIterations("PROJ-1");
+      issueTracker.phases.set("PROJ-1", phase);
+      issueTracker.assignments.set("PROJ-1", "human");
+      issueTracker.parseResult = {
+        source: "webhook",
+        type: "phase-change",
+        issueId: "PROJ-1",
+        timestamp: new Date().toISOString(),
+        payload: { phase },
+      };
+
+      for (let delivery = 0; delivery < 2; delivery++) {
+        await postWebhook("/webhook/issue-tracker", "{}");
+        await new Promise((resolve) => setTimeout(resolve, 30));
+      }
+
+      expect(pipelineState.isPhaseExhausted("PROJ-1", phase)).toBe(true);
+      expect(pipelineState.get("PROJ-1")?.reviewIterations).toBe(1);
+      expect(queue.getOpenCount()).toEqual({ ready: 0, working: 0, deferred: 0 });
+      expect(issueTracker.assignments.get("PROJ-1")).toBe("human");
+    },
+  );
+
+  it.each(["blocked", "code-review"])(
+    "ignores a delayed %s webhook while the live ticket remains exhausted in Coding",
+    async (phase) => {
+      pipelineState.create("PROJ-1", "coding");
+      pipelineState.setExhaustedPhase("PROJ-1", "coding");
+      issueTracker.phases.set("PROJ-1", "coding");
+      issueTracker.parseResult = {
+        source: "webhook",
+        type: "phase-change",
+        issueId: "PROJ-1",
+        timestamp: new Date().toISOString(),
+        payload: { phase },
+      };
+
+      await postWebhook("/webhook/issue-tracker", "{}");
+      await new Promise((resolve) => setTimeout(resolve, 30));
+
+      expect(pipelineState.get("PROJ-1")?.currentPhase).toBe("coding");
+      expect(pipelineState.isPhaseExhausted("PROJ-1", "coding")).toBe(true);
+      expect(queue.listByStatus("ready")).toHaveLength(0);
+    },
+  );
+
+  it("observes an exhausted ticket at a gate before allowing its return to Coding", async () => {
+    pipelineState.create("PROJ-1", "coding");
+    pipelineState.setExhaustedPhase("PROJ-1", "coding");
+    pipelineState.incrementReviewIterations("PROJ-1");
+    issueTracker.phases.set("PROJ-1", "blocked");
+    issueTracker.parseResult = {
+      source: "webhook",
+      type: "phase-change",
+      issueId: "PROJ-1",
+      timestamp: new Date().toISOString(),
+      payload: { phase: "blocked" },
+    };
+    await postWebhook("/webhook/issue-tracker", "{}");
+    await expect.poll(() => pipelineState.get("PROJ-1")?.currentPhase).toBe("blocked");
+    expect(queue.listByStatus("ready")).toHaveLength(0);
+    expect(pipelineState.isPhaseExhausted("PROJ-1", "coding")).toBe(false);
+    expect(pipelineState.get("PROJ-1")?.reviewIterations).toBe(1);
+
+    issueTracker.phases.set("PROJ-1", "coding");
+    issueTracker.parseResult.payload = { phase: "coding" };
+    await postWebhook("/webhook/issue-tracker", "{}");
+
+    await expect.poll(() => queue.hasOpenTask("PROJ-1", "coding")).toBe(true);
+    expect(queue.listByStatus("ready")).toHaveLength(1);
+    expect(pipelineState.get("PROJ-1")?.currentPhase).toBe("blocked");
+  });
+
+  it("allows a verified move from an exhausted phase to another automated phase", async () => {
+    pipelineState.create("PROJ-1", "coding");
+    pipelineState.setExhaustedPhase("PROJ-1", "coding");
+    issueTracker.phases.set("PROJ-1", "code-review");
+    issueTracker.parseResult = {
+      source: "webhook",
+      type: "phase-change",
+      issueId: "PROJ-1",
+      timestamp: new Date().toISOString(),
+      payload: { phase: "code-review" },
+    };
+
+    await postWebhook("/webhook/issue-tracker", "{}");
+
+    await expect.poll(() => queue.hasOpenTask("PROJ-1", "code-review")).toBe(true);
+    expect(pipelineState.isPhaseExhausted("PROJ-1", "coding")).toBe(true);
+  });
+
+  it("leaves exhaustion intact when live phase verification fails", async () => {
+    pipelineState.create("PROJ-1", "coding");
+    pipelineState.setExhaustedPhase("PROJ-1", "coding");
+    issueTracker.getPhaseThrowsFor.add("PROJ-1");
+    issueTracker.parseResult = {
+      source: "webhook",
+      type: "phase-change",
+      issueId: "PROJ-1",
+      timestamp: new Date().toISOString(),
+      payload: { phase: "code-review" },
+    };
+
+    await postWebhook("/webhook/issue-tracker", "{}");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(pipelineState.isPhaseExhausted("PROJ-1", "coding")).toBe(true);
+    expect(queue.listByStatus("ready")).toHaveLength(0);
+  });
+
+  it.each(["resume", "handoff"])(
+    "does not overwrite a concurrent %s while verifying a stopped ticket's gate arrival",
+    async (recovery) => {
+      pipelineState.create("PROJ-1", "coding");
+      pipelineState.setExhaustedPhase("PROJ-1", "coding");
+      vi.spyOn(issueTracker, "getPhase").mockImplementation(() => {
+        if (recovery === "resume") {
+          pipelineState.resumePhase("PROJ-1", "coding", () =>
+            queue.enqueue({
+              type: "coding",
+              issueId: "PROJ-1",
+              metadata: { requiresAiAssignment: true },
+            }),
+          );
+        } else {
+          pipelineState.beginPhaseTransition("PROJ-1", "coding", "code-review");
+        }
+        return Promise.resolve("blocked");
+      });
+      issueTracker.parseResult = {
+        source: "webhook",
+        type: "phase-change",
+        issueId: "PROJ-1",
+        timestamp: new Date().toISOString(),
+        payload: { phase: "blocked" },
+      };
+
+      await postWebhook("/webhook/issue-tracker", "{}");
+      await new Promise((resolve) => setTimeout(resolve, 30));
+
+      expect(pipelineState.get("PROJ-1")?.currentPhase).toBe("coding");
+      if (recovery === "resume") {
+        expect(queue.hasOpenTask("PROJ-1", "coding")).toBe(true);
+      } else {
+        expect(pipelineState.getPendingTransition("PROJ-1")?.destination).toBe("code-review");
+      }
+    },
+  );
+
+  it("ignores a delayed source-phase event when the tracker is still at the destination", async () => {
+    pipelineState.create("PROJ-1", "coding");
+    issueTracker.phases.set("PROJ-1", "blocked");
+    pipelineState.beginPhaseTransition("PROJ-1", "coding", "blocked");
+    const event: PipelineEvent = {
+      source: "webhook",
+      type: "phase-change",
+      issueId: "PROJ-1",
+      timestamp: new Date().toISOString(),
+      payload: { phase: "coding" },
+    };
+    issueTracker.parseResult = event;
+    await postWebhook("/webhook/issue-tracker", "{}");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(pipelineState.getPendingTransition("PROJ-1")).not.toBeNull();
+    expect(queue.listByStatus("ready")).toHaveLength(0);
+  });
+
+  it("keeps an unapplied escalation stopped when duplicate source-phase webhooks arrive", async () => {
+    pipelineState.create("PROJ-1", "coding");
+    issueTracker.phases.set("PROJ-1", "coding");
+    pipelineState.beginPhaseTransition("PROJ-1", "coding", "blocked");
+    issueTracker.setPhaseFailures.add("blocked");
+    await retryPhaseTransition({ issueTracker, pipelineState, queue, runtime, audit }, "PROJ-1");
+    const pending = pipelineState.getPendingTransition("PROJ-1");
+    expect(pending?.phaseApplied).toBe(0);
+    issueTracker.parseResult = {
+      source: "webhook",
+      type: "phase-change",
+      issueId: "PROJ-1",
+      timestamp: new Date().toISOString(),
+      payload: { phase: "coding" },
+    };
+    for (let delivery = 0; delivery < 2; delivery++) {
+      await postWebhook("/webhook/issue-tracker", "{}");
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    }
+    expect(pipelineState.getPendingTransition("PROJ-1")).toEqual(pending);
+    expect(pipelineState.isPhaseExhausted("PROJ-1", "coding")).toBe(true);
+    expect(queue.getOpenCount()).toEqual({ ready: 0, working: 0, deferred: 0 });
   });
 
   it("eagerly transitions to code-feedback and reassigns to AI when feedback lands at a human gate", async () => {

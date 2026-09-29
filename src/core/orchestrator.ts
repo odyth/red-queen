@@ -15,6 +15,8 @@ import { computeCost } from "./cost.js";
 import { errorMessage } from "./errors.js";
 import { buildFailureNotice } from "./failure-notice.js";
 import { Poller } from "./poller.js";
+import { retryPhaseTransition } from "./phase-transition.js";
+import type { PhaseTransitionOutcome } from "./phase-transition.js";
 import type { TaskQueue } from "./queue.js";
 import { reconcile } from "./reconciler.js";
 import { autoTransitionRework } from "./rework-transition.js";
@@ -269,6 +271,13 @@ export class RedQueen {
   reload(newConfig: RedQueenConfig): ReloadResult {
     // Build the new graph first so a bad config throws before any state mutates.
     const newGraph = buildPhaseGraph(newConfig.phases);
+    for (const pending of this.deps.pipelineState.listPendingTransitions()) {
+      if (newGraph.getPhase(pending.destination) === undefined) {
+        throw new Error(
+          `Cannot remove phase ${pending.destination}: ${pending.issueId} has a pending handoff`,
+        );
+      }
+    }
     const oldConfig = this.deps.runtime.config;
     const configRoot =
       this.deps.projectRoot ??
@@ -407,31 +416,21 @@ export class RedQueen {
       return;
     }
 
+    if (this.deps.pipelineState.getPendingTransition(task.issueId) !== null) {
+      this.deps.queue.markDeferred(task.id, ["<pending-transition>"]);
+      return;
+    }
+
     const assignmentClaim = await this.revalidateAssignmentClaim(task);
     if (assignmentClaim.action === "stop") {
       return;
     }
 
-    // If pipeline_state's last phase was a human-gate, we're leaving it now.
-    // Reset iteration counters so reopens/reworks start fresh. Lives at the
-    // top of processTask so it fires once per gate-leave regardless of source
-    // (webhook phase-change / pr-feedback / assignment-change / new-ticket,
-    // poller, reconciler) — none of those paths mutate current_phase before
-    // enqueueing, so reading the record here still sees the gate.
+    // Capture gate departure before pre-dispatch rework can update the phase,
+    // but renew the budget only after this task successfully claims work.
     const gateLeavePhase = this.deps.pipelineState.get(task.issueId)?.currentPhase ?? null;
-    if (gateLeavePhase !== null && this.deps.runtime.phaseGraph.isHumanGate(gateLeavePhase)) {
-      this.deps.pipelineState.resetIterations(task.issueId);
-      this.deps.audit.log({
-        component: "orchestrator",
-        issueId: task.issueId,
-        message: `Leaving human gate ${gateLeavePhase} — reset iteration counters`,
-        metadata: {
-          taskId: task.id,
-          fromGate: gateLeavePhase,
-          toPhase: task.type,
-        },
-      });
-    }
+    const leavingGate =
+      gateLeavePhase !== null && this.deps.runtime.phaseGraph.isHumanGate(gateLeavePhase);
 
     if (task.type === "new-ticket") {
       await this.processNewTicketTask(task, assignmentClaim.state);
@@ -464,15 +463,15 @@ export class RedQueen {
       return;
     }
 
-    if (phase.skill === undefined) {
-      this.deps.queue.markWorking(task.id);
-      this.deps.queue.markFailed(task.id, `Phase ${phaseName} has no skill`);
-      return;
-    }
-
     const validation = await this.preDispatchValidation(task, phaseName, assignmentClaim.state);
     if (validation === "stale") {
       return;
+    }
+
+    if (this.deps.pipelineState.get(task.issueId) === null) {
+      const delegator =
+        typeof task.metadata.delegator === "string" ? task.metadata.delegator : null;
+      this.deps.pipelineState.create(task.issueId, phase.name, delegator);
     }
 
     // Staleness wins over deferral: a task for a phase the ticket already
@@ -483,19 +482,32 @@ export class RedQueen {
     }
 
     if (
-      phase.requiresSpec === true &&
-      (await this.guardRequiresSpec(task, phase)) === "kicked-back"
+      this.deps.pipelineState.claimPhaseTask(
+        task.issueId,
+        () => this.deps.queue.markWorking(task.id),
+        leavingGate,
+      ) === false
     ) {
-      return;
-    }
-
-    if (this.deps.queue.markWorking(task.id) === false) {
       this.deps.audit.log({
         component: "orchestrator",
         issueId: task.issueId,
         message: `Skipping ${phase.name} task because it is no longer ready`,
         metadata: { taskId: task.id },
       });
+      return;
+    }
+    if (leavingGate) {
+      this.deps.audit.log({
+        component: "orchestrator",
+        issueId: task.issueId,
+        message: `Leaving human gate ${gateLeavePhase} — reset iteration counters`,
+        metadata: { taskId: task.id, fromGate: gateLeavePhase, toPhase: task.type },
+      });
+    }
+    if (
+      phase.requiresSpec === true &&
+      (await this.guardRequiresSpec(task, phase)) === "kicked-back"
+    ) {
       return;
     }
     await this.dispatchWorkerForTask(task, phase, stackGate.stack);
@@ -1137,13 +1149,12 @@ export class RedQueen {
     }
 
     const target = this.resolveSpecEntryPhase();
-    this.deps.queue.markWorking(task.id);
     if (target === null) {
-      this.deps.queue.markFailed(
-        task.id,
+      await this.handleSetupFailure(
+        task,
+        phase,
         `${phase.name} requires a spec but none exists and no spec-producing entry phase is configured`,
       );
-      this.deps.orchestratorState.incrementErrors();
       this.deps.audit.log({
         component: "orchestrator",
         issueId,
@@ -1190,16 +1201,13 @@ export class RedQueen {
     const settings = resolveAgentSettings(this.deps.runtime.config.pipeline, phase);
     const bin = resolveAgentBin(settings.agent, this.deps.runtime.config.pipeline);
     if (bin === null) {
-      this.deps.queue.markWorking(task.id);
-      this.deps.queue.markFailed(task.id, `${settings.agent} binary not found`);
-      this.deps.orchestratorState.incrementErrors();
+      await this.handleSetupFailure(task, phase, `${settings.agent} binary not found`);
       return;
     }
 
     const skillName = phase.skill;
     if (skillName === undefined) {
-      this.deps.queue.markWorking(task.id);
-      this.deps.queue.markFailed(task.id, `Phase ${phase.name} has no skill`);
+      await this.handleSetupFailure(task, phase, `Phase ${phase.name} has no skill`);
       return;
     }
 
@@ -1215,8 +1223,7 @@ export class RedQueen {
       this.deps.runtime.config.project.workspaceMode,
     );
     if (skillPath === null) {
-      this.deps.queue.markWorking(task.id);
-      this.deps.queue.markFailed(task.id, `Skill not found: ${skillName}`);
+      await this.handleSetupFailure(task, phase, `Skill not found: ${skillName}`);
       this.deps.audit.log({
         component: "orchestrator",
         issueId,
@@ -1238,8 +1245,7 @@ export class RedQueen {
     try {
       skillMarkdown = readFileSync(skillPath, "utf8");
     } catch (err) {
-      this.deps.queue.markWorking(task.id);
-      this.deps.queue.markFailed(task.id, `Failed to read skill: ${errorMessage(err)}`);
+      await this.handleSetupFailure(task, phase, `Failed to read skill: ${errorMessage(err)}`);
       return;
     }
 
@@ -1280,8 +1286,7 @@ export class RedQueen {
     const promptBody = renderSkillPrompt(context, skillMarkdown);
 
     if (this.tempDir === null) {
-      this.deps.queue.markWorking(task.id);
-      this.deps.queue.markFailed(task.id, "Orchestrator temp dir not initialized");
+      await this.handleSetupFailure(task, phase, "Orchestrator temp dir not initialized");
       return;
     }
     const tempPath = join(this.tempDir, `${task.id}.md`);
@@ -1291,9 +1296,9 @@ export class RedQueen {
       mkdirSync(this.tempDir, { recursive: true });
       writeFileSync(tempPath, promptBody, "utf8");
     } catch (err) {
-      this.deps.queue.markWorking(task.id);
-      this.deps.queue.markFailed(
-        task.id,
+      await this.handleSetupFailure(
+        task,
+        phase,
         `Failed to write skill prompt file: ${errorMessage(err)}`,
       );
       return;
@@ -1331,6 +1336,7 @@ export class RedQueen {
         agent: settings.agent,
         prompt,
         cwd: this.deps.runtime.config.project.directory,
+        workspaceMode: this.deps.runtime.config.project.workspaceMode,
         timeoutMs: this.deps.runtime.config.pipeline.workerTimeout * 1000,
         stallThresholdMs: this.deps.runtime.config.pipeline.stallThresholdMs,
         model: settings.model,
@@ -1352,6 +1358,8 @@ export class RedQueen {
           });
         },
       });
+    } catch (err) {
+      result = failedWorkerResult(errorMessage(err));
     } finally {
       stopPhaseWatch();
       this.currentWorkerPid = null;
@@ -1582,7 +1590,7 @@ export class RedQueen {
           task,
           phase,
           { ...result, success: false, error: `${phase.name} produced an empty spec` },
-          { skipRetry: selfAdvancedToNext },
+          { skipRetry: selfAdvancedToNext, sourcePhase: postPhase ?? phase.name },
         );
         return;
       }
@@ -1605,6 +1613,7 @@ export class RedQueen {
     // a downstream testing failure should re-enter the loop with a fresh
     // budget, not the count accumulated from this round. Leave
     // feedback_iterations alone: it tracks the orthogonal spec-rework loop.
+    this.deps.pipelineState.resetPhaseReworks(issueId, phase.name);
     if (phase.resetReviewIterationsOnPass === true) {
       this.deps.pipelineState.resetReviewIterations(issueId);
     }
@@ -1692,7 +1701,7 @@ export class RedQueen {
       return;
     }
 
-    let nextPhase = this.deps.runtime.phaseGraph.getPhase(nextPhaseName);
+    const nextPhase = this.deps.runtime.phaseGraph.getPhase(nextPhaseName);
     if (nextPhase === undefined) {
       this.deps.audit.log({
         component: "orchestrator",
@@ -1749,42 +1758,10 @@ export class RedQueen {
           return;
         }
         nextPhaseName = skipTarget;
-        nextPhase = resolved;
       }
     }
 
-    try {
-      await this.deps.issueTracker.setPhase(issueId, nextPhaseName);
-      if (nextPhase.type === "human-gate") {
-        const record = this.deps.pipelineState.get(issueId);
-        await this.deps.issueTracker.assignToHuman(issueId, record?.delegatorAccountId ?? null);
-      } else {
-        await this.deps.issueTracker.assignToAi(issueId);
-      }
-    } catch (err) {
-      this.deps.audit.log({
-        component: "orchestrator",
-        issueId,
-        message: `Failed to advance to ${nextPhaseName}: ${errorMessage(err)}`,
-        metadata: { taskId: task.id },
-      });
-    }
-
-    this.deps.pipelineState.updatePhase(issueId, nextPhaseName);
-
-    if (nextPhase.type === "automated") {
-      if (this.deps.queue.hasOpenTask(issueId, nextPhaseName) === false) {
-        this.deps.queue.enqueue({
-          type: nextPhaseName,
-          issueId,
-          description: `Auto-created after ${phase.name} completed`,
-        });
-      }
-    } else {
-      // Arrived at a human gate — a blocker may just have become satisfied.
-      // Blind wake: the dequeue-time stack gate re-parks anything still blocked.
-      this.deps.queue.releaseDeferred();
-    }
+    await this.transitionTo(issueId, nextPhaseName, task);
   }
 
   // Cost tracking is observability — failures here must never gate phase
@@ -1844,11 +1821,19 @@ export class RedQueen {
     }
   }
 
+  private async handleSetupFailure(
+    task: Task,
+    phase: PhaseDefinition,
+    error: string,
+  ): Promise<void> {
+    await this.handleFailure(task, phase, failedWorkerResult(error), { setupFailure: true });
+  }
+
   private async handleFailure(
     task: Task,
     phase: PhaseDefinition,
     result: WorkerResult,
-    opts: { skipRetry?: boolean } = {},
+    opts: { skipRetry?: boolean; setupFailure?: boolean; sourcePhase?: string } = {},
   ): Promise<void> {
     const issueId = task.issueId;
     if (issueId === null) {
@@ -1869,7 +1854,8 @@ export class RedQueen {
     const priorRetries = typeof metadata.retries === "number" ? metadata.retries : 0;
     const nextRetries = priorRetries + 1;
 
-    const retriesSkipped = phase.skipRetryOnFailure === true || opts.skipRetry === true;
+    const retriesSkipped =
+      opts.setupFailure !== true && (phase.skipRetryOnFailure === true || opts.skipRetry === true);
     if (retriesSkipped === false && nextRetries <= this.deps.runtime.config.pipeline.maxRetries) {
       this.deps.queue.enqueue({
         type: task.type,
@@ -1886,8 +1872,18 @@ export class RedQueen {
       return;
     }
 
-    const onFail = phase.onFail;
-    const escalateTo = phase.escalateTo;
+    // Setup errors cannot be repaired by cycling through another AI skill.
+    // Retry them within the same budget, then use a human route or stop.
+    const onFail =
+      opts.setupFailure === true &&
+      this.deps.runtime.phaseGraph.isHumanGate(phase.onFail ?? "") === false
+        ? undefined
+        : phase.onFail;
+    const escalateTo =
+      opts.setupFailure === true &&
+      this.deps.runtime.phaseGraph.isHumanGate(phase.escalateTo ?? "") === false
+        ? undefined
+        : phase.escalateTo;
 
     if (onFail !== undefined && onFail !== "done") {
       // reviewIterations measures automated-retry pressure within a single
@@ -1900,7 +1896,8 @@ export class RedQueen {
       const onFailPhase = this.deps.runtime.phaseGraph.getPhase(onFail);
       const onFailIsAutomated = onFailPhase?.type === "automated";
       if (onFailIsAutomated) {
-        const iter = this.deps.pipelineState.incrementReviewIterations(issueId);
+        this.deps.pipelineState.incrementReviewIterations(issueId);
+        const iter = this.deps.pipelineState.incrementPhaseReworks(issueId, phase.name);
         const maxIter = phase.maxIterations;
         if (
           maxIter !== undefined &&
@@ -1908,33 +1905,55 @@ export class RedQueen {
           escalateTo !== undefined &&
           escalateTo !== "done"
         ) {
-          await this.failOver(issueId, phase, escalateTo, result, nextRetries, task);
+          await this.failOver(
+            issueId,
+            phase,
+            escalateTo,
+            result,
+            nextRetries,
+            task,
+            opts.sourcePhase,
+          );
           return;
         }
       }
-      await this.failOver(issueId, phase, onFail, result, nextRetries, task);
+      await this.failOver(issueId, phase, onFail, result, nextRetries, task, opts.sourcePhase);
       return;
     }
 
     if (escalateTo !== undefined && escalateTo !== "done") {
-      await this.failOver(issueId, phase, escalateTo, result, nextRetries, task);
+      await this.failOver(issueId, phase, escalateTo, result, nextRetries, task, opts.sourcePhase);
       return;
     }
 
+    const newlyExhausted = this.deps.pipelineState.setExhaustedPhase(issueId, phase.name);
     this.deps.audit.log({
       component: "orchestrator",
       issueId,
-      message: `${phase.name} gave up — no onFail or escalation configured`,
+      message: `${phase.name} gave up — automatic work paused; resume with redqueen pipeline resume ${issueId}`,
       metadata: { taskId: task.id },
     });
+    if (newlyExhausted) {
+      await this.postFailureNotice(issueId, phase, null, result, nextRetries, task);
+      try {
+        await this.deps.issueTracker.assignToHuman(
+          issueId,
+          this.deps.pipelineState.get(issueId)?.delegatorAccountId ?? null,
+        );
+      } catch (err) {
+        this.deps.audit.log({
+          component: "orchestrator",
+          issueId,
+          message: `Failed to hand exhausted ticket to human: ${errorMessage(err)}`,
+          metadata: {},
+        });
+      }
+    }
   }
 
-  // Route a failed task to its next phase, first posting a human-readable notice
-  // when that next phase is a human gate. We only comment on gate landings: a
-  // failure that bounces back to an automated phase (e.g. code-review → coding)
-  // is a normal feedback loop, and the reconciler re-enqueues automated phases
-  // every poll — commenting there would spam the ticket on a stuck loop. A
-  // human gate stops the pipeline, so the notice lands exactly once.
+  // Persist the handoff before external writes, then post one notice for a
+  // human destination. Reconciliation retries the handoff without replaying
+  // the worker or its comment. Automated rework does not post a notice.
   private async failOver(
     issueId: string,
     fromPhase: PhaseDefinition,
@@ -1942,11 +1961,20 @@ export class RedQueen {
     result: WorkerResult,
     attempts: number,
     task: Task,
+    sourcePhase = fromPhase.name,
   ): Promise<void> {
-    if (this.deps.runtime.phaseGraph.isHumanGate(destination)) {
-      await this.postFailureNotice(issueId, fromPhase, destination, result, attempts, task);
+    const outcome = await this.transitionTo(issueId, destination, task, sourcePhase);
+    if (outcome !== "cancelled" && this.deps.runtime.phaseGraph.isHumanGate(destination)) {
+      await this.postFailureNotice(
+        issueId,
+        fromPhase,
+        destination,
+        result,
+        attempts,
+        task,
+        outcome,
+      );
     }
-    await this.transitionTo(issueId, destination, task);
   }
 
   // Best-effort failure comment so a human looking at the ticket (not the logs)
@@ -1957,16 +1985,22 @@ export class RedQueen {
   private async postFailureNotice(
     issueId: string,
     fromPhase: PhaseDefinition,
-    destination: string,
+    destination: string | null,
     result: WorkerResult,
     attempts: number,
     task: Task,
+    outcome?: PhaseTransitionOutcome,
   ): Promise<void> {
     const destinationLabel =
-      this.deps.runtime.phaseGraph.getPhase(destination)?.label ?? destination;
+      destination === null
+        ? null
+        : (this.deps.runtime.phaseGraph.getPhase(destination)?.label ?? destination);
     const body = buildFailureNotice({
       phaseLabel: fromPhase.label,
       destinationLabel,
+      issueId,
+      transitionPending: outcome === "phase-pending",
+      assignmentIncomplete: outcome === "assignment-pending" || outcome === "assignment-stopped",
       attempts,
       result,
     });
@@ -1982,7 +2016,12 @@ export class RedQueen {
     }
   }
 
-  private async transitionTo(issueId: string, phaseName: string, task: Task): Promise<void> {
+  private async transitionTo(
+    issueId: string,
+    phaseName: string,
+    task: Task,
+    sourcePhase = task.type,
+  ): Promise<PhaseTransitionOutcome> {
     const nextPhase = this.deps.runtime.phaseGraph.getPhase(phaseName);
     if (nextPhase === undefined) {
       this.deps.audit.log({
@@ -1991,40 +2030,13 @@ export class RedQueen {
         message: `Cannot transition to unknown phase ${phaseName}`,
         metadata: { taskId: task.id },
       });
-      return;
+      return "cancelled";
     }
-    try {
-      await this.deps.issueTracker.setPhase(issueId, phaseName);
-      if (nextPhase.type === "human-gate") {
-        const record = this.deps.pipelineState.get(issueId);
-        await this.deps.issueTracker.assignToHuman(issueId, record?.delegatorAccountId ?? null);
-      } else {
-        await this.deps.issueTracker.assignToAi(issueId);
-      }
-    } catch (err) {
-      this.deps.audit.log({
-        component: "orchestrator",
-        issueId,
-        message: `Transition to ${phaseName} failed: ${errorMessage(err)}`,
-        metadata: { taskId: task.id },
-      });
-    }
-    this.deps.pipelineState.updatePhase(issueId, phaseName);
-    this.deps.audit.log({
-      component: "orchestrator",
-      issueId,
-      message: `Transitioned to ${phaseName}`,
-      metadata: { taskId: task.id },
+    this.deps.pipelineState.beginPhaseTransition(issueId, sourcePhase, phaseName);
+    this.deps.queue.cancelPendingForIssue(issueId, `Superseded by transition to ${phaseName}`, {
+      preserveFeedback: true,
     });
-    if (nextPhase.type === "automated") {
-      if (this.deps.queue.hasOpenTask(issueId, phaseName) === false) {
-        this.deps.queue.enqueue({
-          type: phaseName,
-          issueId,
-          description: `Transitioned to ${phaseName}`,
-        });
-      }
-    }
+    return retryPhaseTransition(this.deps, issueId);
   }
 
   // Deterministic, idempotent, config-aware: legacy pipeline_state rows gain a
@@ -2427,4 +2439,16 @@ function sourceControlRepoLabel(config: RedQueenConfig): string | undefined {
     return `${repo.owner}/${repo.repo}`;
   }
   return repo.repo !== "" ? repo.repo : undefined;
+}
+
+function failedWorkerResult(error: string): WorkerResult {
+  return {
+    success: false,
+    exitCode: 1,
+    elapsed: 0,
+    summary: "",
+    error,
+    usage: null,
+    reportedCostUsd: null,
+  };
 }

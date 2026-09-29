@@ -1,5 +1,5 @@
 import { createSourceControlRegistry } from "../../integrations/source-control-registry.js";
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,7 +17,10 @@ import type { PhaseDefinition } from "../types.js";
 import { RedQueen } from "../orchestrator.js";
 import type { RedQueenDeps } from "../orchestrator.js";
 import { RuntimeState } from "../runtime-state.js";
+import { reconcile } from "../reconciler.js";
+import { resumePipeline } from "../pipeline-recovery.js";
 import type { WorkerOptions, WorkerResult } from "../worker.js";
+import { buildWorkerArgs } from "../worker.js";
 import { MockIssueTracker, MockSourceControl, makeIssue } from "./fixtures/mock-adapters.js";
 import { makeTestConfig } from "./fixtures/test-config.js";
 import { makeWorkerResult } from "./fixtures/worker-result.js";
@@ -28,6 +31,7 @@ let skillsDir: string;
 let auditPath: string;
 
 interface Harness {
+  runtime: RuntimeState;
   db: RedQueenDatabase;
   queue: SqliteTaskQueue;
   pipelineState: PipelineStateStore;
@@ -118,6 +122,7 @@ function setupHarness(
   });
 
   const harness: Harness = {
+    runtime,
     db,
     queue,
     pipelineState,
@@ -330,6 +335,9 @@ describe("RedQueen orchestrator", () => {
       const content = readDispatchedPrompt(opts);
       if (content !== null) {
         prompts.push(content);
+        if (content.includes("phaseName: coding")) {
+          void h.rq.stop();
+        }
       }
       return Promise.resolve(
         makeWorkerResult({
@@ -371,6 +379,9 @@ describe("RedQueen orchestrator", () => {
       const content = readDispatchedPrompt(opts);
       if (content !== null) {
         prompts.push(content);
+        if (content.includes("phaseName: coding")) {
+          void h.rq.stop();
+        }
       }
       return Promise.resolve(
         makeWorkerResult({
@@ -478,6 +489,274 @@ describe("RedQueen orchestrator", () => {
 
     // Initial + 2 retries = 3 total attempts
     expect(attempts).toBe(3);
+    expect(h.pipelineState.get("PROJ-1")?.currentPhase).toBe("blocked");
+    expect(h.issueTracker.phases.get("PROJ-1")).toBe("blocked");
+    expect(h.issueTracker.calls).toContain("assignToHuman:PROJ-1:none");
+    expect(h.queue.hasOpenTask("PROJ-1", "coding")).toBe(false);
+    const notices = h.issueTracker.commentsById.get("PROJ-1") ?? [];
+    expect(notices).toHaveLength(1);
+    expect(notices[0]?.body).toContain("3 attempts");
+  });
+
+  it("keeps an unrouted failure stopped across sweeps and restart until explicit re-entry", async () => {
+    const phases = DEFAULT_PHASES.map((phase) =>
+      phase.name === "coding" ? { ...phase, escalateTo: undefined, next: "human-review" } : phase,
+    );
+    const h = setupHarness(
+      () =>
+        Promise.resolve(makeWorkerResult({ success: false, exitCode: 1, error: "launch failed" })),
+      { phases },
+    );
+    h.pipelineState.create("PROJ-1", "coding");
+    h.issueTracker.phases.set("PROJ-1", "coding");
+    h.issueTracker.specs.set("PROJ-1", "Implementation spec body.");
+    h.issueTracker.listByPhaseResults.set("coding", [makeIssue("PROJ-1", "coding")]);
+
+    await runUntil(h, () => h.pipelineState.isPhaseExhausted("PROJ-1", "coding"));
+
+    expect(h.runs).toHaveLength(3);
+    expect(h.queue.listByStatus("failed")).toHaveLength(3);
+    expect(h.issueTracker.commentsById.get("PROJ-1")).toHaveLength(1);
+    expect(h.issueTracker.assignments.get("PROJ-1")).toBe("human");
+    for (let sweep = 0; sweep < 3; sweep++) {
+      expect((await reconcile(h)).tasksCreated).toBe(0);
+    }
+    h.db.close();
+
+    const restarted = setupHarness(() => Promise.resolve(makeWorkerResult()), { phases });
+    restarted.issueTracker.phases.set("PROJ-1", "coding");
+    restarted.issueTracker.specs.set("PROJ-1", "Implementation spec body.");
+    restarted.issueTracker.listByPhaseResults.set("coding", [makeIssue("PROJ-1", "coding")]);
+    // Purging old task history must not grant a new worker retry budget.
+    restarted.db.db.exec("UPDATE tasks SET completed_at = '2000-01-01T00:00:00.000Z'");
+    expect(restarted.queue.purgeOld(1)).toBe(3);
+    await runUntil(restarted, () => true);
+    expect(restarted.runs).toHaveLength(0);
+    expect(restarted.queue.getOpenCount().ready).toBe(0);
+    restarted.db.close();
+
+    const reentered = setupHarness(() => Promise.resolve(makeWorkerResult()), { phases });
+    reentered.issueTracker.phases.set("PROJ-1", "coding");
+    reentered.issueTracker.specs.set("PROJ-1", "Implementation spec body.");
+    reentered.queue.enqueue({ type: "coding", issueId: "PROJ-1", description: "Human re-entry" });
+    await runUntil(
+      reentered,
+      () => reentered.pipelineState.get("PROJ-1")?.currentPhase === "human-review",
+    );
+    expect(reentered.runs).toHaveLength(1);
+    expect(reentered.pipelineState.isPhaseExhausted("PROJ-1", "coding")).toBe(false);
+  });
+
+  it("keeps failed escalation stopped across sweeps, history purge, and restart", async () => {
+    const h = setupHarness(() =>
+      Promise.resolve(makeWorkerResult({ success: false, error: "boom" })),
+    );
+    h.pipelineState.create("PROJ-1", "coding");
+    h.issueTracker.phases.set("PROJ-1", "coding");
+    h.issueTracker.specs.set("PROJ-1", "Implementation spec");
+    h.issueTracker.listByPhaseResults.set("coding", [makeIssue("PROJ-1", "coding")]);
+    h.issueTracker.setPhaseFailures.add("blocked");
+    await runUntil(h, () => h.pipelineState.getPendingTransition("PROJ-1") !== null);
+    expect(h.runs).toHaveLength(3);
+    expect(h.pipelineState.get("PROJ-1")?.currentPhase).toBe("coding");
+    expect(h.pipelineState.isPhaseExhausted("PROJ-1", "coding")).toBe(true);
+    expect(h.issueTracker.commentsById.get("PROJ-1")).toHaveLength(1);
+    expect(h.issueTracker.commentsById.get("PROJ-1")?.[0]?.body).toContain("has not completed");
+    for (let i = 0; i < 3; i++) {
+      expect((await reconcile(h)).tasksCreated).toBe(0);
+    }
+    h.db.db.exec("UPDATE tasks SET completed_at = '2000-01-01T00:00:00.000Z'");
+    expect(h.queue.purgeOld(1)).toBe(3);
+    h.db.close();
+
+    const restarted = setupHarness(() => Promise.resolve(makeWorkerResult()));
+    restarted.issueTracker.phases.set("PROJ-1", "coding");
+    restarted.issueTracker.specs.set("PROJ-1", "Implementation spec");
+    restarted.issueTracker.listByPhaseResults.set("coding", [makeIssue("PROJ-1", "coding")]);
+    restarted.issueTracker.setPhaseFailures.add("blocked");
+    await runUntil(restarted, () => true);
+    expect(restarted.runs).toHaveLength(0);
+    expect(restarted.queue.listByStatus("ready")).toHaveLength(0);
+    restarted.issueTracker.setPhaseFailures.clear();
+    restarted.issueTracker.listByPhaseResults.clear();
+    const retryAt = restarted.pipelineState.getPendingTransition("PROJ-1")?.phaseRetryAt;
+    const now = vi.spyOn(Date, "now").mockReturnValue(retryAt ?? Date.now());
+    try {
+      await reconcile(restarted);
+    } finally {
+      now.mockRestore();
+    }
+    expect(restarted.pipelineState.get("PROJ-1")?.currentPhase).toBe("blocked");
+    expect(restarted.issueTracker.phases.get("PROJ-1")).toBe("blocked");
+    expect(restarted.pipelineState.getPendingTransition("PROJ-1")).toBeNull();
+    expect(restarted.runs).toHaveLength(0);
+  });
+
+  it("does not post a destination notice after a failure handoff is cancelled", async () => {
+    const h = setupHarness(
+      () => {
+        h.issueTracker.phases.set("PROJ-1", "spec-review");
+        return Promise.resolve(makeWorkerResult({ success: false, error: "worker failed" }));
+      },
+      { pipeline: { maxRetries: 0 } },
+    );
+    h.pipelineState.create("PROJ-1", "coding");
+    h.issueTracker.phases.set("PROJ-1", "coding");
+    h.issueTracker.specs.set("PROJ-1", "Implementation spec");
+    h.queue.enqueue({ type: "coding", issueId: "PROJ-1" });
+    await runUntil(h, () => h.pipelineState.get("PROJ-1")?.currentPhase === "spec-review");
+    expect(h.runs).toHaveLength(1);
+    expect(h.issueTracker.phases.get("PROJ-1")).toBe("spec-review");
+    expect(h.pipelineState.getPendingTransition("PROJ-1")).toBeNull();
+    expect(h.issueTracker.commentsById.get("PROJ-1") ?? []).toHaveLength(0);
+  });
+
+  it("handles human PR feedback queued during Testing after arriving at Human Review", async () => {
+    const executed: string[] = [];
+    let feedbackId: string | undefined;
+    let staleId: string | undefined;
+    const h = setupHarness((options) => {
+      const prompt = readDispatchedPrompt(options) ?? "";
+      if (prompt.includes("phaseName: testing")) {
+        executed.push("testing");
+        staleId = h.queue.enqueue({ type: "testing", issueId: "PROJ-1" }).id;
+        feedbackId = h.queue.enqueue({
+          type: "code-feedback",
+          issueId: "PROJ-1",
+          description: "PR feedback",
+          metadata: { trigger: "pr-feedback" },
+        }).id;
+      } else if (prompt.includes("phaseName: code-feedback")) {
+        executed.push("code-feedback");
+        void h.rq.stop();
+      }
+      return Promise.resolve(makeWorkerResult());
+    });
+    h.pipelineState.create("PROJ-1", "testing");
+    h.pipelineState.updatePrNumber("PROJ-1", "app", 42, null);
+    h.issueTracker.phases.set("PROJ-1", "testing");
+    h.queue.enqueue({ type: "testing", issueId: "PROJ-1" });
+    await runUntil(h, () => executed.includes("code-feedback"));
+    expect(executed).toEqual(["testing", "code-feedback"]);
+    expect(h.queue.getTask(staleId ?? "")?.status).toBe("cancelled");
+    expect(h.queue.getTask(feedbackId ?? "")?.status).toBe("complete");
+    const gateArrival = h.issueTracker.calls.indexOf("setPhase:PROJ-1:human-review");
+    expect(gateArrival).toBeGreaterThanOrEqual(0);
+    expect(h.issueTracker.calls.indexOf("setPhase:PROJ-1:code-feedback")).toBeGreaterThan(
+      gateArrival,
+    );
+  });
+
+  it("preserves exhaustion when a task is cancelled during its dispatch guards", async () => {
+    const h = setupHarness(() => Promise.resolve(makeWorkerResult()));
+    h.pipelineState.create("PROJ-1", "coding");
+    h.pipelineState.setExhaustedPhase("PROJ-1", "coding");
+    h.pipelineState.incrementReviewIterations("PROJ-1");
+    h.issueTracker.phases.set("PROJ-1", "coding");
+    h.issueTracker.specs.set("PROJ-1", "Implementation spec");
+    const task = h.queue.enqueue({ type: "coding", issueId: "PROJ-1" });
+    vi.spyOn(h.issueTracker, "getBlockedBy").mockImplementation(() => {
+      h.queue.cancelPendingForIssue("PROJ-1", "Cancelled during guard");
+      return Promise.resolve([]);
+    });
+    await runUntil(h, () => h.queue.getTask(task.id)?.status === "cancelled");
+    expect(h.runs).toHaveLength(0);
+    expect(h.pipelineState.isPhaseExhausted("PROJ-1", "coding")).toBe(true);
+    expect(h.pipelineState.get("PROJ-1")?.reviewIterations).toBe(1);
+  });
+
+  it("defers explicit work while a phase write is pending instead of consuming it", async () => {
+    const h = setupHarness(() => Promise.resolve(makeWorkerResult()));
+    h.pipelineState.create("PROJ-1", "coding");
+    h.issueTracker.phases.set("PROJ-1", "coding");
+    h.pipelineState.beginPhaseTransition("PROJ-1", "coding", "blocked");
+    h.issueTracker.setPhaseFailures.add("blocked");
+    const task = h.queue.enqueue({ type: "coding", issueId: "PROJ-1" });
+    await runUntil(h, () => h.queue.getTask(task.id)?.status === "deferred");
+    expect(h.runs).toHaveLength(0);
+    expect(h.queue.getTask(task.id)?.status).toBe("deferred");
+    expect(h.pipelineState.getPendingTransition("PROJ-1")).not.toBeNull();
+  });
+
+  it.each(["binary", "skill", "read", "temp-write"])(
+    "bounds %s setup failures across sweeps and restart",
+    async (failure) => {
+      const phases = DEFAULT_PHASES.map((phase) =>
+        phase.name === "coding" ? { ...phase, escalateTo: undefined } : phase,
+      );
+      const h = setupHarness(() => Promise.resolve(makeWorkerResult()), { phases });
+      h.pipelineState.create("PROJ-1", "coding", "human-1");
+      h.issueTracker.phases.set("PROJ-1", "coding");
+      h.issueTracker.specs.set("PROJ-1", "Implementation spec");
+      h.issueTracker.listByPhaseResults.set("coding", [makeIssue("PROJ-1", "coding")]);
+      if (failure === "binary") {
+        h.runtime.config.pipeline.claudeBin = join(tempDir, "missing-binary");
+      } else if (failure === "skill") {
+        h.runtime.config.skills.disabled.push("coder");
+      } else if (failure === "read") {
+        rmSync(join(skillsDir, "coder", "SKILL.md"));
+        mkdirSync(join(skillsDir, "coder", "SKILL.md"));
+      } else {
+        mkdirSync(join(tempDir, ".redqueen"), { recursive: true });
+        writeFileSync(join(tempDir, ".redqueen", "tmp"), "not a directory");
+      }
+      await runUntil(h, () => h.pipelineState.isPhaseExhausted("PROJ-1", "coding"));
+      expect(h.runs).toHaveLength(0);
+      expect(h.queue.listByStatus("failed")).toHaveLength(3);
+      expect(h.issueTracker.commentsById.get("PROJ-1")).toHaveLength(1);
+      expect(h.issueTracker.commentsById.get("PROJ-1")?.[0]?.body).toContain(
+        "redqueen pipeline resume PROJ-1",
+      );
+      expect(h.issueTracker.calls).toContain("assignToHuman:PROJ-1:human-1");
+      for (let i = 0; i < 3; i++) {
+        expect((await reconcile(h)).tasksCreated).toBe(0);
+      }
+      h.db.close();
+      const restarted = setupHarness(() => Promise.resolve(makeWorkerResult()), { phases });
+      restarted.issueTracker.phases.set("PROJ-1", "coding");
+      restarted.issueTracker.listByPhaseResults.set("coding", [makeIssue("PROJ-1", "coding")]);
+      await runUntil(restarted, () => true);
+      expect(restarted.runs).toHaveLength(0);
+      expect(restarted.queue.listByStatus("ready")).toHaveLength(0);
+    },
+  );
+
+  it("sends reviewer setup failure to a human instead of cycling through coding", async () => {
+    const h = setupHarness(() => Promise.resolve(makeWorkerResult()));
+    h.runtime.config.skills.disabled.push("reviewer");
+    h.pipelineState.create("PROJ-1", "code-review");
+    h.issueTracker.phases.set("PROJ-1", "code-review");
+    h.queue.enqueue({ type: "code-review", issueId: "PROJ-1" });
+    await runUntil(h, () => h.issueTracker.phases.get("PROJ-1") === "human-review");
+    expect(h.runs).toHaveLength(0);
+    expect(h.queue.listByStatus("failed")).toHaveLength(3);
+    expect(h.queue.hasOpenTask("PROJ-1", "coding")).toBe(false);
+  });
+
+  it("bounds testing rework even when every intermediate code review passes", async () => {
+    let testingRuns = 0;
+    const h = setupHarness((opts) => {
+      const testing = readDispatchedPrompt(opts)?.includes("phaseName: testing") === true;
+      if (testing) {
+        testingRuns++;
+      }
+      return Promise.resolve(
+        makeWorkerResult({
+          success: testing === false,
+          exitCode: testing ? 1 : 0,
+          error: testing ? "tests failed" : null,
+        }),
+      );
+    });
+    h.pipelineState.create("PROJ-1", "coding");
+    h.issueTracker.phases.set("PROJ-1", "coding");
+    h.issueTracker.specs.set("PROJ-1", "Implementation spec");
+    h.queue.enqueue({ type: "coding", issueId: "PROJ-1" });
+    await runUntil(h, () => h.issueTracker.phases.get("PROJ-1") === "human-review");
+    expect(testingRuns).toBe(12);
+    expect(h.runs).toHaveLength(20);
+    expect(h.queue.getOpenCount().ready).toBe(0);
+    expect(h.issueTracker.commentsById.get("PROJ-1")).toHaveLength(1);
   });
 
   it("routes code-review failure straight to coding without crash-retries", async () => {
@@ -486,6 +765,9 @@ describe("RedQueen orchestrator", () => {
       const content = readDispatchedPrompt(opts);
       if (content !== null) {
         prompts.push(content);
+        if (content.includes("phaseName: coding")) {
+          void h.rq.stop();
+        }
       }
       return Promise.resolve(
         makeWorkerResult({
@@ -519,6 +801,7 @@ describe("RedQueen orchestrator", () => {
       if (runCount === 1) {
         // First run: simulate agent changing phase to "coding"
         h.issueTracker.phases.set("PROJ-1", "coding");
+        void h.rq.stop();
         return Promise.resolve(
           makeWorkerResult({
             success: true,
@@ -716,6 +999,43 @@ describe("RedQueen orchestrator", () => {
     expect(h.issueTracker.calls).not.toContain("assignToAi:PROJ-CLAIM-ERROR");
     expect(h.pipelineState.get("PROJ-CLAIM-ERROR")).toBeNull();
     expect(h.runs).toHaveLength(0);
+  });
+
+  it("parks a saved resume after assignment fails and runs it after a human repairs ownership", async () => {
+    const h = setupHarness(() => {
+      void h.rq.stop();
+      return Promise.resolve(makeWorkerResult());
+    });
+    h.pipelineState.create("PROJ-1", "coding");
+    h.pipelineState.setExhaustedPhase("PROJ-1", "coding");
+    h.issueTracker.phases.set("PROJ-1", "coding");
+    h.issueTracker.specs.set("PROJ-1", "Implementation spec");
+    h.issueTracker.assignments.set("PROJ-1", "human");
+    const assign = vi.spyOn(h.issueTracker, "assignToAi").mockRejectedValue(new Error("denied"));
+    await expect(
+      resumePipeline({ ...h, phaseGraph: h.runtime.phaseGraph }, "PROJ-1"),
+    ).rejects.toThrow("was saved, but AI assignment failed");
+    const task = h.queue.listByStatus("ready")[0];
+    if (task === undefined) {
+      throw new Error("Resume task was not saved");
+    }
+
+    const running = h.rq.start();
+    try {
+      await expect.poll(() => h.queue.getTask(task.id)?.status).toBe("deferred");
+      expect(h.runs).toHaveLength(0);
+      expect(h.queue.getTask(task.id)?.blockedOn).toEqual(["<ai-assignment-required>"]);
+      assign.mockRestore();
+      await h.issueTracker.assignToAi("PROJ-1");
+      h.queue.releaseDeferred();
+
+      await expect.poll(() => h.queue.getTask(task.id)?.status).toBe("complete");
+
+      expect(h.runs).toHaveLength(1);
+    } finally {
+      await h.rq.stop();
+      await running;
+    }
   });
 
   it("performs crash recovery for working tasks", async () => {
@@ -917,7 +1237,7 @@ describe("RedQueen orchestrator", () => {
     expect(stored?.result).toContain("Skill not found");
   });
 
-  it("threads per-phase agent/model/effort overrides into the worker", async () => {
+  it.each([false, true])("threads Codex settings with workspaceMode=%s", async (workspaceMode) => {
     const phases = DEFAULT_PHASES.map((p) =>
       p.name === "coding" ? { ...p, agent: "codex" as const, effort: "xhigh" as const } : p,
     );
@@ -932,7 +1252,15 @@ describe("RedQueen orchestrator", () => {
             error: "stop cascade",
           }),
         ),
-      { phases, pipeline: { codexBin: "/bin/sh" } },
+      {
+        phases,
+        pipeline: { codexBin: "/bin/sh" },
+        ...(workspaceMode
+          ? {
+              repos: makeTestConfig({ project: { directory: join(tempDir, "app") } }).project.repos,
+            }
+          : {}),
+      },
     );
     h.pipelineState.create("PROJ-1", "coding");
     h.issueTracker.phases.set("PROJ-1", "coding");
@@ -947,6 +1275,9 @@ describe("RedQueen orchestrator", () => {
     expect(run?.model).toBeNull();
     expect(run?.effort).toBe("xhigh");
     expect(run?.bin).toBe("/bin/sh");
+    expect(run?.cwd).toBe(tempDir);
+    expect(run?.workspaceMode).toBe(workspaceMode);
+    expect(run && buildWorkerArgs(run).includes("--skip-git-repo-check")).toBe(workspaceMode);
   });
 
   it("uses the master agent settings for phases without overrides", async () => {
@@ -1419,8 +1750,9 @@ describe("RedQueen orchestrator", () => {
   it("does not post a failure notice when a failure bounces to an automated phase", async () => {
     // code-review -> coding is a normal feedback loop; commenting there would
     // spam the ticket every reconcile cycle, so no notice is posted.
-    const h = setupHarness(() =>
-      Promise.resolve(
+    const h = setupHarness(() => {
+      void h.rq.stop();
+      return Promise.resolve(
         makeWorkerResult({
           success: false,
           exitCode: 1,
@@ -1428,8 +1760,8 @@ describe("RedQueen orchestrator", () => {
           summary: "",
           error: "blockers found",
         }),
-      ),
-    );
+      );
+    });
     h.pipelineState.create("PROJ-NC", "code-review");
     h.issueTracker.phases.set("PROJ-NC", "code-review");
     h.issueTracker.specs.set("PROJ-NC", "Implementation spec body.");
@@ -1953,6 +2285,7 @@ describe("RedQueen orchestrator", () => {
     h.issueTracker.phases.set("PROJ-60", "code-review");
     for (let i = 0; i < 10; i++) {
       h.pipelineState.incrementReviewIterations("PROJ-60");
+      h.pipelineState.incrementPhaseReworks("PROJ-60", "code-review");
     }
     h.queue.enqueue({ type: "code-review", issueId: "PROJ-60" });
 
@@ -2131,8 +2464,11 @@ describe("RedQueen orchestrator", () => {
     });
     h.pipelineState.create("PROJ-304", "coding");
     h.pipelineState.incrementReviewIterations("PROJ-304");
+    h.pipelineState.incrementPhaseReworks("PROJ-304", "code-review");
     h.pipelineState.incrementReviewIterations("PROJ-304");
+    h.pipelineState.incrementPhaseReworks("PROJ-304", "code-review");
     h.pipelineState.incrementReviewIterations("PROJ-304");
+    h.pipelineState.incrementPhaseReworks("PROJ-304", "code-review");
     h.issueTracker.phases.set("PROJ-304", "coding");
     h.issueTracker.specs.set("PROJ-304", "Implementation spec body.");
     h.queue.enqueue({ type: "coding", issueId: "PROJ-304" });

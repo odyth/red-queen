@@ -5,6 +5,8 @@ import { resolveProjectPaths } from "../core/config.js";
 import type { RedQueenConfig } from "../core/config.js";
 import { RedQueenDatabase } from "../core/database.js";
 import { PipelineStateStore } from "../core/pipeline-state.js";
+import { SqliteTaskQueue } from "../core/queue.js";
+import type { TaskQueue } from "../core/queue.js";
 import { SubIterationStore } from "../core/sub-iteration.js";
 import type { IssueTracker } from "../integrations/issue-tracker.js";
 import type { SourceControlRegistry } from "../integrations/source-control-registry.js";
@@ -18,6 +20,7 @@ export interface CliContext {
   issueTracker: IssueTracker;
   sourceControls: SourceControlRegistry;
   pipelineState: PipelineStateStore;
+  queue: TaskQueue;
   subIteration: SubIterationStore;
   audit: AuditLogger;
   cleanup: () => void;
@@ -84,6 +87,7 @@ export function loadCliContext(options: ICliContextOptions = {}): CliContext {
     issueTracker: pair.issueTracker,
     sourceControls: pair.sourceControls,
     pipelineState,
+    queue: new SqliteTaskQueue(database.db),
     subIteration,
     audit,
     cleanup: () => {

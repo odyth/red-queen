@@ -7,6 +7,7 @@ import {
   classifyRepoMergeTransition,
 } from "../pipeline-state.js";
 import { SCHEMA_SQL } from "../database.js";
+import { SqliteTaskQueue } from "../queue.js";
 
 let db: BetterSqlite3.Database;
 let store: PipelineStateStore;
@@ -39,6 +40,36 @@ describe("PipelineStateStore", () => {
     expect(record.terminalPrNumber).toBeNull();
     expect(record.reviewIterations).toBe(0);
     expect(record.feedbackIterations).toBe(0);
+  });
+
+  it("preserves the stop and counters when a cancelled task cannot claim work", () => {
+    const queue = new SqliteTaskQueue(db);
+    store.create("PROJ-1", "coding");
+    store.setExhaustedPhase("PROJ-1", "coding");
+    store.incrementPhaseReworks("PROJ-1", "testing");
+    store.incrementReviewIterations("PROJ-1");
+    const task = queue.enqueue({ type: "coding", issueId: "PROJ-1" });
+    queue.cancelPendingForIssue("PROJ-1", "Cancelled concurrently");
+    expect(store.claimPhaseTask("PROJ-1", () => queue.markWorking(task.id), false)).toBe(false);
+    expect(store.isPhaseExhausted("PROJ-1", "coding")).toBe(true);
+    expect(store.get("PROJ-1")?.reviewIterations).toBe(1);
+    expect(store.incrementPhaseReworks("PROJ-1", "testing")).toBe(2);
+  });
+
+  it("rolls back a task claim when resetting its budget fails", () => {
+    const queue = new SqliteTaskQueue(db);
+    store.create("PROJ-1", "coding");
+    store.setExhaustedPhase("PROJ-1", "coding");
+    store.incrementReviewIterations("PROJ-1");
+    const task = queue.enqueue({ type: "coding", issueId: "PROJ-1" });
+    db.exec(`CREATE TRIGGER reject_reset BEFORE UPDATE OF review_iterations ON pipeline_state
+      BEGIN SELECT RAISE(ABORT, 'reset failed'); END`);
+    expect(() => store.claimPhaseTask("PROJ-1", () => queue.markWorking(task.id), false)).toThrow(
+      "reset failed",
+    );
+    expect(queue.getTask(task.id)?.status).toBe("ready");
+    expect(store.isPhaseExhausted("PROJ-1", "coding")).toBe(true);
+    expect(store.get("PROJ-1")?.reviewIterations).toBe(1);
   });
 
   it("creates with an initial phase", () => {
@@ -88,6 +119,20 @@ describe("PipelineStateStore", () => {
     expect(record.priorPhase).toBeNull();
   });
 
+  it("preserves exhaustion during phase sync and clears it on a new phase", () => {
+    store.create("PROJ-1", "coding");
+    expect(store.isPhaseExhausted("PROJ-1", "coding")).toBe(false);
+    expect(store.setExhaustedPhase("PROJ-1", "coding")).toBe(true);
+    expect(store.isPhaseExhausted("PROJ-1", "coding")).toBe(true);
+    expect(store.isPhaseExhausted("PROJ-1", "testing")).toBe(false);
+    expect(store.isPhaseExhausted("OTHER", "coding")).toBe(false);
+    store.updatePhase("PROJ-1", "coding");
+    expect(store.isPhaseExhausted("PROJ-1", "coding")).toBe(true);
+    store.updatePhase("PROJ-1", "blocked");
+    store.updatePhase("PROJ-1", "coding");
+    expect(store.isPhaseExhausted("PROJ-1", "coding")).toBe(false);
+  });
+
   it("updatePhase shifts the outgoing phase into prior_phase", () => {
     store.create("PROJ-1", "coding");
 
@@ -100,6 +145,34 @@ describe("PipelineStateStore", () => {
     record = store.get("PROJ-1");
     expect(record?.currentPhase).toBe("coding");
     expect(record?.priorPhase).toBe("code-review");
+  });
+
+  it("does not write or touch updated_at when exhaustion is unchanged", () => {
+    store.create("PROJ-1", "coding");
+    db.prepare("UPDATE pipeline_state SET updated_at = ? WHERE issue_id = ?").run("old", "PROJ-1");
+    expect(store.setExhaustedPhase("PROJ-1", null)).toBe(false);
+    expect(store.get("PROJ-1")?.updatedAt).toBe("old");
+    expect(store.setExhaustedPhase("PROJ-1", "coding")).toBe(true);
+    db.prepare("UPDATE pipeline_state SET updated_at = ? WHERE issue_id = ?").run(
+      "stopped",
+      "PROJ-1",
+    );
+    expect(store.setExhaustedPhase("PROJ-1", "coding")).toBe(false);
+    expect(store.get("PROJ-1")?.updatedAt).toBe("stopped");
+    expect(store.setExhaustedPhase("PROJ-1", null)).toBe(true);
+    expect(store.get("PROJ-1")?.updatedAt).not.toBe("stopped");
+  });
+
+  it("keeps phase rework counts independent and resets them on a new human cycle", () => {
+    store.create("PROJ-1", "testing");
+    expect(store.incrementPhaseReworks("PROJ-1", "testing")).toBe(1);
+    expect(store.incrementPhaseReworks("PROJ-1", "code-review")).toBe(1);
+    store.resetPhaseReworks("PROJ-1", "code-review");
+    store.resetReviewIterations("PROJ-1");
+    expect(store.incrementPhaseReworks("PROJ-1", "testing")).toBe(2);
+    expect(store.incrementPhaseReworks("PROJ-1", "code-review")).toBe(1);
+    store.resetIterations("PROJ-1");
+    expect(store.incrementPhaseReworks("PROJ-1", "testing")).toBe(1);
   });
 
   it("markDone records the terminal PR identity for safe re-entry", () => {

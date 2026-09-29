@@ -27,6 +27,7 @@ export const SCHEMA_SQL = `
     issue_id TEXT PRIMARY KEY,
     current_phase TEXT,
     prior_phase TEXT,
+    exhausted_phase TEXT,
     branch_name TEXT,
     pr_number INTEGER,
     pr_base_branch TEXT,
@@ -59,6 +60,26 @@ export const SCHEMA_SQL = `
   );
 
   CREATE INDEX IF NOT EXISTS idx_pipeline_repos_pr ON pipeline_repos(repo, pr_number);
+
+  CREATE TABLE IF NOT EXISTS pending_phase_transitions (
+    issue_id TEXT PRIMARY KEY REFERENCES pipeline_state(issue_id) ON DELETE CASCADE,
+    source_phase TEXT NOT NULL,
+    destination TEXT NOT NULL,
+    transition_id TEXT NOT NULL,
+    phase_applied INTEGER NOT NULL DEFAULT 0,
+    phase_attempts INTEGER NOT NULL DEFAULT 0,
+    phase_retry_at INTEGER NOT NULL DEFAULT 0,
+    phase_notice_posted INTEGER NOT NULL DEFAULT 0,
+    assignment_attempts INTEGER NOT NULL DEFAULT 0,
+    assignment_retry_at INTEGER NOT NULL DEFAULT 0
+  );
+
+  CREATE TABLE IF NOT EXISTS phase_rework_counts (
+    issue_id TEXT NOT NULL REFERENCES pipeline_state(issue_id) ON DELETE CASCADE,
+    phase TEXT NOT NULL,
+    iterations INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (issue_id, phase)
+  );
 
   CREATE TABLE IF NOT EXISTS orchestrator_state (
     key TEXT PRIMARY KEY,
@@ -129,6 +150,41 @@ export class RedQueenDatabase {
   }
 
   private runMigrations(): void {
+    const transitionColumns = [
+      "transition_id TEXT NOT NULL DEFAULT ''",
+      "phase_applied INTEGER NOT NULL DEFAULT 0",
+      "phase_attempts INTEGER NOT NULL DEFAULT 0",
+      "phase_retry_at INTEGER NOT NULL DEFAULT 0",
+      "phase_notice_posted INTEGER NOT NULL DEFAULT 0",
+      "assignment_attempts INTEGER NOT NULL DEFAULT 0",
+      "assignment_retry_at INTEGER NOT NULL DEFAULT 0",
+    ];
+    for (const column of transitionColumns) {
+      try {
+        this.db.exec(`ALTER TABLE pending_phase_transitions ADD COLUMN ${column}`);
+      } catch (err) {
+        if (err instanceof Error === false || err.message.includes("duplicate column") === false) {
+          throw err;
+        }
+      }
+    }
+    // Older handoffs recorded the confirmed destination in pipeline_state.
+    // Preserve that evidence when upgrading an assignment-only recovery.
+    this.db.exec(`UPDATE pending_phase_transitions
+      SET transition_id = lower(hex(randomblob(16))),
+          phase_applied = CASE WHEN destination = (
+            SELECT current_phase FROM pipeline_state WHERE issue_id = pending_phase_transitions.issue_id
+          ) THEN 1 ELSE 0 END
+      WHERE transition_id = ''`);
+    // A phase with no failure route must stay stopped across reconciliation/restarts.
+    try {
+      this.db.exec("ALTER TABLE pipeline_state ADD COLUMN exhausted_phase TEXT");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("duplicate column") === false) {
+        throw err;
+      }
+    }
     // Pre-workspace records remain eligible for one legacy-adoption pass.
     // PipelineStateStore.create explicitly marks new records as version 1.
     try {

@@ -44,6 +44,7 @@ export const DEFAULT_PHASES: PhaseDefinition[] = [
     type: "automated",
     skill: "coder",
     next: "code-review",
+    escalateTo: "blocked",
     assignTo: "ai",
     // coding re-enters from code-review (and testing) on failure; review_iterations
     // is bumped before the transition, so the coder sees the correct rework round.
@@ -76,6 +77,8 @@ export const DEFAULT_PHASES: PhaseDefinition[] = [
     skill: "tester",
     next: "human-review",
     onFail: "coding",
+    maxIterations: 3,
+    escalateTo: "human-review",
     assignTo: "ai",
   },
   {

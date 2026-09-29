@@ -645,10 +645,18 @@ export function validatePhaseGraph(phases: PhaseDefinition[]): ValidationResult 
       }
     }
 
-    // escalateTo requires maxIterations
-    if (phase.escalateTo !== undefined && phase.maxIterations === undefined) {
+    // Without onFail, escalateTo handles worker retry exhaustion directly.
+    // With onFail, only an automated rework loop with a cap reaches escalation.
+    if (
+      phase.type === "automated" &&
+      phase.escalateTo !== undefined &&
+      phase.onFail !== undefined &&
+      phase.onFail !== "done" &&
+      (phase.maxIterations === undefined ||
+        phases.find((target) => target.name === phase.onFail)?.type === "human-gate")
+    ) {
       warnings.push(
-        `Phase "${phase.name}": escalateTo is set but maxIterations is not — escalation will never trigger`,
+        `Phase "${phase.name}": onFail takes precedence; escalateTo requires an automated onFail target and maxIterations`,
       );
     }
 
