@@ -84,6 +84,7 @@ function buildConfig(
       reconcileInterval: 0.1,
       claudeBin: "/bin/sh",
       skipSpecReviewIfReady: false,
+      workerMemory: "off",
     },
     phases: DEFAULT_PHASES,
     skills: { directory: skillsDir, disabled: [] },

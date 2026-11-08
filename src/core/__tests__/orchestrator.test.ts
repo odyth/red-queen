@@ -1,8 +1,16 @@
 import { createSourceControlRegistry } from "../../integrations/source-control-registry.js";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { RedQueenDatabase } from "../database.js";
 import { ASSIGNMENT_CLAIM_REQUIRED_METADATA_KEY } from "../assignment-router.js";
 import { SqliteTaskQueue } from "../queue.js";
@@ -89,6 +97,7 @@ function setupHarness(
       reconcileInterval: 0,
       claudeBin: "/bin/sh",
       skipSpecReviewIfReady: options.skipSpecReviewIfReady ?? false,
+      workerMemory: "off",
       ...(options.pipeline ?? {}),
     },
   });
@@ -170,10 +179,13 @@ async function runUntilAfterRuns(h: Harness, count: number, maxMs = 2000): Promi
 }
 
 // The orchestrator writes the rendered skill prompt (the YAML context block) to a
-// temp file and only passes the worker a "Read and follow <path> exactly." string.
+// temp file and passes the worker a role introduction and instructions to read it.
 // The file still exists while the worker runs, so read it back to inspect context.
 function readDispatchedPrompt(opts: WorkerOptions): string | null {
-  const match = /Read and follow (.+) exactly\./.exec(opts.prompt);
+  const match =
+    /task file the orchestrator wrote at (.+) and carry out the phase it describes\./.exec(
+      opts.prompt,
+    );
   const path = match?.[1];
   if (path === undefined) {
     return null;
@@ -1237,6 +1249,104 @@ describe("RedQueen orchestrator", () => {
     expect(stored?.result).toContain("Skill not found");
   });
 
+  it("introduces the worker role, dispatches memoryless by default and audits the mode", async () => {
+    let capturedPrompt: string | null = null;
+    const h = setupHarness((opts) => {
+      capturedPrompt = readDispatchedPrompt(opts);
+      return Promise.resolve(makeWorkerResult());
+    });
+    h.pipelineState.create("PROJ-MEM", "spec-writing");
+    h.issueTracker.phases.set("PROJ-MEM", "spec-writing");
+    h.issueTracker.specs.set("PROJ-MEM", "Written specification.");
+    const task = h.queue.enqueue({ type: "spec-writing", issueId: "PROJ-MEM" });
+
+    await runUntilAfterRuns(h, 1);
+
+    expect(h.runs).toHaveLength(1);
+    expect(h.runs[0]?.prompt).toMatch(/^You are a Red Queen pipeline worker\. /);
+    expect(capturedPrompt).toContain("# prompt-writer");
+    expect(h.runs[0]?.autoMemoryDir).toBeNull();
+    expect(existsSync(join(tempDir, ".redqueen", "memory"))).toBe(false);
+    const entries = h.audit
+      .query({ issueId: "PROJ-MEM", component: "worker" })
+      .filter((entry) => entry.message.startsWith("Worker auto-memory:"));
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      message: "Worker auto-memory: off",
+      metadata: {
+        taskId: task.id,
+        phase: "spec-writing",
+        workerMemory: "off",
+        memoryDir: null,
+        memoryFiles: null,
+      },
+    });
+  });
+
+  it.each([false, true])(
+    "prepares and audits per-install memory (existing=%s)",
+    async (existing) => {
+      const memoryDir = resolve(tempDir, ".redqueen", "memory");
+      if (existing) {
+        mkdirSync(memoryDir, { recursive: true });
+        writeFileSync(join(memoryDir, "MEMORY.md"), "# Memory\n");
+        writeFileSync(join(memoryDir, "a.md"), "# Topic\n");
+        writeFileSync(join(memoryDir, "ignore.txt"), "not Markdown");
+      }
+      const h = setupHarness(() => Promise.resolve(makeWorkerResult()), {
+        pipeline: { workerMemory: "per-install" },
+      });
+      h.pipelineState.create("PROJ-MEM", "spec-writing");
+      h.issueTracker.phases.set("PROJ-MEM", "spec-writing");
+      h.issueTracker.specs.set("PROJ-MEM", "Written specification.");
+      const task = h.queue.enqueue({ type: "spec-writing", issueId: "PROJ-MEM" });
+
+      await runUntilAfterRuns(h, 1);
+
+      expect(h.runs).toHaveLength(1);
+      expect(h.runs[0]?.autoMemoryDir).toBe(memoryDir);
+      expect(statSync(memoryDir).isDirectory()).toBe(true);
+      const entries = h.audit
+        .query({ issueId: "PROJ-MEM", component: "worker" })
+        .filter((entry) => entry.message.startsWith("Worker auto-memory:"));
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({
+        message: `Worker auto-memory: per-install (${memoryDir}, ${existing ? "2" : "0"} files)`,
+        metadata: {
+          taskId: task.id,
+          phase: "spec-writing",
+          workerMemory: "per-install",
+          memoryDir,
+          memoryFiles: existing ? 2 : 0,
+        },
+      });
+    },
+  );
+
+  it("fails setup and removes the task file when the memory directory cannot be prepared", async () => {
+    mkdirSync(join(tempDir, ".redqueen"), { recursive: true });
+    const memoryDir = join(tempDir, ".redqueen", "memory");
+    writeFileSync(memoryDir, "a file blocks directory creation");
+    const h = setupHarness(
+      () => {
+        throw new Error("worker should not run — memory setup failed");
+      },
+      { pipeline: { workerMemory: "per-install" } },
+    );
+    h.pipelineState.create("PROJ-MEM", "spec-writing");
+    h.issueTracker.phases.set("PROJ-MEM", "spec-writing");
+    const task = h.queue.enqueue({ type: "spec-writing", issueId: "PROJ-MEM" });
+
+    await runUntil(h, () => h.queue.getTask(task.id)?.status === "failed");
+
+    const stored = h.queue.getTask(task.id);
+    expect(stored?.status).toBe("failed");
+    expect(stored?.result).toContain(`Failed to prepare worker memory dir ${memoryDir}:`);
+    expect(h.runs).toHaveLength(0);
+    expect(existsSync(join(tempDir, ".redqueen", "tmp", `${task.id}.md`))).toBe(false);
+    expect(h.issueTracker.calls).not.toContain("markInProgress:PROJ-MEM");
+  });
+
   it.each([false, true])("threads Codex settings with workspaceMode=%s", async (workspaceMode) => {
     const phases = DEFAULT_PHASES.map((p) =>
       p.name === "coding" ? { ...p, agent: "codex" as const, effort: "xhigh" as const } : p,
@@ -1254,7 +1364,7 @@ describe("RedQueen orchestrator", () => {
         ),
       {
         phases,
-        pipeline: { codexBin: "/bin/sh" },
+        pipeline: { codexBin: "/bin/sh", workerMemory: "per-install" },
         ...(workspaceMode
           ? {
               repos: makeTestConfig({ project: { directory: join(tempDir, "app") } }).project.repos,
@@ -1271,6 +1381,13 @@ describe("RedQueen orchestrator", () => {
 
     const run = h.runs[0];
     expect(run?.agent).toBe("codex");
+    expect(run?.autoMemoryDir).toBeNull();
+    expect(existsSync(join(tempDir, ".redqueen", "memory"))).toBe(false);
+    expect(
+      h.audit
+        .query({ issueId: "PROJ-1", component: "worker" })
+        .filter((entry) => entry.message.startsWith("Worker auto-memory:")),
+    ).toHaveLength(0);
     // The master model ("opus") must not leak across the agent override.
     expect(run?.model).toBeNull();
     expect(run?.effort).toBe("xhigh");
@@ -1606,7 +1723,10 @@ describe("RedQueen orchestrator", () => {
   it("refreshes cached spec from tracker before dispatch", async () => {
     let capturedPrompt: string | null = null;
     const h = setupHarness((opts) => {
-      const promptMatch = /Read and follow (.+) exactly/.exec(opts.prompt);
+      const promptMatch =
+        /task file the orchestrator wrote at (.+) and carry out the phase it describes\./.exec(
+          opts.prompt,
+        );
       if (promptMatch?.[1] !== undefined) {
         capturedPrompt = readFileSync(promptMatch[1], "utf8");
       }
@@ -1664,7 +1784,10 @@ describe("RedQueen orchestrator", () => {
     // cycle's prompt as context.
     let capturedPrompt: string | null = null;
     const h = setupHarness((opts) => {
-      const promptMatch = /Read and follow (.+) exactly/.exec(opts.prompt);
+      const promptMatch =
+        /task file the orchestrator wrote at (.+) and carry out the phase it describes\./.exec(
+          opts.prompt,
+        );
       if (promptMatch?.[1] !== undefined) {
         capturedPrompt = readFileSync(promptMatch[1], "utf8");
       }

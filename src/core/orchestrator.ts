@@ -1,5 +1,13 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { safeAudit } from "./audit.js";
 import type { AuditLogger } from "./audit.js";
 import {
@@ -1304,7 +1312,43 @@ export class RedQueen {
       return;
     }
 
-    const prompt = `Read and follow ${tempPath} exactly.`;
+    const prompt = `You are a Red Queen pipeline worker. Read the task file the orchestrator wrote at ${tempPath} and carry out the phase it describes.`;
+
+    let autoMemoryDir: string | null = null;
+    let memoryFiles: number | null = null;
+    if (settings.agent === "claude-code") {
+      const mode = this.deps.runtime.config.pipeline.workerMemory;
+      if (mode === "per-install") {
+        autoMemoryDir = resolve(this.deps.runtime.config.project.directory, ".redqueen", "memory");
+        try {
+          mkdirSync(autoMemoryDir, { recursive: true });
+          memoryFiles = readdirSync(autoMemoryDir).filter((name) => name.endsWith(".md")).length;
+        } catch (err) {
+          safeUnlink(tempPath);
+          await this.handleSetupFailure(
+            task,
+            phase,
+            `Failed to prepare worker memory dir ${autoMemoryDir}: ${errorMessage(err)}`,
+          );
+          return;
+        }
+      }
+      this.deps.audit.log({
+        component: "worker",
+        issueId,
+        message:
+          mode === "per-install"
+            ? `Worker auto-memory: per-install (${String(autoMemoryDir)}, ${String(memoryFiles)} files)`
+            : "Worker auto-memory: off",
+        metadata: {
+          taskId: task.id,
+          phase: phase.name,
+          workerMemory: mode,
+          memoryDir: autoMemoryDir,
+          memoryFiles,
+        },
+      });
+    }
 
     // Best-effort Jira "In Progress" transition. Awaited so the status flips
     // before the worker spawns (ops visibility) — don't "optimize" to
@@ -1334,6 +1378,7 @@ export class RedQueen {
       result = await this.runWorker({
         bin,
         agent: settings.agent,
+        autoMemoryDir,
         prompt,
         cwd: this.deps.runtime.config.project.directory,
         workspaceMode: this.deps.runtime.config.project.workspaceMode,

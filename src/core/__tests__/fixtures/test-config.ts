@@ -42,6 +42,7 @@ export function makeTestConfig(overrides: TestConfigOverrides = {}): RedQueenCon
       stallThresholdMs: 300000,
       reconcileInterval: 300,
       skipSpecReviewIfReady: false,
+      workerMemory: "off",
     },
     phases: DEFAULT_PHASES,
     skills: { directory: ".redqueen/skills", disabled: [] },

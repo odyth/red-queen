@@ -75,6 +75,7 @@ function setupHarness(
       reconcileInterval: 0,
       claudeBin: "/bin/sh",
       skipSpecReviewIfReady: false,
+      workerMemory: "off",
     },
   });
   const pipelineState = new PipelineStateStore(
@@ -151,7 +152,10 @@ async function runUntil(
 }
 
 function readDispatchedPrompt(opts: WorkerOptions): string {
-  const match = /Read and follow (.+) exactly\./.exec(opts.prompt);
+  const match =
+    /task file the orchestrator wrote at (.+) and carry out the phase it describes\./.exec(
+      opts.prompt,
+    );
   const path = match?.[1];
   if (path === undefined) {
     return "";

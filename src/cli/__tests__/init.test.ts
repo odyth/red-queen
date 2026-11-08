@@ -71,6 +71,7 @@ describe("cmdInit --yes", () => {
     await cmdInit(["--yes"]);
 
     expect(existsSync(join(tmp, "redqueen.yaml"))).toBe(true);
+    expect(existsSync(join(tmp, "CLAUDE.md"))).toBe(false);
     expect(existsSync(join(tmp, ".redqueen", "codebase-map.md"))).toBe(true);
     expect(existsSync(join(tmp, ".redqueen", "references", "coding-standards.md"))).toBe(true);
     expect(existsSync(join(tmp, ".redqueen", "references", "review-checklist.md"))).toBe(true);
@@ -81,6 +82,7 @@ describe("cmdInit --yes", () => {
     expect(gitignore).toContain(".redqueen/redqueen.db");
     expect(gitignore).toContain(".redqueen/worktrees/");
     expect(gitignore).toContain(".redqueen/tmp/");
+    expect(gitignore).toContain(".redqueen/memory/");
     expect(gitignore).toContain(".redqueen/*.log");
 
     const yaml = readFileSync(join(tmp, "redqueen.yaml"), "utf8");
@@ -595,7 +597,7 @@ describe("cmdInit workspace mode", () => {
   }
 
   function expectNoScaffolding(root: string): void {
-    for (const path of ["redqueen.yaml", ".redqueen", ".env", ".gitignore"]) {
+    for (const path of ["redqueen.yaml", ".redqueen", ".env", ".gitignore", "CLAUDE.md"]) {
       expect(existsSync(join(root, path))).toBe(false);
     }
   }
@@ -649,6 +651,26 @@ describe("cmdInit workspace mode", () => {
       expect(existsSync(join(root, ".redqueen", "references", file))).toBe(true);
     }
     expect(existsSync(join(root, ".redqueen", "skills", ".gitkeep"))).toBe(true);
+    const claudeMd = readFileSync(join(root, "CLAUDE.md"), "utf8");
+    expect(claudeMd).toContain("# Red Queen workspace");
+    expect(claudeMd).toContain("project.repos");
+    expect(claudeMd).toContain(".redqueen/tmp/");
+    expect(claudeMd).not.toContain("AlignSmart");
+    expect(stdout.mock.calls.map(([text]) => String(text)).join("")).toContain(
+      "CLAUDE.md                  (context Claude Code workers load; an existing file is kept)",
+    );
+  });
+
+  it("preserves an existing CLAUDE.md, including with --force", async () => {
+    const root = workspace();
+    const claudeMdPath = join(root, "CLAUDE.md");
+    const custom = "# Custom workspace instructions\nKeep this content.\n";
+    writeFileSync(claudeMdPath, custom);
+
+    await cmdInit(["--yes"]);
+    expect(readFileSync(claudeMdPath, "utf8")).toBe(custom);
+    await cmdInit(["--yes", "--force"]);
+    expect(readFileSync(claudeMdPath, "utf8")).toBe(custom);
   });
 
   it("prompts for selection and commands per repo, and shared settings once", async () => {

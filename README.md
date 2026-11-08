@@ -251,6 +251,40 @@ to the audit log. Codex runs report token usage but no dollar cost — add a
 inherits across agent switches, so mixed pipelines should override it per phase
 when their CLIs or models support different modes.
 
+### Worker memory
+
+`pipeline.workerMemory` controls Claude Code workers' auto-memory:
+
+- `off` (default) sets `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`, so each worker
+  starts without loading auto-memory. Skills, references and `CLAUDE.md`
+  still provide context.
+- `per-install` enables auto-memory via `--settings` with
+  `autoMemoryEnabled: true` and an absolute `autoMemoryDirectory` of
+  `<project.directory>/.redqueen/memory`. New `init` ignore blocks include
+  `.redqueen/memory/`.
+
+```yaml
+pipeline:
+  workerMemory: off # or per-install to share memory within this install
+```
+
+Every Claude Code dispatch logs `Worker auto-memory: off` or
+`Worker auto-memory: per-install (<dir>, N files)` in the audit log; the
+count includes top-level `.md` entries. Codex workers are unaffected.
+The off switch stops loading memory, but cannot stop a worker explicitly
+asked to write it. Red Queen does not delete or migrate memory after a run.
+
+On upgrade, notes earlier workers left in
+`~/.claude/projects/<slug>/memory/` are no longer loaded by workers. To keep
+them, move them into `.redqueen/memory/` and set `workerMemory: per-install`;
+otherwise you can delete them. The old directory is shared with your own
+interactive Claude Code sessions in the same project directory, so review
+its contents before deleting anything.
+
+The switches were measured on macOS with Haiku in Claude Code 2.1.318 and
+2.1.319 (the custom directory on 2.1.318). Linux, Bedrock and Opus have not
+been verified.
+
 ### Stacked branches
 
 Issues linked as blockers (Jira "blocks" links, GitHub issue

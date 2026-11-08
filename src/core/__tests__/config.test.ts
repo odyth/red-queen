@@ -75,6 +75,7 @@ project:
     expect(config.pipeline.baseBranch).toBe("origin/main");
     expect(config.pipeline.webhooks.enabled).toBe(false);
     expect(config.pipeline.skipSpecReviewIfReady).toBe(false);
+    expect(config.pipeline.workerMemory).toBe("off");
     expect(config.dashboard.enabled).toBe(true);
     expect(config.dashboard.port).toBe(4400);
     expect(config.dashboard.allowNonLoopback).toBe(false);
@@ -99,6 +100,7 @@ pipeline:
   pollInterval: 60
   baseBranch: origin/develop
   skipSpecReviewIfReady: true
+  workerMemory: per-install
 dashboard:
   port: 8080
 `;
@@ -108,7 +110,16 @@ dashboard:
     expect(config.pipeline.pollInterval).toBe(60);
     expect(config.pipeline.baseBranch).toBe("origin/develop");
     expect(config.pipeline.skipSpecReviewIfReady).toBe(true);
+    expect(config.pipeline.workerMemory).toBe("per-install");
     expect(config.dashboard.port).toBe(8080);
+  });
+
+  it("rejects an unknown worker memory mode", () => {
+    expect(() => parseConfig(`${minimalYaml}pipeline:\n  workerMemory: on\n`)).toThrow();
+  });
+
+  it("defaults worker memory to off in an explicit pipeline object", () => {
+    expect(parseConfig(`${minimalYaml}pipeline: {}\n`).pipeline.workerMemory).toBe("off");
   });
 
   it("rejects missing required fields", () => {

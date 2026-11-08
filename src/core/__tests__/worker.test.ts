@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   buildWorkerArgs,
+  buildWorkerEnv,
   resolveAgentBin,
   resolveAgentSettings,
   resolveClaudeBin,
@@ -140,7 +141,8 @@ describe("resolveAgentSettings", () => {
 describe("buildWorkerArgs", () => {
   const base: WorkerOptions = {
     bin: "/usr/bin/true",
-    prompt: "Read and follow /tmp/x.md exactly.",
+    prompt:
+      "You are a Red Queen pipeline worker. Read the task file the orchestrator wrote at /tmp/x.md and carry out the phase it describes.",
     cwd: "/tmp",
     timeoutMs: 1000,
     stallThresholdMs: 1000,
@@ -173,7 +175,7 @@ project:
   it("builds the claude-code argv exactly as before", () => {
     expect(buildWorkerArgs(base)).toEqual([
       "-p",
-      "Read and follow /tmp/x.md exactly.",
+      "You are a Red Queen pipeline worker. Read the task file the orchestrator wrote at /tmp/x.md and carry out the phase it describes.",
       "--permission-mode",
       "bypassPermissions",
       "--output-format",
@@ -184,6 +186,32 @@ project:
       "--effort",
       "high",
     ]);
+  });
+
+  it.each([null, ""])("omits memory settings for autoMemoryDir=%s", (autoMemoryDir) => {
+    const args = buildWorkerArgs({ ...base, autoMemoryDir });
+    expect(args).toEqual(buildWorkerArgs(base));
+    expect(args).not.toContain("--settings");
+  });
+
+  it("enables and redirects Claude auto-memory via settings", () => {
+    const args = buildWorkerArgs({ ...base, autoMemoryDir: "/p/.redqueen/memory" });
+    expect(args).toEqual([
+      ...buildWorkerArgs(base),
+      "--settings",
+      '{"autoMemoryEnabled":true,"autoMemoryDirectory":"/p/.redqueen/memory"}',
+    ]);
+    expect(JSON.parse(args[args.length - 1] ?? "")).toEqual({
+      autoMemoryEnabled: true,
+      autoMemoryDirectory: "/p/.redqueen/memory",
+    });
+  });
+
+  it("ignores memory settings for codex", () => {
+    const options = { ...base, agent: "codex" as const };
+    expect(buildWorkerArgs({ ...options, autoMemoryDir: "/p/x" })).toEqual(
+      buildWorkerArgs(options),
+    );
   });
 
   it("builds the codex argv with a model", () => {
@@ -197,7 +225,7 @@ project:
       "model_reasoning_effort=high",
       "-m",
       "gpt-5.3-codex",
-      "Read and follow /tmp/x.md exactly.",
+      "You are a Red Queen pipeline worker. Read the task file the orchestrator wrote at /tmp/x.md and carry out the phase it describes.",
     ]);
   });
 
@@ -243,12 +271,49 @@ project:
   });
 });
 
+describe("buildWorkerEnv", () => {
+  it.each([{}, { agent: "claude-code" as const }, { autoMemoryDir: null }, { autoMemoryDir: "" }])(
+    "disables Claude auto-memory for %j without mutating the base env",
+    (options) => {
+      const baseEnv = { PATH: "/bin", CLAUDE_CODE_DISABLE_AUTO_MEMORY: "0" };
+      expect(buildWorkerEnv(options, baseEnv)).toEqual({
+        PATH: "/bin",
+        CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+      });
+      expect(baseEnv).toEqual({ PATH: "/bin", CLAUDE_CODE_DISABLE_AUTO_MEMORY: "0" });
+    },
+  );
+
+  it("clears an inherited disable for per-install without mutating the base env", () => {
+    const baseEnv = { CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" };
+    const env = buildWorkerEnv({ autoMemoryDir: "/p/.redqueen/memory" }, baseEnv);
+    expect(env).not.toHaveProperty("CLAUDE_CODE_DISABLE_AUTO_MEMORY");
+    expect(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe("1");
+    expect(baseEnv.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe("1");
+  });
+
+  it.each([undefined, "1"])("preserves codex's inherited auto-memory setting %s", (value) => {
+    const baseEnv = value === undefined ? {} : { CLAUDE_CODE_DISABLE_AUTO_MEMORY: value };
+    const original = { ...baseEnv };
+    for (const autoMemoryDir of [null, "/p/.redqueen/memory"]) {
+      const env = buildWorkerEnv({ agent: "codex", autoMemoryDir }, baseEnv);
+      expect(env).toEqual({ ...original, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" });
+      if (value === undefined) {
+        expect(env).not.toHaveProperty("CLAUDE_CODE_DISABLE_AUTO_MEMORY");
+      }
+    }
+    expect(baseEnv).toEqual(original);
+  });
+});
+
 describe("runWorker", () => {
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), "rq-worker-run-"));
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -276,6 +341,27 @@ describe("runWorker", () => {
       expect(result.error).toContain("without null bytes");
     },
   );
+
+  it.each([false, true])("passes the memory env to Claude with per-install=%s", async (enabled) => {
+    vi.stubEnv("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1");
+    const script = writeScript(
+      "memory-env.sh",
+      '#!/bin/sh\nprintf \'{"result":"mem=%s"}\' "${CLAUDE_CODE_DISABLE_AUTO_MEMORY:-unset}"\n',
+    );
+    const result = await runWorker({
+      bin: script,
+      prompt: "",
+      cwd: tempDir,
+      timeoutMs: 5000,
+      stallThresholdMs: 60000,
+      model: "opus",
+      effort: "high",
+      ...(enabled ? { autoMemoryDir: tempDir } : {}),
+    });
+    expect(result.success).toBe(true);
+    expect(result.summary).toBe(enabled ? "mem=unset" : "mem=1");
+    expect(process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe("1");
+  });
 
   it("captures stdout JSON on success", async () => {
     // Script that prints a JSON result and exits 0. It ignores its args.
