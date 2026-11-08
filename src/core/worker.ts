@@ -36,6 +36,9 @@ export interface WorkerOptions {
   // Which CLI `bin` is. Selects arg building and output parsing; omitted means
   // claude-code so pre-existing callers keep working.
   agent?: WorkerAgent;
+  // Claude Code auto-memory. null/omitted: disabled for this run. A path: enabled
+  // and redirected there. Ignored for codex.
+  autoMemoryDir?: string | null;
   prompt: string;
   cwd: string;
   // Workspace roots contain repositories but need not be Git repositories themselves.
@@ -152,6 +155,13 @@ export function buildWorkerArgs(options: WorkerOptions): string[] {
   }
   const effort = options.effort === "minimal" ? "low" : options.effort;
   const modelArgs = options.model === null ? [] : ["--model", options.model];
+  const memoryArgs =
+    typeof options.autoMemoryDir === "string" && options.autoMemoryDir !== ""
+      ? [
+          "--settings",
+          JSON.stringify({ autoMemoryEnabled: true, autoMemoryDirectory: options.autoMemoryDir }),
+        ]
+      : [];
   return [
     "-p",
     options.prompt,
@@ -163,7 +173,23 @@ export function buildWorkerArgs(options: WorkerOptions): string[] {
     ...modelArgs,
     "--effort",
     effort,
+    ...memoryArgs,
   ];
+}
+
+export function buildWorkerEnv(
+  options: Pick<WorkerOptions, "agent" | "autoMemoryDir">,
+  baseEnv: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...baseEnv, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" };
+  if ((options.agent ?? "claude-code") === "claude-code") {
+    if (typeof options.autoMemoryDir === "string" && options.autoMemoryDir !== "") {
+      delete env.CLAUDE_CODE_DISABLE_AUTO_MEMORY;
+    } else {
+      env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = "1";
+    }
+  }
+  return env;
 }
 
 export function runWorker(options: WorkerOptions): Promise<WorkerResult> {
@@ -179,7 +205,7 @@ export function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       const args = buildWorkerArgs(options);
       worker = spawn(options.bin, args, {
         cwd: options.cwd,
-        env: { ...process.env, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
+        env: buildWorkerEnv(options, process.env),
         stdio: ["ignore", "pipe", "pipe"],
         detached: process.platform !== "win32",
       });

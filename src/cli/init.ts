@@ -56,6 +56,20 @@ import type { DiscoveredRepo, RepoEntryDerivation } from "./repo-discovery.js";
 import { listTemplates, templatePath } from "./templates.js";
 import type { TemplateKind } from "./templates.js";
 
+const WORKSPACE_CLAUDE_MD = `# Red Queen workspace
+
+This folder is a Red Queen multi-repo workspace and is not itself a git repository. Each repository listed under \`project.repos\` in \`redqueen.yaml\` is its own git repo.
+
+- \`redqueen.yaml\`: orchestrator config.
+- \`.redqueen/codebase-map.md\`: architecture overview of every repo.
+- \`.redqueen/references/\`: coding standards, review checklist, spec template.
+- \`.redqueen/skills/\`: skill overrides.
+- \`.redqueen/tmp/\`: task files the orchestrator writes for each worker run.
+- \`.redqueen/worktrees/\`: per-issue git worktrees.
+
+The orchestrator launches Red Queen pipeline workers in this folder. Each worker reads the task file named in its launch prompt and carries out that single phase for one ticket.
+`;
+
 const ALL_LANGUAGES: { key: LanguageKey; displayName: string }[] = [
   { key: "node-ts", displayName: "Node.js / TypeScript" },
   { key: "python", displayName: "Python" },
@@ -680,6 +694,10 @@ function writeWorkspaceFiles(rootDir: string, answers: IWorkspaceInitAnswers): v
   writeFileSync(join(redqueenDir, ".gitkeep"), "");
   writeFileSync(join(skillsDir, ".gitkeep"), "");
   writeYamlDocument(join(rootDir, "redqueen.yaml"), config);
+  const claudeMdPath = join(rootDir, "CLAUDE.md");
+  if (existsSync(claudeMdPath) === false) {
+    writeFileSync(claudeMdPath, WORKSPACE_CLAUDE_MD);
+  }
   writeFileSync(join(redqueenDir, "codebase-map.md"), map);
   copyTemplate(
     "coding-standards",
@@ -707,6 +725,9 @@ function printWorkspaceNextSteps(answers: IWorkspaceInitAnswers): void {
   process.stdout.write("  - .redqueen/codebase-map.md  (edit each repo's '(edit me)' blocks)\n");
   process.stdout.write(
     "  - .redqueen/references/      (coding standards + checklist + spec template)\n",
+  );
+  process.stdout.write(
+    "  - CLAUDE.md                  (context Claude Code workers load; an existing file is kept)\n",
   );
   process.stdout.write("\nNext: fill in .env, then run `npx redqueen start`.\n");
   if (answers.webhooksEnabled) {
@@ -1318,6 +1339,7 @@ export function updateGitignore(projectDir: string): void {
     ".redqueen/worktrees/",
     ".redqueen/attachments/",
     ".redqueen/tmp/",
+    ".redqueen/memory/",
     ".redqueen/*.log",
     "",
   ].join("\n");

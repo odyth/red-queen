@@ -11,7 +11,8 @@ export interface FakeWorkerCall {
 
 export type DispatchRule = (call: FakeWorkerCall) => WorkerResult | null;
 
-const TEMP_PATH_RE = /^Read and follow (.+) exactly\.$/;
+const TEMP_PATH_RE =
+  /^You are a Red Queen pipeline worker\. Read the task file the orchestrator wrote at (.+) and carry out the phase it describes\.$/;
 const PHASE_NAME_RE = /^phaseName:\s*(\S+)/m;
 
 export function createFakeWorkerRunner(rules: DispatchRule[]): WorkerRunner {

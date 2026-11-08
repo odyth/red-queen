@@ -87,6 +87,7 @@ export {
   resolveAgentBin,
   resolveAgentSettings,
   buildWorkerArgs,
+  buildWorkerEnv,
 } from "./core/worker.js";
 export type {
   WorkerOptions,

@@ -175,6 +175,9 @@ const ConfigSchema = z
         stallThresholdMs: z.number().default(300000),
         reconcileInterval: z.number().default(300),
         skipSpecReviewIfReady: z.boolean().default(false),
+        // Claude Code auto-memory for workers. "off" (default): every worker runs
+        // memoryless. "per-install": memory lives in <project.directory>/.redqueen/memory.
+        workerMemory: z.enum(["off", "per-install"]).default("off"),
       })
       .default({
         pollInterval: 30,
@@ -195,6 +198,7 @@ const ConfigSchema = z
         stallThresholdMs: 300000,
         reconcileInterval: 300,
         skipSpecReviewIfReady: false,
+        workerMemory: "off",
       }),
     phases: z.array(PhaseDefinitionSchema).default(DEFAULT_PHASES),
     skills: z

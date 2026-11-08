@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `pipeline.workerMemory`: `off` (default) or `per-install`, which enables
+  Claude Code auto-memory in `<project.directory>/.redqueen/memory/`.
+  Every Claude Code dispatch audits the mode, directory and Markdown file
+  count; new `init` ignore blocks exclude the memory directory. Codex workers
+  are unaffected.
+- Workspace `redqueen init` writes a `CLAUDE.md` describing the workspace
+  layout and worker role, preserving any existing file even with `--force`.
+
 - Multi-repo workspaces: one instance can drive several repos declared under
   `project.repos[]`. The prompt-writer records explicit ticket scope with
   `spec meta` and its required `--repos` flag. The coder opens one PR per
@@ -43,6 +51,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Set `pipeline.codexBin` when `codex` isn't on the service PATH.
 
 ### Changed
+
+- Claude Code workers now run memoryless by default using
+  `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`. This stops loading auto-memory;
+  explicit requests to write memory can still write it. Existing notes in
+  `~/.claude/projects/<slug>/memory/` are left untouched; see README's
+  "Worker memory" section for manual migration. The switches were measured
+  on macOS with Haiku in Claude Code 2.1.318 and 2.1.319 (the custom directory
+  on 2.1.318), not on Linux, Bedrock or Opus.
+- Worker launch prompts now introduce the Red Queen pipeline worker role
+  before directing the worker to its task file and phase.
 
 - The default worker effort is now `max` (previously `high`). Upgraders who
   don't pin `pipeline.effort` (or a per-phase `effort`) get longer, more
